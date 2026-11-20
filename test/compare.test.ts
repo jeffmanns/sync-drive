@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { lutimes, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { compare } from "../src/engine/index.ts";
-import { makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
+import { DEFAULT_MTIME, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
 after(removeTrees);
 
@@ -73,7 +74,7 @@ describe("Quick compare", () => {
       ".TemporaryItems/folders.501/tmp": "x",
       ".DocumentRevisions-V100/db": "x",
     });
-    const replica = await makeTree({ "Photos/.DS_Store": "different size", ".Trashes/old": "x" });
+    const replica = await makeTree({ "Photos/.DS_Store": "a different size", ".Trashes/old": "x" });
 
     const report = await compare(primary, replica);
 
@@ -167,5 +168,17 @@ describe("Quick compare", () => {
 
     await assert.rejects(compare(primary, missing), /Replica.*not-here/);
     await assert.rejects(compare(missing, primary), /Primary.*not-here/);
+  });
+
+  it("reports a shortcut on one drive and a file on the other as changed, even with the same size and date", async () => {
+    // A symbolic link's own size is the length of the path it points to: here 5, like "hello".
+    const primary = await makeTree({ "link": "hello" });
+    const replica = await makeTree();
+    await symlink("xxxxx", join(replica, "link"));
+    await lutimes(join(replica, "link"), DEFAULT_MTIME, DEFAULT_MTIME);
+
+    const report = await compare(primary, replica);
+
+    assert.deepEqual(report.changed.files, [{ path: "link", size: 5 }]);
   });
 });

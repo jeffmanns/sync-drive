@@ -19,23 +19,26 @@ export async function compare(
 ): Promise<Report> {
   await Promise.all([assertFolder("Primary", primary), assertFolder("Replica", replica)]);
   const [primaryFiles, replicaFiles] = await Promise.all([scan(primary), scan(replica)]);
-  const added: FileEntry[] = [];
+  const newFiles: FileEntry[] = [];
   const changed: FileEntry[] = [];
   const deleted: FileEntry[] = [];
   for (const [path, file] of primaryFiles) {
     const counterpart = replicaFiles.get(path);
-    if (counterpart === undefined) added.push({ path, size: file.size });
+    if (counterpart === undefined) newFiles.push({ path, size: file.size });
     else if (!quickEqual(file, counterpart)) changed.push({ path, size: file.size });
   }
   for (const [path, file] of replicaFiles) {
     if (!primaryFiles.has(path)) deleted.push({ path, size: file.size });
   }
-  return { new: makeSection(added), changed: makeSection(changed), deleted: makeSection(deleted) };
+  return { new: makeSection(newFiles), changed: makeSection(changed), deleted: makeSection(deleted) };
 }
 
-/** Quick compare: two files are equal when their size and modification date match. Contents are not read. */
+/**
+ * Quick compare: two files are equal when they are the same kind of entry and their size and
+ * modification date match. Contents are not read.
+ */
 function quickEqual(a: ScannedFile, b: ScannedFile): boolean {
-  return a.size === b.size && a.mtimeNs === b.mtimeNs;
+  return a.kind === b.kind && a.size === b.size && a.mtimeNs === b.mtimeNs;
 }
 
 async function assertFolder(role: "Primary" | "Replica", path: string): Promise<void> {

@@ -10,8 +10,11 @@ const DRIVE_LEVEL_SYSTEM_ENTRIES = new Set([
 /** macOS system files that Finder can create in any folder. Always skipped, at any depth. */
 const ANY_LEVEL_SYSTEM_ENTRIES = new Set([".DS_Store"]);
 
-/** Whether `path` (relative to the drive root, using `/`) is a built-in exclusion. */
-export function isBuiltInExclusion(path: string): boolean {
+/**
+ * Whether `path` (relative to the drive root, using `/`) is a macOS system file or folder
+ * that every comparison skips. These are separate from Exclusions, which the user chooses.
+ */
+export function isAlwaysSkipped(path: string): boolean {
   const name = path.slice(path.lastIndexOf("/") + 1);
   if (ANY_LEVEL_SYSTEM_ENTRIES.has(name)) return true;
   const atDriveLevel = !path.includes("/");

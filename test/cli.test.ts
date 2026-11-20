@@ -65,11 +65,21 @@ describe("sync-drive compare", () => {
     assert.match(stdout, /^ {4}old\.pdf +3 B$/m);
   });
 
-  it("says so when the Replica matches the Primary, and writes nothing", async () => {
-    const primary = await makeTree({ "a.txt": "same" });
-    const replica = await makeTree({ "a.txt": "same" });
+  it("writes nothing to either drive while reporting differences", async () => {
+    const { primary, replica } = await exampleDrives();
     const primaryBefore = await snapshotTree(primary);
     const replicaBefore = await snapshotTree(replica);
+
+    const { code } = await runCli("compare", primary, replica, "--list");
+
+    assert.equal(code, 0);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("says so when the Replica matches the Primary", async () => {
+    const primary = await makeTree({ "a.txt": "same" });
+    const replica = await makeTree({ "a.txt": "same" });
 
     const { code, stdout } = await runCli("compare", primary, replica);
 
@@ -77,8 +87,6 @@ describe("sync-drive compare", () => {
     assert.match(stdout, /^New: none$/m);
     assert.match(stdout, /^Changed: none$/m);
     assert.match(stdout, /^Deleted: none$/m);
-    assert.deepEqual(await snapshotTree(primary), primaryBefore);
-    assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 
   it("explains how to use it when the drives are not given", async () => {
