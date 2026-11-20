@@ -1,0 +1,22 @@
+{
+  "name": "sync-drive",
+  "version": "0.1.0",
+  "description": "Compare an everyday Primary drive against its Replica, and bring the Replica up to date on approval.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "sync-drive": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "npm run typecheck && npm run build && node --test \"test/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
