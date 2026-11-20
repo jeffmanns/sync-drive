@@ -29,11 +29,22 @@ export async function makeTree(spec: TreeSpec = {}): Promise<string> {
  * that a normal case-insensitive folder cannot hold side by side. Returns the volume's path.
  */
 export async function makeCaseSensitiveTree(spec: TreeSpec): Promise<string> {
+  return makeDiskImageTree(spec, { fileSystem: "Case-sensitive APFS" });
+}
+
+/**
+ * Builds a tree on a freshly mounted disk image (via `hdiutil`): a real drive with its own
+ * volume ID and name. Returns the volume's path.
+ */
+export async function makeDiskImageTree(
+  spec: TreeSpec = {},
+  { fileSystem = "APFS", name = "sync-drive-test" }: { fileSystem?: string; name?: string } = {},
+): Promise<string> {
   const dir = await makeTree();
   const image = join(dir, "drive.dmg");
   const mountPoint = join(dir, "volume");
   const run = promisify(execFile);
-  await run("hdiutil", ["create", "-quiet", "-size", "8m", "-fs", "Case-sensitive APFS", "-volname", "sync-drive-test", image]);
+  await run("hdiutil", ["create", "-quiet", "-size", "8m", "-fs", fileSystem, "-volname", name, image]);
   await mkdir(mountPoint);
   await run("hdiutil", ["attach", "-quiet", "-nobrowse", "-mountpoint", mountPoint, image]);
   mountedImages.push(mountPoint);
