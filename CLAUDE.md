@@ -10,7 +10,7 @@ Uses the default five triage labels: needs-triage, needs-info, ready-for-agent, 
 
 ### Domain docs
 
-Single-context: one root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`.
+Single-context: one root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`, including which wins when a ticket and an ADR disagree.
 
 ## Way of working
 
@@ -19,5 +19,5 @@ Single-context: one root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain
 - CI (GitHub Actions, macOS runner) must be green before merging.
 - The owner reviews and approves every PR before it is merged. Never merge without the owner's go-ahead.
 - PRs that write, rename, or delete on the Replica need the closest review. Call out those code paths in the PR body.
-- When the owner settles a decision during a ticket that later tickets must respect, record it in that ticket's PR: a new term in `GLOSSARY.md`, a rule or trade-off in an ADR (`docs/adr/`).
+- When the owner settles a decision during a ticket that later tickets must respect, record it in that ticket's PR: a new term in `GLOSSARY.md`, a rule or trade-off in an ADR (`docs/adr/`). Then comment on each open ticket the decision changes, pointing to the ADR (e.g. "See ADR 0003: compare takes no drive paths").
 - Priorities, in order: data accuracy, then performance. The Primary is never written to.

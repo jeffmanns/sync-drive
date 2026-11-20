@@ -49,3 +49,7 @@ If the concept you need isn't in the glossary yet, that's a signal: either you'r
 If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
 
 > _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+
+## When a ticket and an ADR disagree, the ADR wins
+
+Tickets are written up front; ADRs record decisions settled later, so an ADR overrides older ticket text. Build what the ADR says and name the conflict in the PR. If following the ADR changes what the ticket asks for, ask the owner before building.
