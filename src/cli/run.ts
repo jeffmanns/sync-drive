@@ -3,10 +3,12 @@ import {
   compare,
   findPairedDrives,
   pair,
+  readHoldingArea,
   readPairing,
   update,
   writePairing,
   type FileCopier,
+  type FileEntry,
   type PairedDrives,
   type Report,
   type Volume,
@@ -29,8 +31,10 @@ export const USAGE = `Usage: sync-drive pair <primary> <replica> [--replace]
 
   update    Compares like compare, shows the report and asks for approval. Once
             approved, copies new and changed files from the Primary to the Replica,
-            keeping all their metadata. Never writes to the Primary. Files only on
-            the Replica are left where they are.
+            keeping all their metadata, and empties the previous Holding area. Files
+            only on the Replica are moved into the "sync-drive Holding Area" folder
+            on the Replica only after a separate confirmation; they stay there
+            until the next Update. Never writes to the Primary.
 
   --list    Show every file, not just the totals for each folder.`;
 
@@ -109,31 +113,66 @@ async function runCompare(list: boolean, deps: CliDeps): Promise<number> {
 
 async function runUpdate(list: boolean, deps: CliDeps): Promise<number> {
   const { drives, report } = await compareAndShow(list, deps);
-  const count = report.new.count + report.changed.count;
-  if (count === 0) {
-    deps.out("\nNothing to copy.");
+  const copies = report.new.count + report.changed.count;
+  const deletions = report.deleted.count;
+  if (copies === 0 && deletions === 0) {
+    deps.out("\nNothing to update.");
     return 0;
   }
-  const size = formatSize(report.new.totalSize + report.changed.totalSize);
   deps.out("");
-  const approved = await deps.confirm(`Copy ${count.toLocaleString("en-US")} new and changed ${count === 1 ? "file" : "files"} (${size}) to the Replica?`);
-  if (!approved) {
-    deps.out("Nothing was copied.");
+  const held = await readHoldingArea(drives.replica.mountPoint);
+  if (held.count > 0) {
+    deps.out(
+      `The Holding area on the Replica holds ${fileCount(held.count)}, ${formatSize(held.totalSize)}, from the previous Update. ` +
+        `Approving this Update deletes ${held.count === 1 ? "it" : "them"} permanently.`,
+    );
+  }
+  // The main approval. With nothing to copy, confirming the deletions approves the Update.
+  if (copies > 0) {
+    const size = formatSize(report.new.totalSize + report.changed.totalSize);
+    const approved = await deps.confirm(`Copy ${copies.toLocaleString("en-US")} new and changed ${copies === 1 ? "file" : "files"} (${size}) to the Replica?`);
+    if (!approved) {
+      deps.out("Nothing was written to the Replica.");
+      return 0;
+    }
+  }
+  const deletionsConfirmed =
+    deletions > 0 &&
+    (await deps.confirm(
+      `Move ${deletions.toLocaleString("en-US")} deleted ${deletions === 1 ? "file" : "files"} (${formatSize(report.deleted.totalSize)}) into the Holding area on the Replica?`,
+    ));
+  if (copies === 0 && !deletionsConfirmed) {
+    deps.out("Nothing was written to the Replica.");
     return 0;
   }
-  const result = await update(report, { update: true }, {
+  const result = await update(report, { update: true, deletions: deletionsConfirmed }, {
     primary: drives.primary.mountPoint,
     replica: drives.replica.mountPoint,
     copier: deps.copier,
   });
-  const copiedSize = result.copied.reduce((total, file) => total + file.size, 0);
-  deps.out(`Copied ${fileCount(result.copied.length)}, ${formatSize(copiedSize)}.`);
-  if (result.failed.length === 0) return 0;
-  deps.err(
-    `Not copied (${result.failed.length}); the Replica keeps its earlier version of each, if any:\n` +
-      result.failed.map((file) => `  ${file.path}: ${file.reason}`).join("\n"),
-  );
+  if (copies > 0) deps.out(`Copied ${fileCount(result.copied.length)}, ${formatSize(totalSize(result.copied))}.`);
+  if (deletionsConfirmed) deps.out(`Moved ${fileCount(result.moved.length)}, ${formatSize(totalSize(result.moved))}, into the Holding area.`);
+  else if (deletions > 0) deps.out("Deleted files were left on the Replica.");
+  const problems: string[] = [];
+  if (result.failed.length > 0) {
+    problems.push(
+      `Not copied (${result.failed.length}); the Replica keeps its earlier version of each, if any:\n` +
+        result.failed.map((file) => `  ${file.path}: ${file.reason}`).join("\n"),
+    );
+  }
+  if (result.notMoved.length > 0) {
+    problems.push(
+      `Not moved into the Holding area (${result.notMoved.length}):\n` +
+        result.notMoved.map((file) => `  ${file.path}: ${file.reason}`).join("\n"),
+    );
+  }
+  if (problems.length === 0) return 0;
+  deps.err(problems.join("\n"));
   return 1;
+}
+
+function totalSize(files: FileEntry[]): number {
+  return files.reduce((total, file) => total + file.size, 0);
 }
 
 /** Finds the paired drives, compares them, and shows the report. */

@@ -15,8 +15,12 @@ The backup drive meant to be an exact copy of the Primary as of its last update;
 _Avoid_: backup, target, destination, mirror
 
 **Holding area**:
-A folder on the Replica where files deleted from the Primary are kept until the following update, rather than being destroyed. It is not part of the Replica's contents for comparison.
+The visible `sync-drive Holding Area` folder at the top level of the Replica, where an Update moves files no longer on the Primary (after their own confirmation) rather than destroying them. They keep their folder paths and stay until the next approved Update, which deletes them for good. Its `READ ME.txt` says when it was filled and how to restore a file (copy it back to the Primary). It is not part of the Replica's contents for comparison. Not the Incoming folder.
 _Avoid_: trash, recycle bin, archive
+
+**Incoming folder**:
+The hidden `.sync-drive-incoming` folder at the top level of the Replica, where an Update writes each copy under a temporary name before renaming it into place. Anything left in it is an interrupted copy, never a file the user wants; the next Update empties it. It is not part of the Replica's contents for comparison. Not the Holding area: it never holds files deleted from the Primary.
+_Avoid_: temp folder, staging area, in-progress folder
 
 **Pairing**:
 The remembered designation of one specific volume as the Primary and another as the Replica, identified by each volume's **Volume ID** rather than its name.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { lstat, mkdir, readdir, readFile, symlink, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
@@ -10,7 +10,8 @@ import { extendedAttributes, makeDiskImageTree, makeTree, metadataOf, removeTree
 
 after(removeTrees);
 
-const APPROVED: Approvals = { update: true };
+const APPROVED: Approvals = { update: true, deletions: false };
+const APPROVED_WITH_DELETIONS: Approvals = { update: true, deletions: true };
 
 /**
  * Compares, runs an Update with `approvals`, and checks the Primary came through untouched:
@@ -133,9 +134,9 @@ describe("Update", () => {
     });
     const replicaBefore = await snapshotTree(replica);
 
-    const result = await compareAndUpdate(primary, replica, { update: false });
+    const result = await compareAndUpdate(primary, replica, { update: false, deletions: false });
 
-    assert.deepEqual(result, { copied: [], failed: [] });
+    assert.deepEqual(result, { copied: [], failed: [], moved: [], notMoved: [] });
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 
@@ -205,6 +206,140 @@ describe("Update", () => {
     assert.deepEqual(await readdir(outside), ["Replica"]);
     assert.deepEqual(await readdir(replica), []);
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+});
+
+describe("Update: deletions and the Holding area", () => {
+  it("moves confirmed deletions into the Holding area, keeping their folder paths and metadata", async () => {
+    const primary = await makeTree({ "keep.txt": "kept" });
+    const replica = await makeTree({
+      "keep.txt": "kept",
+      "Photos/2024/old.jpg": { content: "an old photo", mtime: new Date("2024-06-01T10:00:00Z") },
+      "gone.txt": "gone",
+    });
+    const oldPhotoBefore = await metadataOf(join(replica, "Photos/2024/old.jpg"));
+
+    const result = await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
+
+    assert.deepEqual(result.moved, [
+      { path: "Photos/2024/old.jpg", size: 12 },
+      { path: "gone.txt", size: 4 },
+    ]);
+    assert.deepEqual(result.notMoved, []);
+    const holding = join(replica, "sync-drive Holding Area");
+    assert.equal(await readFile(join(holding, "Photos/2024/old.jpg"), "utf8"), "an old photo");
+    assert.equal(await metadataOf(join(holding, "Photos/2024/old.jpg")), oldPhotoBefore);
+    assert.equal(await readFile(join(holding, "gone.txt"), "utf8"), "gone");
+    await assert.rejects(lstat(join(replica, "gone.txt")), { code: "ENOENT" });
+    const after = await compare(primary, replica);
+    assert.equal(after.new.count + after.changed.count + after.deleted.count, 0, "the Holding area never appears in a comparison");
+  });
+
+  it("leaves every Replica file in place when deletions are not confirmed", async () => {
+    const primary = await makeTree({ "new.txt": "new" });
+    const replica = await makeTree({ "Photos/old.jpg": "old", "gone.txt": "gone" });
+    const replicaBefore = await snapshotTree(replica);
+
+    const result = await compareAndUpdate(primary, replica, APPROVED);
+
+    assert.deepEqual(result.copied, [{ path: "new.txt", size: 3 }]);
+    assert.deepEqual(result.moved, []);
+    const replicaAfter = (await snapshotTree(replica)).filter((line) => !line.includes("new.txt"));
+    assert.deepEqual(replicaAfter, replicaBefore);
+  });
+
+  it("does nothing with deletions confirmed but no main approval", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree({ "gone.txt": "gone" });
+    const replicaBefore = await snapshotTree(replica);
+
+    const result = await compareAndUpdate(primary, replica, { update: false, deletions: true });
+
+    assert.deepEqual(result.moved, []);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("writes a READ ME with the date of the Update and how to restore a file", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree({ "gone.txt": "gone" });
+    const report = await compare(primary, replica);
+
+    await update(report, APPROVED_WITH_DELETIONS, {
+      primary,
+      replica,
+      copier: new MacFileCopier(),
+      now: new Date(2026, 10, 20, 15, 30),
+    });
+
+    const readme = await readFile(join(replica, "sync-drive Holding Area", "READ ME.txt"), "utf8");
+    assert.match(readme, /Update on 20 November 2026/);
+    assert.match(readme, /permanently deleted at the next Update/);
+    assert.match(readme, /copy it back to the Primary/);
+  });
+
+  it("keeps the previous Holding area through comparisons and declined Updates, and empties it on the next approved Update", async () => {
+    const primary = await makeTree({ "a.txt": "same" });
+    const replica = await makeTree({ "a.txt": "same", "first.txt": "deleted first" });
+    await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
+    const holding = join(replica, "sync-drive Holding Area");
+    await writeFile(join(replica, "second.txt"), "deleted second");
+    const replicaBefore = await snapshotTree(replica);
+
+    await compare(primary, replica);
+    await compareAndUpdate(primary, replica, { update: false, deletions: false });
+    await compareAndUpdate(primary, replica, { update: false, deletions: true });
+    assert.deepEqual(await snapshotTree(replica), replicaBefore, "comparing or declining never empties it");
+
+    const result = await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
+
+    assert.deepEqual(result.moved, [{ path: "second.txt", size: 14 }]);
+    assert.deepEqual((await readdir(holding)).sort(), ["READ ME.txt", "second.txt"]);
+  });
+
+  it("empties the previous Holding area on an approved Update even when no deletions are confirmed", async () => {
+    const primary = await makeTree({ "a.txt": "same" });
+    const replica = await makeTree({ "a.txt": "same", "first.txt": "deleted first" });
+    await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
+
+    await compareAndUpdate(primary, replica, APPROVED);
+
+    assert.deepEqual(await readdir(replica), ["a.txt"]);
+  });
+
+  it("lists a deleted file it could not move, leaving it in place, and moves the others", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree({ "gone.txt": "gone", "vanished.txt": "x" });
+    const report = await compare(primary, replica);
+    await rm(join(replica, "vanished.txt"));
+
+    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.moved, [{ path: "gone.txt", size: 4 }]);
+    assert.equal(result.notMoved.length, 1);
+    assert.equal(result.notMoved[0]!.path, "vanished.txt");
+  });
+
+  it("refuses to compare when the Primary has a folder named like sync-drive's own", async () => {
+    for (const name of ["sync-drive Holding Area", "SYNC-DRIVE holding area", ".sync-drive-incoming"]) {
+      const primary = await makeTree({ [`${name}/mine.txt`]: "the user's own file" });
+      const replica = await makeTree();
+
+      await assert.rejects(compare(primary, replica), new RegExp(`Primary has a folder named "${name}"`));
+    }
+  });
+
+  it("refuses, writing nothing, a report path inside sync-drive's own folders", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree({ "gone.txt": "gone" });
+    const replicaBefore = await snapshotTree(replica);
+    const report = await compare(primary, replica);
+    report.deleted.files[0]!.path = "sync-drive Holding Area/gone.txt";
+
+    await assert.rejects(
+      update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() }),
+      /inside sync-drive's own/,
+    );
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 });
 
