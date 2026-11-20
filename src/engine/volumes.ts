@@ -1,6 +1,6 @@
 /** A connected drive, as the volume-identity component sees it. */
 export interface Volume {
-  /** The volume's unique ID (its volume UUID on macOS). Survives renaming the drive. */
+  /** The drive's volume ID (macOS's Volume UUID). Survives renaming the drive. */
   id: string;
   /** The drive's current name, for messages only. Never used to recognise a drive. */
   name: string;
