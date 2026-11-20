@@ -66,41 +66,6 @@ describe("Finding the paired drives", () => {
     await assert.rejects(findPairedDrives(pairing, volumes), /Primary.*Replica|Replica.*Primary/s);
   });
 
-  it("accepts drives given by path when they match the Pairing", async () => {
-    const { primary, replica, volumes, pairing } = await paired();
-
-    const drives = await findPairedDrives(pairing, volumes, { primary, replica });
-
-    assert.equal(drives.primary.mountPoint, primary);
-    assert.equal(drives.replica.mountPoint, replica);
-  });
-
-  it("refuses drives given by path when their roles are swapped", async () => {
-    const { primary, replica, volumes, pairing } = await paired();
-
-    await assert.rejects(
-      findPairedDrives(pairing, volumes, { primary: replica, replica: primary }),
-      /swapped/,
-    );
-  });
-
-  it("refuses a drive given by path that is not the one paired in that role", async () => {
-    const { primary, replica, other, volumes, pairing } = await paired();
-
-    await assert.rejects(findPairedDrives(pairing, volumes, { primary, replica: other }), (error: Error) => {
-      assert.match(error.message, new RegExp(`${other} is not the paired Replica`));
-      return true;
-    });
-    await assert.rejects(
-      findPairedDrives(pairing, volumes, { primary: other, replica }),
-      new RegExp(`${other} is not the paired Primary`),
-    );
-    await assert.rejects(
-      findPairedDrives(pairing, volumes, { primary: replica, replica }),
-      new RegExp(`${replica} is not the paired Primary`),
-    );
-  });
-
   it("refuses rather than guessing when two connected drives share a paired volume ID", async () => {
     const { volumes, pairing } = await paired();
     const clone = await makeTree();

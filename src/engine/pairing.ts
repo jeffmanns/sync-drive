@@ -29,26 +29,12 @@ export interface PairedDrives {
   replica: Volume;
 }
 
-/** Where the user says the drives are, as the paths of their top levels. */
-export interface GivenDrives {
-  primary: string;
-  replica: string;
-}
-
 /**
- * Finds the paired Primary and Replica by volume ID alone, so renaming a drive does not matter.
- * Without `given`, looks among the connected drives and rejects if either is not connected.
- * With `given`, checks that the drives at those paths are the paired ones, in the right roles.
+ * Finds the paired Primary and Replica among the connected drives, by volume ID alone, so
+ * renaming a drive does not matter and the roles can never be swapped. Rejects if either drive
+ * is not connected.
  */
-export async function findPairedDrives(
-  pairing: Pairing,
-  volumes: VolumeIdentity,
-  given?: GivenDrives,
-): Promise<PairedDrives> {
-  return given === undefined ? findConnected(pairing, volumes) : checkGiven(pairing, volumes, given);
-}
-
-async function findConnected(pairing: Pairing, volumes: VolumeIdentity): Promise<PairedDrives> {
+export async function findPairedDrives(pairing: Pairing, volumes: VolumeIdentity): Promise<PairedDrives> {
   const connected = await volumes.connected();
   const primary = onlyMatch("Primary", pairing.primary, connected);
   const replica = onlyMatch("Replica", pairing.replica, connected);
@@ -75,28 +61,6 @@ function onlyMatch(role: "Primary" | "Replica", paired: PairedVolume, connected:
     );
   }
   return matches[0];
-}
-
-async function checkGiven(pairing: Pairing, volumes: VolumeIdentity, given: GivenDrives): Promise<PairedDrives> {
-  const [primary, replica] = await Promise.all([volumes.volumeAt(given.primary), volumes.volumeAt(given.replica)]);
-  if (primary.id === pairing.replica.id && replica.id === pairing.primary.id) {
-    throw new Error(
-      `The Primary and the Replica are swapped: ${given.primary} is ${describe("Replica", pairing.replica)} ` +
-        `and ${given.replica} is ${describe("Primary", pairing.primary)}. Give the Primary first.`,
-    );
-  }
-  for (const [role, path, found, expected] of [
-    ["Primary", given.primary, primary, pairing.primary],
-    ["Replica", given.replica, replica, pairing.replica],
-  ] as const) {
-    if (found.id !== expected.id) {
-      throw new Error(
-        `${path} is not the paired ${role}: it is "${found.name}" (volume ID ${found.id}). ` +
-          `${capitalise(describe(role, expected))} is the paired one. ${REPAIR_HINT}`,
-      );
-    }
-  }
-  return { primary, replica };
 }
 
 const REPAIR_HINT =

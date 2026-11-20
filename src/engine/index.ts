@@ -2,7 +2,6 @@ export { compare, type CompareOptions } from "./compare.ts";
 export {
   findPairedDrives,
   pair,
-  type GivenDrives,
   type PairedDrives,
   type PairedVolume,
   type Pairing,

@@ -98,13 +98,8 @@ describe("sync-drive compare", () => {
     assert.match(stderr, /not been paired.*sync-drive pair/);
   });
 
-  it("refuses with a clear message when the paired drives are not the ones connected", async () => {
-    const { mac, primary, replica } = await pairedMac();
-
-    const swapped = await mac.run("compare", replica, primary);
-    assert.equal(swapped.code, 1);
-    assert.equal(swapped.stdout, "");
-    assert.match(swapped.stderr, /^sync-drive: The Primary and the Replica are swapped/);
+  it("refuses with a clear message when a paired drive is not connected", async () => {
+    const { mac, replica } = await pairedMac();
 
     mac.volumes.disconnect(replica);
     const missing = await mac.run("compare");
@@ -113,13 +108,14 @@ describe("sync-drive compare", () => {
     assert.match(missing.stderr, /Replica .* is not connected/);
   });
 
-  it("checks drives given by path against the Pairing and compares them", async () => {
+  it("takes no drive paths, so the roles can never be given the wrong way round", async () => {
     const { mac, primary, replica } = await pairedMac();
 
-    const { code, stdout } = await mac.run("compare", primary, replica);
+    const { code, stdout, stderr } = await mac.run("compare", replica, primary);
 
-    assert.equal(code, 0);
-    assert.match(stdout, /^New: 2 files, 1\.5 MB$/m);
+    assert.equal(code, 2);
+    assert.equal(stdout, "");
+    assert.match(stderr, /Usage: .*sync-drive compare \[--list\]/s);
   });
 
   it("shows the full file-by-file list with --list", async () => {
@@ -219,6 +215,6 @@ describe("sync-drive", () => {
 
     assert.equal(failed.code, 2);
     assert.match(failed.stderr, /Usage: sync-drive pair <primary> <replica>/);
-    assert.match(failed.stderr, /sync-drive compare \[<primary> <replica>\]/);
+    assert.match(failed.stderr, /sync-drive compare \[--list\]/);
   });
 });
