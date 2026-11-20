@@ -25,7 +25,7 @@ export interface FileCopier {
 }
 
 /** Where an Update reads from and writes to, and how it copies. */
-export interface UpdateTarget {
+export interface UpdateSetup {
   /** The top level of the Primary. Read only. */
   primary: string;
   /** The top level of the Replica. */
@@ -51,25 +51,25 @@ const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Upda
  * Brings the Replica up to date with `report`: copies its new and changed files from the Primary.
  * Writes nothing unless `approvals.update` is given. Never writes to the Primary.
  */
-export async function update(report: Report, approvals: Approvals, target: UpdateTarget): Promise<UpdateResult> {
+export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
   const result: UpdateResult = { copied: [], failed: [] };
   if (!approvals.update) return result;
-  await assertSeparate(target.primary, target.replica);
+  await assertSeparate(setup.primary, setup.replica);
   const files = [...report.new.files, ...report.changed.files];
   for (const file of files) assertInsideDrive(file.path);
-  const incoming = join(target.replica, INCOMING_FOLDER);
+  const incoming = join(setup.replica, INCOMING_FOLDER);
   // Anything already here is a temporary copy left by an interrupted Update.
   await rm(incoming, { recursive: true, force: true });
   await mkdir(incoming);
   for (const file of files) {
     // Copied under a temporary name first, so an interrupted copy never sits under a real name.
     const temporary = join(incoming, randomUUID());
-    const destination = join(target.replica, file.path);
-    const source = join(target.primary, file.path);
+    const destination = join(setup.replica, file.path);
+    const source = join(setup.primary, file.path);
     try {
       const before = await lstat(source, { bigint: true });
       if (!before.isFile()) throw new Error(NOT_A_FILE);
-      await target.copier.copy(source, temporary);
+      await setup.copier.copy(source, temporary);
       const [after, copy] = await Promise.all([lstat(source, { bigint: true }), lstat(temporary, { bigint: true })]);
       if (!sameVersion(before, after)) throw new Error("it changed on the Primary while it was being copied");
       if (!sameVersion(before, copy)) throw new Error("the copy's size or dates do not match the Primary");

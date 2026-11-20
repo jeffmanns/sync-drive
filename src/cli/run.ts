@@ -12,7 +12,7 @@ import {
   type Volume,
   type VolumeIdentity,
 } from "../engine/index.ts";
-import { formatSize, renderReport } from "./render-report.ts";
+import { fileCount, formatSize, renderReport } from "./render-report.ts";
 
 export const USAGE = `Usage: sync-drive pair <primary> <replica> [--replace]
        sync-drive compare [--list]
@@ -116,7 +116,7 @@ async function runUpdate(list: boolean, deps: CliDeps): Promise<number> {
   }
   const size = formatSize(report.new.totalSize + report.changed.totalSize);
   deps.out("");
-  const approved = await deps.confirm(`Copy ${count} new and changed ${count === 1 ? "file" : "files"} (${size}) to the Replica?`);
+  const approved = await deps.confirm(`Copy ${count.toLocaleString("en-US")} new and changed ${count === 1 ? "file" : "files"} (${size}) to the Replica?`);
   if (!approved) {
     deps.out("Nothing was copied.");
     return 0;
@@ -127,7 +127,7 @@ async function runUpdate(list: boolean, deps: CliDeps): Promise<number> {
     copier: deps.copier,
   });
   const copiedSize = result.copied.reduce((total, file) => total + file.size, 0);
-  deps.out(`Copied ${result.copied.length} ${result.copied.length === 1 ? "file" : "files"}, ${formatSize(copiedSize)}.`);
+  deps.out(`Copied ${fileCount(result.copied.length)}, ${formatSize(copiedSize)}.`);
   if (result.failed.length === 0) return 0;
   deps.err(
     `Not copied (${result.failed.length}); the Replica keeps its earlier version of each, if any:\n` +

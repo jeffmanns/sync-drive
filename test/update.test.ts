@@ -179,11 +179,11 @@ describe("Update", () => {
   });
 
   it("refuses, writing nothing, when the Replica is the Primary or inside it", async () => {
-    const primary = await makeTree({ "a.txt": "a", "Backup/old.txt": "x" });
+    const primary = await makeTree({ "a.txt": "a", "Inside/old.txt": "x" });
     const primaryBefore = await snapshotTree(primary);
-    const report = await compare(primary, join(primary, "Backup"));
+    const report = await compare(primary, join(primary, "Inside"));
 
-    for (const replica of [primary, join(primary, "Backup"), join(primary, "Backup", "..")]) {
+    for (const replica of [primary, join(primary, "Inside"), join(primary, "Inside", "..")]) {
       await assert.rejects(update(report, APPROVED, { primary, replica, copier: new MacFileCopier() }), /overlap/);
     }
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
@@ -194,6 +194,7 @@ describe("Update", () => {
     const primary = await makeTree({ "escape.txt": "x" });
     const replica = join(outside, "Replica");
     await mkdir(replica);
+    const primaryBefore = await snapshotTree(primary);
     const report = await compare(primary, replica);
     report.new.files[0]!.path = "../escape.txt";
 
@@ -203,6 +204,7 @@ describe("Update", () => {
     );
     assert.deepEqual(await readdir(outside), ["Replica"]);
     assert.deepEqual(await readdir(replica), []);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 });
 

@@ -40,9 +40,9 @@ int main(int argc, char *argv[]) {
   const char *destination = argv[2];
 
   struct stat source_stat;
-  if (lstat(source, &source_stat) != 0) return fail("reading the source", destination, 0);
+  if (lstat(source, &source_stat) != 0) return fail("reading the file on the Primary", destination, 0);
   if (!S_ISREG(source_stat.st_mode)) {
-    fprintf(stderr, "reading the source: not a regular file\n");
+    fprintf(stderr, "reading the file on the Primary: not a regular file\n");
     return 1;
   }
 

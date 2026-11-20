@@ -14,6 +14,6 @@ export {
   type FailedFile,
   type FileCopier,
   type UpdateResult,
-  type UpdateTarget,
+  type UpdateSetup,
 } from "./update.ts";
 export type { Volume, VolumeIdentity } from "./volumes.ts";
