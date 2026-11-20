@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
 import { run } from "../src/cli/run.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
+import { MacFileCopier } from "../src/macos/file-copier.ts";
 import { makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
 after(removeTrees);
@@ -21,6 +22,9 @@ interface CliRun {
 class TestMac {
   readonly volumes = new FakeVolumes();
   readonly pairingFile: string;
+  /** How the user answers the next approval question, and the questions asked so far. */
+  answer = false;
+  readonly questions: string[] = [];
 
   private constructor(pairingFile: string) {
     this.pairingFile = pairingFile;
@@ -36,6 +40,11 @@ class TestMac {
     const code = await run(args, {
       volumes: this.volumes,
       pairingFile: this.pairingFile,
+      copier: new MacFileCopier(),
+      confirm: async (question) => {
+        this.questions.push(question);
+        return this.answer;
+      },
       out: (text) => (stdout += text + "\n"),
       err: (text) => (stderr += text + "\n"),
     });
@@ -143,6 +152,75 @@ describe("sync-drive compare", () => {
     assert.match(stdout, /^New: none$/m);
     assert.match(stdout, /^Changed: none$/m);
     assert.match(stdout, /^Deleted: none$/m);
+  });
+});
+
+describe("sync-drive update", () => {
+  it("shows the report, asks for approval, then copies new and changed files", async () => {
+    const { mac, primary, replica } = await pairedMac();
+    const primaryBefore = await snapshotTree(primary);
+    mac.answer = true;
+
+    const { code, stdout, stderr } = await mac.run("update");
+
+    assert.equal(code, 0, stderr);
+    assert.match(stdout, /^New: 2 files, 1\.5 MB$/m);
+    assert.match(stdout, /^Changed: 1 file, 8 B$/m);
+    assert.deepEqual(mac.questions, ["Copy 3 new and changed files (1.5 MB) to the Replica?"]);
+    assert.match(stdout, /^Copied 3 files, 1\.5 MB\.$/m);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    const after = await mac.run("compare");
+    assert.match(after.stdout, /^New: none$/m);
+    assert.match(after.stdout, /^Changed: none$/m);
+    assert.equal(await readFile(join(replica, "readme.txt"), "utf8"), "changed!");
+  });
+
+  it("writes nothing when the user declines", async () => {
+    const { mac, primary, replica } = await pairedMac();
+    const primaryBefore = await snapshotTree(primary);
+    const replicaBefore = await snapshotTree(replica);
+    mac.answer = false;
+
+    const { code, stdout } = await mac.run("update", "--list");
+
+    assert.equal(code, 0);
+    assert.match(stdout, /^ {4}a\.jpg +1\.5 MB$/m);
+    assert.equal(mac.questions.length, 1);
+    assert.match(stdout, /^Nothing was copied\.$/m);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("does not ask when there is nothing to copy", async () => {
+    const mac = await TestMac.create();
+    const primary = await makeTree({ "a.txt": "same" });
+    const replica = await makeTree({ "a.txt": "same", "old.txt": "only on the Replica" });
+    mac.volumes.connect(primary, "PRIMARY-ID");
+    mac.volumes.connect(replica, "REPLICA-ID");
+    await mac.run("pair", primary, replica);
+    const primaryBefore = await snapshotTree(primary);
+    const replicaBefore = await snapshotTree(replica);
+
+    const { code, stdout } = await mac.run("update");
+
+    assert.equal(code, 0);
+    assert.deepEqual(mac.questions, []);
+    assert.match(stdout, /^Nothing to copy\.$/m);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("takes no drive paths, so the roles can never be given the wrong way round", async () => {
+    const { mac, primary, replica } = await pairedMac();
+    const primaryBefore = await snapshotTree(primary);
+    mac.answer = true;
+
+    const { code, stderr } = await mac.run("update", replica, primary);
+
+    assert.equal(code, 2);
+    assert.match(stderr, /sync-drive update \[--list\]/);
+    assert.deepEqual(mac.questions, []);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 });
 

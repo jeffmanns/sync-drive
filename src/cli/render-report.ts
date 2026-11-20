@@ -38,7 +38,7 @@ function renderSection(title: string, section: Section, { list }: RenderOptions)
   return lines.join("\n");
 }
 
-function fileCount(count: number): string {
+export function fileCount(count: number): string {
   return count === 1 ? "1 file" : `${count.toLocaleString("en-US")} files`;
 }
 

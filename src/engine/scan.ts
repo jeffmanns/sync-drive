@@ -1,6 +1,7 @@
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { isAlwaysSkipped } from "./always-skipped.ts";
+import { INCOMING_FOLDER } from "./incoming.ts";
 
 /**
  * What a file system entry is. Shortcuts (symbolic links) are never followed: their own
@@ -19,7 +20,8 @@ export interface ScannedFile {
 }
 
 /**
- * Lists every file under the `role` drive's `root`, skipping macOS system files, keyed by `matchKey` of its path
+ * Lists every file under the `role` drive's `root`, skipping macOS system files (and, on the Replica, sync-drive's
+ * folder of in-progress copies), keyed by `matchKey` of its path
  * relative to `root`. Reads only. Rejects if two paths differ only by letter case.
  */
 export async function scan(
@@ -33,6 +35,8 @@ export async function scan(
       entries.map(async (entry) => {
         const path = prefix + entry.name;
         if (isAlwaysSkipped(path)) return;
+        // sync-drive's own folder of in-progress copies. Only on the Replica: it is never written on the Primary.
+        if (role === "Replica" && path === INCOMING_FOLDER) return;
         const full = join(dir, entry.name);
         if (entry.isDirectory()) {
           await walk(full, path + "/");

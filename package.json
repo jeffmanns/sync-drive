@@ -12,8 +12,9 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json",
-    "test": "npm run typecheck && npm run build && node --test \"test/**/*.test.ts\""
+    "build": "tsc -p tsconfig.build.json && npm run build:native",
+    "test": "npm run typecheck && npm run build && node --test \"test/**/*.test.ts\"",
+    "build:native": "mkdir -p dist/libexec && clang -std=c17 -O2 -Wall -Wextra -Werror -o dist/libexec/copy-with-metadata native/copy-with-metadata.c"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
