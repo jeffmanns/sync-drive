@@ -1,0 +1,9 @@
+# How files are matched and compared
+
+These rules decide which Primary file pairs with which Replica file, and when a Quick compare calls them equal. They were settled with the owner while building the first Quick compare (#2, PR #18). Each one deliberately departs from the obvious choice, so later work (Update, Deep verify, move detection) must keep them rather than "fix" them.
+
+- **Letter case is ignored when pairing files.** `Photo.JPG` on the Primary and `photo.jpg` on the Replica are the same file. Both drives use APFS's default case-insensitive format, so two names that differ only by case can't sit side by side, and treating such a pair as new plus deleted would only cause noise. If a drive ever does hold such a pair (only possible on a case-sensitive drive), compare stops with an error naming both, rather than silently hiding one of them.
+- **Unicode forms are not unified.** A name stored in two different forms (e.g. `é` as one character vs `e` plus a combining accent) counts as two different files. The owner chose to see these as differences rather than have them merged quietly.
+- **Modification dates less than a hundredth of a second apart count as the same.** Comparing to the nanosecond would flag files whose dates shifted by a tiny amount in a copy, and the report would cry wolf after every Update. Missing a real edit would need the same file saved twice within 0.01 s, at the same size, so accuracy is not reduced in practice.
+- **System files are skipped where macOS creates them.** `.DS_Store` is skipped in every folder. `.Spotlight-V100`, `.fseventsd`, `.Trashes`, `.TemporaryItems` and `.DocumentRevisions-V100` are skipped only at the top level of a drive, so a user's own folder deeper down that happens to share one of those names is still compared. These are separate from Exclusions, which the user chooses.
+- **Only files are reported.** Folders, including empty ones, never appear in the report.

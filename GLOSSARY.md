@@ -29,7 +29,7 @@ _Avoid_: sync, backup, mirror run
 ### Comparing
 
 **Quick compare**:
-A comparison that judges files equal by size and modification date alone, without reading their contents.
+A comparison that judges files equal by size and modification date alone (dates less than a hundredth of a second apart count as the same), without reading their contents.
 _Avoid_: fast scan, shallow compare
 
 **Deep verify**:
