@@ -262,6 +262,7 @@ describe("Update: deletions and the Holding area", () => {
   it("writes a READ ME with the date of the Update and how to restore a file", async () => {
     const primary = await makeTree();
     const replica = await makeTree({ "gone.txt": "gone" });
+    const primaryBefore = await snapshotTree(primary);
     const report = await compare(primary, replica);
 
     await update(report, APPROVED_WITH_DELETIONS, {
@@ -275,6 +276,7 @@ describe("Update: deletions and the Holding area", () => {
     assert.match(readme, /Update on 20 November 2026/);
     assert.match(readme, /permanently deleted at the next Update/);
     assert.match(readme, /copy it back to the Primary/);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 
   it("keeps the previous Holding area through comparisons and declined Updates, and empties it on the next approved Update", async () => {
@@ -306,9 +308,42 @@ describe("Update: deletions and the Holding area", () => {
     assert.deepEqual(await readdir(replica), ["a.txt"]);
   });
 
+  it("moves deletions out of the way first, so a folder replaced by a file of the same name is copied", async () => {
+    const primary = await makeTree({ "Trip": "now a file" });
+    const replica = await makeTree({ "Trip/day1.jpg": "a photo" });
+
+    const result = await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
+
+    assert.deepEqual(result.moved, [{ path: "Trip/day1.jpg", size: 7 }]);
+    assert.deepEqual(result.copied, [{ path: "Trip", size: 10 }]);
+    assert.deepEqual(result.failed, []);
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "Trip", "day1.jpg"), "utf8"), "a photo");
+    assert.equal(await readFile(join(replica, "Trip"), "utf8"), "now a file");
+  });
+
+  it("removes folders the moves leave empty, but keeps those still on the Primary or still holding files", async () => {
+    const primary = await makeTree({ "Kept/a.txt": "a" });
+    await mkdir(join(primary, "Empty on Primary"));
+    const replica = await makeTree({
+      "Kept/a.txt": "a",
+      "Kept/Gone/old.txt": "old",
+      "Empty on Primary/old.txt": "old",
+      "Mixed/old.txt": "old",
+      "Mixed/.DS_Store": "finder",
+    });
+
+    await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
+
+    assert.deepEqual((await readdir(replica)).sort(), ["Empty on Primary", "Kept", "Mixed", "sync-drive Holding Area"]);
+    assert.deepEqual(await readdir(join(replica, "Kept")), ["a.txt"]);
+    assert.deepEqual(await readdir(join(replica, "Empty on Primary")), []);
+    assert.deepEqual(await readdir(join(replica, "Mixed")), [".DS_Store"]);
+  });
+
   it("lists a deleted file it could not move, leaving it in place, and moves the others", async () => {
     const primary = await makeTree();
     const replica = await makeTree({ "gone.txt": "gone", "vanished.txt": "x" });
+    const primaryBefore = await snapshotTree(primary);
     const report = await compare(primary, replica);
     await rm(join(replica, "vanished.txt"));
 
@@ -317,20 +352,14 @@ describe("Update: deletions and the Holding area", () => {
     assert.deepEqual(result.moved, [{ path: "gone.txt", size: 4 }]);
     assert.equal(result.notMoved.length, 1);
     assert.equal(result.notMoved[0]!.path, "vanished.txt");
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 
-  it("refuses to compare when the Primary has a folder named like sync-drive's own", async () => {
-    for (const name of ["sync-drive Holding Area", "SYNC-DRIVE holding area", ".sync-drive-incoming"]) {
-      const primary = await makeTree({ [`${name}/mine.txt`]: "the user's own file" });
-      const replica = await makeTree();
-
-      await assert.rejects(compare(primary, replica), new RegExp(`Primary has a folder named "${name}"`));
-    }
-  });
 
   it("refuses, writing nothing, a report path inside sync-drive's own folders", async () => {
     const primary = await makeTree();
     const replica = await makeTree({ "gone.txt": "gone" });
+    const primaryBefore = await snapshotTree(primary);
     const replicaBefore = await snapshotTree(replica);
     const report = await compare(primary, replica);
     report.deleted.files[0]!.path = "sync-drive Holding Area/gone.txt";
@@ -340,6 +369,7 @@ describe("Update: deletions and the Holding area", () => {
       /inside sync-drive's own/,
     );
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 });
 

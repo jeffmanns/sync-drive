@@ -231,4 +231,13 @@ describe("Quick compare", () => {
 
     assert.deepEqual(report.changed.files, [{ path: "apart.jpg", size: 1 }]);
   });
+
+  it("refuses to compare when the Primary has an item named like sync-drive's own", async () => {
+    for (const name of ["sync-drive Holding Area", "SYNC-DRIVE holding area", ".sync-drive-incoming"]) {
+      const primary = await makeTree({ [`${name}/mine.txt`]: "the user's own file" });
+      const replica = await makeTree();
+
+      await assert.rejects(compare(primary, replica), new RegExp(`Primary has an item named "${name}"`));
+    }
+  });
 });

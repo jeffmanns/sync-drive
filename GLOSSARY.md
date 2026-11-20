@@ -20,7 +20,7 @@ _Avoid_: trash, recycle bin, archive
 
 **Incoming folder**:
 The hidden `.sync-drive-incoming` folder at the top level of the Replica, where an Update writes each copy under a temporary name before renaming it into place. Anything left in it is an interrupted copy, never a file the user wants; the next Update empties it. It is not part of the Replica's contents for comparison. Not the Holding area: it never holds files deleted from the Primary.
-_Avoid_: temp folder, staging area, in-progress folder
+_Avoid_: temp folder, staging area
 
 **Pairing**:
 The remembered designation of one specific volume as the Primary and another as the Replica, identified by each volume's **Volume ID** rather than its name.

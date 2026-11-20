@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BigIntStats } from "node:fs";
-import { lstat, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { FileEntry, Report } from "./report.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
@@ -68,9 +68,9 @@ export interface UpdateResult {
 const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Update does not copy yet";
 
 /**
- * Brings the Replica up to date with `report`: empties the previous Holding area, copies the new and
- * changed files from the Primary and, if `approvals.deletions` is also given, moves the deleted
- * files into the Holding area. Writes nothing unless `approvals.update` is given. Never writes to
+ * Brings the Replica up to date with `report`: empties the previous Holding area, moves the deleted
+ * files into the Holding area if `approvals.deletions` is also given, then copies the new and
+ * changed files from the Primary. Writes nothing unless `approvals.update` is given. Never writes to
  * the Primary.
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
@@ -83,6 +83,25 @@ export async function update(report: Report, approvals: Approvals, setup: Update
   const holdingArea = join(setup.replica, HOLDING_AREA);
   // The Update is approved, so the files kept from the previous Update are now deleted for good.
   await rm(holdingArea, { recursive: true, force: true });
+  // Deletions first, so a path that changed between a file and a folder is free before copying.
+  if (deletions.length > 0) {
+    await mkdir(holdingArea);
+    await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
+  }
+  for (const file of deletions) {
+    try {
+      // Moved, never destroyed: the rename stays on the Replica, so it is atomic and keeps all metadata.
+      const destination = join(holdingArea, file.path);
+      await mkdir(dirname(destination), { recursive: true });
+      // rename replaces whatever is at the destination, so make sure nothing is.
+      if (await exists(destination)) throw new Error("the Holding area already holds a file at that path");
+      await rename(join(setup.replica, file.path), destination);
+      result.moved.push(file);
+    } catch (error) {
+      result.notMoved.push({ ...file, reason: (error as Error).message });
+    }
+  }
+  for (const file of result.moved) await removeEmptiedFolders(file.path, setup);
   const incoming = join(setup.replica, INCOMING_FOLDER);
   // Anything already here is a temporary copy left by an interrupted Update.
   await rm(incoming, { recursive: true, force: true });
@@ -108,22 +127,38 @@ export async function update(report: Report, approvals: Approvals, setup: Update
     }
   }
   await rm(incoming, { recursive: true, force: true });
-  if (deletions.length > 0) {
-    await mkdir(holdingArea);
-    await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
-  }
-  for (const file of deletions) {
+  return result;
+}
+
+/**
+ * Removes the Replica folders that held `path` (relative to the drive root) if moving it left them
+ * empty and the Primary has no folder there, deepest first. `rmdir` only ever removes an empty
+ * folder, so no file can be lost.
+ */
+async function removeEmptiedFolders(path: string, setup: UpdateSetup): Promise<void> {
+  for (let folder = dirname(path); folder !== "."; folder = dirname(folder)) {
+    const onPrimary = await lstat(join(setup.primary, folder)).catch(() => undefined);
+    if (onPrimary?.isDirectory()) return;
     try {
-      // Moved, never destroyed: the rename stays on the Replica, so it is atomic and keeps all metadata.
-      const destination = join(holdingArea, file.path);
-      await mkdir(dirname(destination), { recursive: true });
-      await rename(join(setup.replica, file.path), destination);
-      result.moved.push(file);
+      await rmdir(join(setup.replica, folder));
     } catch (error) {
-      result.notMoved.push({ ...file, reason: (error as Error).message });
+      const code = (error as NodeJS.ErrnoException).code;
+      // Already gone with an earlier file: carry on upwards. Otherwise it is not empty (it still
+      // holds other files, or a .DS_Store) or cannot be removed; either way it stays, which is harmless.
+      if (code !== "ENOENT") return;
     }
   }
-  return result;
+}
+
+/** Whether anything, even a broken shortcut, is at `path`. */
+async function exists(path: string): Promise<boolean> {
+  return lstat(path).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    },
+  );
 }
 
 /** Whether two looks at a file see the same version of it: same size, and the same dates to the nanosecond. */

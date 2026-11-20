@@ -23,7 +23,7 @@ export interface ScannedFile {
  * Lists every file under the `role` drive's `root`, skipping macOS system files and, on the Replica,
  * sync-drive's own folders (the Incoming folder and the Holding area), keyed by `matchKey` of its path
  * relative to `root`. Reads only. Rejects if two paths differ only by letter case, or if the Primary
- * holds a folder with the name of one of sync-drive's own folders.
+ * holds a top-level item with the name of one of sync-drive's own folders.
  */
 export async function scan(
   role: "Primary" | "Replica",
@@ -41,8 +41,8 @@ export async function scan(
           if (role === "Replica") return;
           // An Update would copy it into the Replica's own folder, to be emptied by the next Update.
           throw new Error(
-            `The Primary has a folder named "${path}" at its top level. sync-drive keeps that folder for its own use ` +
-              `on the Replica, so it cannot back it up. Rename it on the Primary, then compare again.`,
+            `The Primary has an item named "${path}" at its top level. sync-drive keeps that name for its own folder ` +
+              `on the Replica, so it cannot back the item up. Rename it on the Primary, then compare again.`,
           );
         }
         const full = join(dir, entry.name);

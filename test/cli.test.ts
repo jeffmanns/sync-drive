@@ -245,7 +245,8 @@ describe("sync-drive update", () => {
   });
 
   it("does not ask when nothing differs", async () => {
-    const { mac, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same" });
+    const { mac, primary, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same" });
+    const primaryBefore = await snapshotTree(primary);
     const replicaBefore = await snapshotTree(replica);
 
     const { code, stdout } = await mac.run("update");
@@ -253,11 +254,13 @@ describe("sync-drive update", () => {
     assert.equal(code, 0);
     assert.deepEqual(mac.questions, []);
     assert.match(stdout, /^Nothing to update\.$/m);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 
   it("warns before asking that approving empties the previous Holding area for good", async () => {
-    const { mac, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same", "Docs/first.txt": "12345" });
+    const { mac, primary, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same", "Docs/first.txt": "12345" });
+    const primaryBefore = await snapshotTree(primary);
     mac.answer = true;
     await mac.run("update");
     await writeFile(join(replica, "second.txt"), "x");
@@ -267,6 +270,7 @@ describe("sync-drive update", () => {
 
     assert.match(stdout, /^The Holding area on the Replica holds 1 file, 5 B, from the previous Update\. Approving this Update deletes it permanently\.$/m);
     assert.equal(await readFile(join(replica, "sync-drive Holding Area", "Docs", "first.txt"), "utf8"), "12345");
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 
   it("takes no drive paths, so the roles can never be given the wrong way round", async () => {
