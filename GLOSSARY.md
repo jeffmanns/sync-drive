@@ -19,8 +19,12 @@ A folder on the Replica where files deleted from the Primary are kept until the 
 _Avoid_: trash, recycle bin, archive
 
 **Pairing**:
-The remembered designation of one specific volume as the Primary and another as the Replica, identified by each volume's unique ID rather than its name.
+The remembered designation of one specific volume as the Primary and another as the Replica, identified by each volume's **Volume ID** rather than its name.
 _Avoid_: setup, profile, link
+
+**Volume ID**:
+The unique ID macOS gives each drive (shown as "Volume UUID" in Disk Utility and `diskutil info`). It never changes when a drive is renamed. Not the disk identifier (e.g. `disk4s1`), which can change each time a drive is connected.
+_Avoid_: UUID, disk ID, serial
 
 **Update**:
 The approved act of making the Replica match the Primary: copying new and changed files, and moving files no longer on the Primary into the Holding area.
