@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import { type BigIntStats } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -72,7 +73,8 @@ export async function removeTrees(): Promise<void> {
 
 /**
  * Captures everything about a tree that a write could change: every entry's path, type,
- * size, modification date (to the nanosecond) and a checksum of each file's contents.
+ * size, modification and creation dates (to the nanosecond), permissions, file flags,
+ * extended attributes (including Finder tags) and a checksum of each file's contents.
  */
 export async function snapshotTree(root: string): Promise<string[]> {
   const lines: string[] = [];
@@ -82,16 +84,43 @@ export async function snapshotTree(root: string): Promise<string[]> {
       const stats = await lstat(full, { bigint: true });
       const path = relative(root, full);
       if (entry.isDirectory()) {
-        lines.push(`dir  ${path} mtime=${stats.mtimeNs}`);
+        lines.push(`dir  ${path} ${await metadataOf(full, stats)}`);
         await walk(full);
       } else {
         const hash = entry.isFile()
           ? createHash("sha256").update(await readFile(full)).digest("hex")
           : "-";
-        lines.push(`file ${path} size=${stats.size} mtime=${stats.mtimeNs} sha256=${hash}`);
+        lines.push(`file ${path} size=${stats.size} ${await metadataOf(full, stats)} sha256=${hash}`);
       }
     }
   }
   await walk(root);
   return lines.sort();
+}
+
+/** Everything but the contents that a copy must keep: dates, permissions, flags and extended attributes. */
+export async function metadataOf(path: string, stats?: BigIntStats): Promise<string> {
+  const s = stats ?? (await lstat(path, { bigint: true }));
+  const [flags, xattrs] = await Promise.all([fileFlags(path), extendedAttributes(path)]);
+  const attributes = Object.entries(xattrs).map(([name, hex]) => `${name}=${hex}`).join(",");
+  return `mtime=${s.mtimeNs} birthtime=${s.birthtimeNs} mode=${s.mode.toString(8)} flags=${flags} xattrs=[${attributes}]`;
+}
+
+/** The file's BSD flags (e.g. hidden, locked) in hex, via `stat`. Shortcuts are not followed. */
+async function fileFlags(path: string): Promise<string> {
+  const { stdout } = await promisify(execFile)("stat", ["-f", "%Xf", path]);
+  return stdout.trim();
+}
+
+/** Every extended attribute of `path` (not following shortcuts), name → value in hex, via `xattr`. */
+export async function extendedAttributes(path: string): Promise<Record<string, string>> {
+  const run = promisify(execFile);
+  const { stdout } = await run("xattr", ["-s", path]);
+  const names = stdout.split("\n").filter((name) => name !== "").sort();
+  const result: Record<string, string> = {};
+  for (const name of names) {
+    const { stdout: hex } = await run("xattr", ["-s", "-px", name, path]);
+    result[name] = hex.replace(/\s+/g, "");
+  }
+  return result;
 }

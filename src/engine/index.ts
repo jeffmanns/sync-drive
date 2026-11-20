@@ -8,4 +8,12 @@ export {
 } from "./pairing.ts";
 export { readPairing, writePairing } from "./pairing-file.ts";
 export type { FileEntry, FolderGroup, Report, Section } from "./report.ts";
+export {
+  update,
+  type Approvals,
+  type FailedFile,
+  type FileCopier,
+  type UpdateResult,
+  type UpdateTarget,
+} from "./update.ts";
 export type { Volume, VolumeIdentity } from "./volumes.ts";
