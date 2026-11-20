@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -166,6 +167,19 @@ describe("sync-drive pair", () => {
     const { code, stdout } = await mac.run("compare");
     assert.equal(code, 0);
     assert.match(stdout, new RegExp(`^Replica: .*${newReplica}`, "m"));
+  });
+
+  it("treats a damaged Pairing as one that only --replace may overwrite", async () => {
+    const { mac, primary, replica } = await pairedMac();
+    await writeFile(mac.pairingFile, "{ not json");
+
+    const refused = await mac.run("pair", primary, replica);
+    assert.equal(refused.code, 1);
+    assert.match(refused.stderr, /damaged.*--replace/);
+    assert.equal(await readFile(mac.pairingFile, "utf8"), "{ not json");
+
+    assert.equal((await mac.run("pair", primary, replica, "--replace")).code, 0);
+    assert.equal((await mac.run("compare")).code, 0);
   });
 
   it("refuses to pair a drive with itself, and stores nothing", async () => {

@@ -70,8 +70,9 @@ export async function run(argv: string[], deps: CliDeps): Promise<number> {
 }
 
 async function runPair(primary: string, replica: string, replace: boolean, deps: CliDeps): Promise<number> {
-  const existing = await readPairing(deps.pairingFile).catch(() => undefined);
-  if (existing !== undefined && !replace) {
+  // Without --replace, any existing Pairing blocks pairing again; a damaged one rejects here too.
+  const existing = replace ? undefined : await readPairing(deps.pairingFile);
+  if (existing !== undefined) {
     throw new Error(
       `The drives are already paired (Primary "${existing.primary.name}", Replica "${existing.replica.name}"). ` +
         `To pair again, e.g. after replacing a drive, add --replace.`,
