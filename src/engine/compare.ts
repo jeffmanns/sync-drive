@@ -37,11 +37,18 @@ export async function compare(
 }
 
 /**
- * Quick compare: two files are equal when they are the same kind of entry and their size and
- * modification date match. Contents are not read.
+ * How far apart two modification dates may be and still count as the same: under a hundredth of
+ * a second. Absorbs tiny date differences a copy can introduce, without missing real edits.
+ */
+const SAME_DATE_TOLERANCE_NS = 10_000_000n;
+
+/**
+ * Quick compare: two files are equal when they are the same kind of entry, their sizes match, and
+ * their modification dates are less than `SAME_DATE_TOLERANCE_NS` apart. Contents are not read.
  */
 function quickEqual(a: ScannedFile, b: ScannedFile): boolean {
-  return a.kind === b.kind && a.size === b.size && a.mtimeNs === b.mtimeNs;
+  const dateGap = a.mtimeNs > b.mtimeNs ? a.mtimeNs - b.mtimeNs : b.mtimeNs - a.mtimeNs;
+  return a.kind === b.kind && a.size === b.size && dateGap < SAME_DATE_TOLERANCE_NS;
 }
 
 async function assertFolder(role: "Primary" | "Replica", path: string): Promise<void> {

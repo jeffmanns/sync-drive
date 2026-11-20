@@ -215,4 +215,20 @@ describe("Quick compare", () => {
     assert.deepEqual(report.new.files, [{ path: composed, size: 1 }]);
     assert.deepEqual(report.deleted.files, [{ path: decomposed, size: 1 }]);
   });
+
+  it("counts modification dates less than a hundredth of a second apart as the same", async () => {
+    const base = DEFAULT_MTIME.getTime();
+    const primary = await makeTree({
+      "close.jpg": { content: "x", mtime: new Date(base) },
+      "apart.jpg": { content: "x", mtime: new Date(base) },
+    });
+    const replica = await makeTree({
+      "close.jpg": { content: "x", mtime: new Date(base + 9) },
+      "apart.jpg": { content: "x", mtime: new Date(base + 11) },
+    });
+
+    const report = await compare(primary, replica);
+
+    assert.deepEqual(report.changed.files, [{ path: "apart.jpg", size: 1 }]);
+  });
 });
