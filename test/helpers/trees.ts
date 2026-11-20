@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { promisify } from "node:util";
 
 /** Default modification date for files in test trees, so trees are deterministic. */
 export const DEFAULT_MTIME = new Date("2026-01-01T12:00:00Z");
@@ -12,11 +14,34 @@ export type FileSpec = string | { content: string; mtime?: Date };
 export type TreeSpec = Record<string, FileSpec>;
 
 const created: string[] = [];
+const mountedImages: string[] = [];
 
 /** Builds a real directory tree in a fresh temporary directory and returns its path. */
 export async function makeTree(spec: TreeSpec = {}): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "sync-drive-test-"));
   created.push(root);
+  await writeTree(root, spec);
+  return root;
+}
+
+/**
+ * Builds a tree on a freshly mounted case-sensitive APFS disk image (via `hdiutil`), for names
+ * that a normal case-insensitive folder cannot hold side by side. Returns the volume's path.
+ */
+export async function makeCaseSensitiveTree(spec: TreeSpec): Promise<string> {
+  const dir = await makeTree();
+  const image = join(dir, "drive.dmg");
+  const mountPoint = join(dir, "volume");
+  const run = promisify(execFile);
+  await run("hdiutil", ["create", "-quiet", "-size", "8m", "-fs", "Case-sensitive APFS", "-volname", "sync-drive-test", image]);
+  await mkdir(mountPoint);
+  await run("hdiutil", ["attach", "-quiet", "-nobrowse", "-mountpoint", mountPoint, image]);
+  mountedImages.push(mountPoint);
+  await writeTree(mountPoint, spec);
+  return mountPoint;
+}
+
+async function writeTree(root: string, spec: TreeSpec): Promise<void> {
   for (const [path, file] of Object.entries(spec)) {
     const { content, mtime = DEFAULT_MTIME } = typeof file === "string" ? { content: file } : file;
     const full = join(root, path);
@@ -24,11 +49,13 @@ export async function makeTree(spec: TreeSpec = {}): Promise<string> {
     await writeFile(full, content);
     await utimes(full, mtime, mtime);
   }
-  return root;
 }
 
-/** Removes every tree made by `makeTree`. Call from an `after` hook. */
+/** Removes every tree made by `makeTree` and `makeCaseSensitiveTree`. Call from an `after` hook. */
 export async function removeTrees(): Promise<void> {
+  for (const mountPoint of mountedImages.splice(0)) {
+    await promisify(execFile)("hdiutil", ["detach", "-quiet", "-force", mountPoint]);
+  }
   await Promise.all(created.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 }
 

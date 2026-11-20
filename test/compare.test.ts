@@ -3,7 +3,7 @@ import { lutimes, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { compare } from "../src/engine/index.ts";
-import { DEFAULT_MTIME, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
+import { DEFAULT_MTIME, makeCaseSensitiveTree, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
 after(removeTrees);
 
@@ -180,5 +180,39 @@ describe("Quick compare", () => {
     const report = await compare(primary, replica);
 
     assert.deepEqual(report.changed.files, [{ path: "link", size: 5 }]);
+  });
+
+  it("matches files whose paths differ only by letter case", async () => {
+    const primary = await makeTree({ "Photos/Iceland/IMG_001.JPG": "same" });
+    const replica = await makeTree({ "photos/iceland/img_001.jpg": "same" });
+
+    const report = await compare(primary, replica);
+
+    assert.deepEqual(report.new.files, []);
+    assert.deepEqual(report.deleted.files, []);
+  });
+
+  it("fails rather than hiding a file when one drive holds two paths that differ only by case", async () => {
+    const primary = await makeCaseSensitiveTree({ "Photos/IMG_1.jpg": "1", "photos/img_1.JPG": "2" });
+    const replica = await makeTree();
+
+    await assert.rejects(compare(primary, replica), (error: Error) => {
+      assert.match(error.message, /Primary/);
+      assert.match(error.message, /Photos\/IMG_1\.jpg/);
+      assert.match(error.message, /photos\/img_1\.JPG/);
+      return true;
+    });
+  });
+
+  it("treats a name stored in two different Unicode forms as two different files", async () => {
+    const composed = "Caf\u00e9.txt"; // é as one character (NFC)
+    const decomposed = "Cafe\u0301.txt"; // e followed by a combining accent (NFD)
+    const primary = await makeTree({ [composed]: "x" });
+    const replica = await makeTree({ [decomposed]: "x" });
+
+    const report = await compare(primary, replica);
+
+    assert.deepEqual(report.new.files, [{ path: composed, size: 1 }]);
+    assert.deepEqual(report.deleted.files, [{ path: decomposed, size: 1 }]);
   });
 });

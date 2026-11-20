@@ -18,17 +18,20 @@ export async function compare(
   _options: CompareOptions = {},
 ): Promise<Report> {
   await Promise.all([assertFolder("Primary", primary), assertFolder("Replica", replica)]);
-  const [primaryFiles, replicaFiles] = await Promise.all([scan(primary), scan(replica)]);
+  const [primaryFiles, replicaFiles] = await Promise.all([
+    scan("Primary", primary),
+    scan("Replica", replica),
+  ]);
   const newFiles: FileEntry[] = [];
   const changed: FileEntry[] = [];
   const deleted: FileEntry[] = [];
-  for (const [path, file] of primaryFiles) {
-    const counterpart = replicaFiles.get(path);
-    if (counterpart === undefined) newFiles.push({ path, size: file.size });
-    else if (!quickEqual(file, counterpart)) changed.push({ path, size: file.size });
+  for (const [key, file] of primaryFiles) {
+    const counterpart = replicaFiles.get(key);
+    if (counterpart === undefined) newFiles.push({ path: file.path, size: file.size });
+    else if (!quickEqual(file, counterpart)) changed.push({ path: file.path, size: file.size });
   }
-  for (const [path, file] of replicaFiles) {
-    if (!primaryFiles.has(path)) deleted.push({ path, size: file.size });
+  for (const [key, file] of replicaFiles) {
+    if (!primaryFiles.has(key)) deleted.push({ path: file.path, size: file.size });
   }
   return { new: makeSection(newFiles), changed: makeSection(changed), deleted: makeSection(deleted) };
 }
