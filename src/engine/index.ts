@@ -1,4 +1,5 @@
 export { compare, type CompareOptions } from "./compare.ts";
+export { readHoldingArea, type HoldingAreaContents } from "./holding-area.ts";
 export {
   findPairedDrives,
   pair,

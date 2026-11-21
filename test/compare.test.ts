@@ -231,4 +231,26 @@ describe("Quick compare", () => {
 
     assert.deepEqual(report.changed.files, [{ path: "apart.jpg", size: 1 }]);
   });
+
+  it("refuses to compare when the Primary has an item named like sync-drive's own", async () => {
+    for (const name of ["sync-drive Holding Area", "SYNC-DRIVE holding area", ".sync-drive-incoming"]) {
+      const primary = await makeTree({ [`${name}/mine.txt`]: "the user's own file" });
+      const replica = await makeTree();
+
+      const primaryBefore = await snapshotTree(primary);
+
+      await assert.rejects(compare(primary, replica), new RegExp(`Primary has an item named "${name}"`));
+      assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    }
+  });
+
+  it("suggests renaming the folder when the whole Holding area was copied back to the Primary", async () => {
+    const primary = await makeTree({ "sync-drive Holding Area/Taxes/2019.pdf": "a tax return" });
+    const replica = await makeTree();
+
+    await assert.rejects(
+      compare(primary, replica),
+      /If you restored files by copying the whole Holding area, rename that folder on the Primary \(e\.g\. to "Restored files"\), then compare again\./,
+    );
+  });
 });

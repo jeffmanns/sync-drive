@@ -1,7 +1,8 @@
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { isAlwaysSkipped } from "./always-skipped.ts";
-import { INCOMING_FOLDER } from "./incoming.ts";
+import { HOLDING_AREA } from "./holding-area.ts";
+import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
 /**
  * What a file system entry is. Shortcuts (symbolic links) are never followed: their own
@@ -20,9 +21,10 @@ export interface ScannedFile {
 }
 
 /**
- * Lists every file under the `role` drive's `root`, skipping macOS system files (and, on the Replica, sync-drive's
- * folder of in-progress copies), keyed by `matchKey` of its path
- * relative to `root`. Reads only. Rejects if two paths differ only by letter case.
+ * Lists every file under the `role` drive's `root`, skipping macOS system files and, on the Replica,
+ * sync-drive's own folders (the Incoming folder and the Holding area), keyed by `matchKey` of its path
+ * relative to `root`. Reads only. Rejects if two paths differ only by letter case, or if the Primary
+ * holds a top-level item with the name of one of sync-drive's own folders.
  */
 export async function scan(
   role: "Primary" | "Replica",
@@ -35,8 +37,20 @@ export async function scan(
       entries.map(async (entry) => {
         const path = prefix + entry.name;
         if (isAlwaysSkipped(path)) return;
-        // sync-drive's own folder of in-progress copies. Only on the Replica: it is never written on the Primary.
-        if (role === "Replica" && path === INCOMING_FOLDER) return;
+        // sync-drive's own folders: the Incoming folder and the Holding area.
+        if (isSyncDriveFolder(path)) {
+          if (role === "Replica") return;
+          // An Update would copy it into sync-drive's own folder on the Replica, where a later Update would
+          // delete it, so a backup that looked made would be lost (ADR 0007).
+          const howToFix =
+            path.toLowerCase() === HOLDING_AREA.toLowerCase()
+              ? `If you restored files by copying the whole Holding area, rename that folder on the Primary (e.g. to "Restored files"), then compare again.`
+              : `Rename it on the Primary, then compare again.`;
+          throw new Error(
+            `The Primary has an item named "${path}" at its top level. sync-drive keeps that name for its own folder ` +
+              `on the Replica, so it cannot back the item up. ${howToFix}`,
+          );
+        }
         const full = join(dir, entry.name);
         if (entry.isDirectory()) {
           await walk(full, path + "/");

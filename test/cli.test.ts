@@ -8,7 +8,7 @@ import { after, describe, it } from "node:test";
 import { run } from "../src/cli/run.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
-import { makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
+import { makeTree, removeTrees, snapshotTree, type TreeSpec } from "./helpers/trees.ts";
 
 after(removeTrees);
 
@@ -22,9 +22,11 @@ interface CliRun {
 class TestMac {
   readonly volumes = new FakeVolumes();
   readonly pairingFile: string;
-  /** How the user answers the next approval question, and the questions asked so far. */
-  answer = false;
+  /** How the user answers each approval question (by default, every one the same), and the questions asked so far. */
+  answer: boolean | ((question: string) => boolean) = false;
   readonly questions: string[] = [];
+  /** What had been printed when each question was asked. */
+  readonly printedBeforeQuestions: string[] = [];
 
   private constructor(pairingFile: string) {
     this.pairingFile = pairingFile;
@@ -43,7 +45,8 @@ class TestMac {
       copier: new MacFileCopier(),
       confirm: async (question) => {
         this.questions.push(question);
-        return this.answer;
+        this.printedBeforeQuestions.push(stdout);
+        return typeof this.answer === "function" ? this.answer(question) : this.answer;
       },
       out: (text) => (stdout += text + "\n"),
       err: (text) => (stderr += text + "\n"),
@@ -155,8 +158,43 @@ describe("sync-drive compare", () => {
   });
 });
 
+const COPY_QUESTION = "Copy 3 new and changed files (1.5 MB) to the Replica?";
+const MOVE_QUESTION = "Move 1 deleted file (3 B) into the Holding area on the Replica?";
+
+/** Connects and pairs two drives with the given trees. */
+async function pairedMacWith(primarySpec: TreeSpec, replicaSpec: TreeSpec) {
+  const mac = await TestMac.create();
+  const primary = await makeTree(primarySpec);
+  const replica = await makeTree(replicaSpec);
+  mac.volumes.connect(primary, "PRIMARY-ID");
+  mac.volumes.connect(replica, "REPLICA-ID");
+  assert.equal((await mac.run("pair", primary, replica)).code, 0);
+  return { mac, primary, replica };
+}
+
 describe("sync-drive update", () => {
   it("shows the report, asks for approval, then copies new and changed files", async () => {
+    const { mac, primary, replica } = await pairedMac();
+    const primaryBefore = await snapshotTree(primary);
+    mac.answer = (question) => question === COPY_QUESTION;
+
+    const { code, stdout, stderr } = await mac.run("update");
+
+    assert.equal(code, 0, stderr);
+    assert.match(stdout, /^New: 2 files, 1\.5 MB$/m);
+    assert.match(stdout, /^Changed: 1 file, 8 B$/m);
+    assert.deepEqual(mac.questions, [COPY_QUESTION, MOVE_QUESTION]);
+    assert.match(stdout, /^Copied 3 files, 1\.5 MB\.$/m);
+    assert.match(stdout, /^Deleted files were left on the Replica\.$/m);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    const after = await mac.run("compare");
+    assert.match(after.stdout, /^New: none$/m);
+    assert.match(after.stdout, /^Changed: none$/m);
+    assert.match(after.stdout, /^Deleted: 1 file, 3 B$/m);
+    assert.equal(await readFile(join(replica, "readme.txt"), "utf8"), "changed!");
+  });
+
+  it("moves deleted files into the Holding area only after their own confirmation", async () => {
     const { mac, primary, replica } = await pairedMac();
     const primaryBefore = await snapshotTree(primary);
     mac.answer = true;
@@ -164,18 +202,15 @@ describe("sync-drive update", () => {
     const { code, stdout, stderr } = await mac.run("update");
 
     assert.equal(code, 0, stderr);
-    assert.match(stdout, /^New: 2 files, 1\.5 MB$/m);
-    assert.match(stdout, /^Changed: 1 file, 8 B$/m);
-    assert.deepEqual(mac.questions, ["Copy 3 new and changed files (1.5 MB) to the Replica?"]);
-    assert.match(stdout, /^Copied 3 files, 1\.5 MB\.$/m);
+    assert.deepEqual(mac.questions, [COPY_QUESTION, MOVE_QUESTION]);
+    assert.match(stdout, /^Moved 1 file, 3 B, into the Holding area\.$/m);
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "Docs", "old.pdf"), "utf8"), "abc");
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
     const after = await mac.run("compare");
-    assert.match(after.stdout, /^New: none$/m);
-    assert.match(after.stdout, /^Changed: none$/m);
-    assert.equal(await readFile(join(replica, "readme.txt"), "utf8"), "changed!");
+    assert.match(after.stdout, /^Deleted: none$/m);
   });
 
-  it("writes nothing when the user declines", async () => {
+  it("writes nothing, and asks nothing more, when the user declines the main approval", async () => {
     const { mac, primary, replica } = await pairedMac();
     const primaryBefore = await snapshotTree(primary);
     const replicaBefore = await snapshotTree(replica);
@@ -185,19 +220,35 @@ describe("sync-drive update", () => {
 
     assert.equal(code, 0);
     assert.match(stdout, /^ {4}a\.jpg +1\.5 MB$/m);
-    assert.equal(mac.questions.length, 1);
-    assert.match(stdout, /^Nothing was copied\.$/m);
+    assert.deepEqual(mac.questions, [COPY_QUESTION]);
+    assert.match(stdout, /^Nothing was written to the Replica\.$/m);
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 
-  it("does not ask when there is nothing to copy", async () => {
-    const mac = await TestMac.create();
-    const primary = await makeTree({ "a.txt": "same" });
-    const replica = await makeTree({ "a.txt": "same", "old.txt": "only on the Replica" });
-    mac.volumes.connect(primary, "PRIMARY-ID");
-    mac.volumes.connect(replica, "REPLICA-ID");
-    await mac.run("pair", primary, replica);
+  it("asks only about deletions when there is nothing to copy", async () => {
+    const { mac, primary, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same", "old.txt": "x" });
+    const primaryBefore = await snapshotTree(primary);
+    const replicaBefore = await snapshotTree(replica);
+
+    const declined = await mac.run("update");
+
+    assert.equal(declined.code, 0);
+    assert.deepEqual(mac.questions, ["Move 1 deleted file (1 B) into the Holding area on the Replica?"]);
+    assert.match(declined.stdout, /^Nothing was written to the Replica\.$/m);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+
+    mac.answer = true;
+    const moved = await mac.run("update");
+
+    assert.equal(moved.code, 0, moved.stderr);
+    assert.match(moved.stdout, /^Moved 1 file, 1 B, into the Holding area\.$/m);
+    assert.doesNotMatch(moved.stdout, /Copied/);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("does not ask when nothing differs", async () => {
+    const { mac, primary, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same" });
     const primaryBefore = await snapshotTree(primary);
     const replicaBefore = await snapshotTree(replica);
 
@@ -205,9 +256,43 @@ describe("sync-drive update", () => {
 
     assert.equal(code, 0);
     assert.deepEqual(mac.questions, []);
-    assert.match(stdout, /^Nothing to copy\.$/m);
+    assert.match(stdout, /^Nothing to update\.$/m);
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("warns, just before the deletions question, that confirming empties the previous Holding area for good", async () => {
+    const { mac, primary, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same", "Docs/first.txt": "12345" });
+    mac.answer = true;
+    await mac.run("update");
+    await writeFile(join(primary, "new.txt"), "new");
+    await writeFile(join(replica, "second.txt"), "x");
+    const primaryBefore = await snapshotTree(primary);
+    mac.questions.length = 0;
+    mac.printedBeforeQuestions.length = 0;
+    mac.answer = (question) => question.startsWith("Copy");
+
+    const { code, stderr } = await mac.run("update");
+
+    assert.equal(code, 0, stderr);
+    const warning = "The Holding area on the Replica holds 1 file, 5 B, from the previous Update. Confirming these deletions deletes it permanently.\n";
+    assert.equal(mac.questions.length, 2);
+    assert.ok(!mac.printedBeforeQuestions[0]!.includes(warning), "not shown before the main approval");
+    assert.ok(mac.printedBeforeQuestions[1]!.endsWith(warning), "shown just before the deletions question");
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "Docs", "first.txt"), "utf8"), "12345");
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("does not warn about the Holding area when there are no deletions to confirm", async () => {
+    const { mac, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same", "first.txt": "12345" });
+    mac.answer = true;
+    await mac.run("update");
+    await writeFile(join(replica, "a.txt"), "changed on the Replica");
+
+    const { stdout } = await mac.run("update");
+
+    assert.doesNotMatch(stdout, /Holding area on the Replica holds/);
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "first.txt"), "utf8"), "12345");
   });
 
   it("takes no drive paths, so the roles can never be given the wrong way round", async () => {
