@@ -13,10 +13,14 @@ export interface FolderGroup {
   files: FileEntry[];
 }
 
-/** One kind of difference, e.g. new files. */
-export interface Section {
+/** How many files, and their total size in bytes. */
+export interface Totals {
   count: number;
   totalSize: number;
+}
+
+/** One kind of difference, e.g. new files. */
+export interface Section extends Totals {
   /** Every file in the section, in path order. */
   files: FileEntry[];
   /** The same files grouped by the folder they sit directly in, in folder order. */
@@ -31,6 +35,10 @@ export interface Report {
   changed: Section;
   /** Files on the Replica that are no longer on the Primary. Sizes are the Replica's. */
   deleted: Section;
+  /** The Replica's contents for comparison, not counting sync-drive's own folders. */
+  replica: Totals;
+  /** Whether the Safety stop applies to this report's deleted files (ADR 0008). */
+  safetyStop: boolean;
 }
 
 /** Builds a section from its files, in any order. */

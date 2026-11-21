@@ -11,7 +11,23 @@ export function renderReport(report: Report, options: RenderOptions): string {
     renderSection("New", report.new, options),
     renderSection("Changed", report.changed, options),
     renderSection("Deleted", report.deleted, options),
+    renderSafetyStop(report),
   ].join("\n\n");
+}
+
+/** Whether the Safety stop applies, with the deleted files' share of the Replica by count and by size. */
+function renderSafetyStop({ deleted, replica, safetyStop }: Report): string {
+  const verdict = `Safety stop: ${safetyStop ? "applies" : "does not apply"}.`;
+  if (deleted.count === 0) return `${verdict} Nothing would go into the Holding area.`;
+  return (
+    `${verdict} The deleted files are ${deleted.count.toLocaleString("en-US")} of the Replica's ` +
+    `${fileCount(replica.count)} (${percent(deleted.count, replica.count)}) and ` +
+    `${formatSize(deleted.totalSize)} of its ${formatSize(replica.totalSize)} (${percent(deleted.totalSize, replica.totalSize)}).`
+  );
+}
+
+function percent(part: number, whole: number): string {
+  return whole === 0 ? "0%" : `${((part / whole) * 100).toFixed(1)}%`;
 }
 
 function renderSection(title: string, section: Section, { list }: RenderOptions): string {

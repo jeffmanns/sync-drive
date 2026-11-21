@@ -8,7 +8,14 @@ export {
   type Pairing,
 } from "./pairing.ts";
 export { readPairing, writePairing } from "./pairing-file.ts";
-export type { FileEntry, FolderGroup, Report, Section } from "./report.ts";
+export type { FileEntry, FolderGroup, Report, Section, Totals } from "./report.ts";
+export {
+  checkFreeSpace,
+  safetyStopApplies,
+  SAFETY_STOP_MIN_FILES,
+  SAFETY_STOP_PERCENT,
+  type FreeSpace,
+} from "./safety-stops.ts";
 export {
   update,
   type Approvals,
