@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { makeSection, type FileEntry, type Report } from "./report.ts";
+import { safetyStopApplies } from "./safety-stops.ts";
 import { scan, type ScannedFile } from "./scan.ts";
 
 /**
@@ -30,10 +31,19 @@ export async function compare(
     if (counterpart === undefined) newFiles.push({ path: file.path, size: file.size });
     else if (!quickEqual(file, counterpart)) changed.push({ path: file.path, size: file.size });
   }
+  const replicaTotals = { count: replicaFiles.size, totalSize: 0 };
   for (const [key, file] of replicaFiles) {
+    replicaTotals.totalSize += file.size;
     if (!primaryFiles.has(key)) deleted.push({ path: file.path, size: file.size });
   }
-  return { new: makeSection(newFiles), changed: makeSection(changed), deleted: makeSection(deleted) };
+  const deletedSection = makeSection(deleted);
+  return {
+    new: makeSection(newFiles),
+    changed: makeSection(changed),
+    deleted: deletedSection,
+    replica: replicaTotals,
+    safetyStop: safetyStopApplies(deletedSection, replicaTotals),
+  };
 }
 
 /**

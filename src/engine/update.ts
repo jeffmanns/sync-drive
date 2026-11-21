@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import type { FileEntry, Report } from "./report.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
+import { checkFreeSpace } from "./safety-stops.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
 /** What the user has approved for an Update. Nothing is written without `update`. */
@@ -16,6 +17,11 @@ export interface Approvals {
    * report's deleted files into it. Has no effect without the main approval.
    */
   deletions: boolean;
+  /**
+   * The explicit override of the Safety stop, for this Update only. Without it, an Update whose
+   * report has the Safety stop applying writes nothing (ADR 0008).
+   */
+  overrideSafetyStop?: boolean;
 }
 
 /**
@@ -68,7 +74,8 @@ const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Upda
  * Brings the Replica up to date with `report`. If `approvals.deletions` is
  * also given and the report has deleted files, empties the previous Holding area and moves them into
  * it. Then copies the new and changed files from the Primary. Writes nothing unless `approvals.update` is given. Never writes to
- * the Primary.
+ * the Primary. Rejects, having written nothing, when the Safety stop applies without
+ * `approvals.overrideSafetyStop`, or when the Replica lacks the free space for the copies (ADR 0008).
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
   const result: UpdateResult = { copied: [], failed: [], moved: [], notMoved: [] };
@@ -77,6 +84,15 @@ export async function update(report: Report, approvals: Approvals, setup: Update
   const files = [...report.new.files, ...report.changed.files];
   const deletions = approvals.deletions ? report.deleted.files : [];
   for (const file of [...files, ...deletions]) assertInsideDrive(file.path);
+  if (report.safetyStop && !approvals.overrideSafetyStop) {
+    throw new Error("The Safety stop applies and was not overridden; nothing was written");
+  }
+  const space = await checkFreeSpace(report, setup.replica);
+  if (!space.enough) {
+    throw new Error(
+      `The Replica has ${space.free} bytes free but the copies need ${space.needed}; nothing was written`,
+    );
+  }
   const holdingArea = join(setup.replica, HOLDING_AREA);
   // Deletions first, so a path that changed between a file and a folder is free before copying.
   if (deletions.length > 0) {
