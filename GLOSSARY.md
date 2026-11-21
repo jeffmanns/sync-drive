@@ -34,6 +34,10 @@ _Avoid_: UUID, disk ID, serial
 The approved act of making the Replica match the Primary: copying new and changed files, and moving files no longer on the Primary into the Holding area.
 _Avoid_: sync, backup, mirror run
 
+**Safety stop**:
+The check that refuses a whole Update, before anything is written, when the deleted files are more than 10% of the Replica (by file count or by size) and more than 100 files (ADR 0008). Only `--allow-mass-deletion`, given for that run, overrides it. Every Report says whether it applies. Not the free-space check, which refuses an Update when the Replica lacks room for the copies.
+_Avoid_: mass-deletion guard, threshold, limit
+
 ### Comparing
 
 **Quick compare**:

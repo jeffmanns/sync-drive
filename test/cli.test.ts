@@ -8,7 +8,7 @@ import { after, describe, it } from "node:test";
 import { run } from "../src/cli/run.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
-import { makeTree, removeTrees, snapshotTree, type TreeSpec } from "./helpers/trees.ts";
+import { makeDiskImageTree, makeTree, removeTrees, snapshotTree, type TreeSpec } from "./helpers/trees.ts";
 
 after(removeTrees);
 
@@ -94,6 +94,10 @@ describe("sync-drive compare", () => {
     assert.match(stdout, /^ {2}\(top level\) +1 file +8 B$/m);
     assert.match(stdout, /^Deleted: 1 file, 3 B$/m);
     assert.match(stdout, /^ {2}Docs\/ +1 file +3 B$/m);
+    assert.match(
+      stdout,
+      /^Safety stop: does not apply\. The deleted files are 1 of the Replica's 2 files \(50\.0%\) and 3 B of its 6 B \(50\.0%\)\.$/m,
+    );
     assert.doesNotMatch(stdout, /a\.jpg/);
   });
 
@@ -306,6 +310,107 @@ describe("sync-drive update", () => {
     assert.match(stderr, /sync-drive update \[--list\]/);
     assert.deepEqual(mac.questions, []);
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+});
+
+/** `count` one-byte files named `<prefix>0.txt`, `<prefix>1.txt`, … */
+function files(prefix: string, count: number): TreeSpec {
+  return Object.fromEntries(Array.from({ length: count }, (_, i) => [`${prefix}${i}.txt`, "x"]));
+}
+
+describe("sync-drive update: safety stops", () => {
+  /** Paired drives where the Primary has lost 101 of the Replica's 200 files, and gained a new one. */
+  function pairedPastTheSafetyStop() {
+    return pairedMacWith({ ...files("kept/", 99), "new.txt": "new" }, { ...files("kept/", 99), ...files("gone/", 101) });
+  }
+
+  it("says in the report that the Safety stop applies", async () => {
+    const { mac } = await pairedPastTheSafetyStop();
+
+    const { stdout } = await mac.run("compare");
+
+    assert.match(
+      stdout,
+      /^Safety stop: applies\. The deleted files are 101 of the Replica's 200 files \(50\.5%\) and 101 B of its 200 B \(50\.5%\)\.$/m,
+    );
+  });
+
+  it("refuses without asking anything, explains the stop and how to override it, and writes nothing", async () => {
+    const { mac, primary, replica } = await pairedPastTheSafetyStop();
+    const primaryBefore = await snapshotTree(primary);
+    const replicaBefore = await snapshotTree(replica);
+    mac.answer = true;
+
+    const { code, stdout, stderr } = await mac.run("update");
+
+    assert.equal(code, 1);
+    assert.match(stdout, /^Safety stop: applies\./m);
+    assert.deepEqual(mac.questions, []);
+    assert.match(stderr, /Safety stop applies: 101 files \(101 B\) would go into the Holding area, more than 10% of the Replica/);
+    assert.match(stderr, /something is wrong with the Primary/);
+    assert.match(stderr, /sync-drive update --allow-mass-deletion/);
+    assert.match(stderr, /^Nothing was written to the Replica\.$/m);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("with --allow-mass-deletion, still asks both questions, then updates", async () => {
+    const { mac, primary, replica } = await pairedPastTheSafetyStop();
+    const primaryBefore = await snapshotTree(primary);
+    mac.answer = true;
+
+    const { code, stderr } = await mac.run("update", "--allow-mass-deletion");
+
+    assert.equal(code, 0, stderr);
+    assert.deepEqual(mac.questions, [
+      "Copy 1 new and changed file (3 B) to the Replica?",
+      "Move 101 deleted files (101 B) into the Holding area on the Replica?",
+    ]);
+    const after = await mac.run("compare");
+    assert.match(after.stdout, /^Deleted: none$/m);
+    assert.match(after.stdout, /^Safety stop: does not apply\. Nothing would go into the Holding area\.$/m);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    assert.equal((await snapshotTree(replica)).some((line) => line.includes("sync-drive Holding Area/gone/0.txt")), true);
+  });
+
+  it("forgets --allow-mass-deletion after that run", async () => {
+    const { mac } = await pairedPastTheSafetyStop();
+    mac.answer = false;
+    await mac.run("update", "--allow-mass-deletion");
+    mac.questions.length = 0;
+
+    const { code } = await mac.run("update");
+
+    assert.equal(code, 1);
+    assert.deepEqual(mac.questions, []);
+  });
+
+  it("takes --allow-mass-deletion only with update", async () => {
+    const { mac } = await pairedPastTheSafetyStop();
+
+    const { code, stderr } = await mac.run("compare", "--allow-mass-deletion");
+
+    assert.equal(code, 2);
+    assert.match(stderr, /Usage:/);
+  });
+
+  it("refuses up front, without asking, when the Replica lacks the free space for the copies", async () => {
+    const mac = await TestMac.create();
+    const primary = await makeTree({ "film.mov": "x".repeat(20_000_000) });
+    const replica = await makeDiskImageTree({}, { name: "Replica" });
+    mac.volumes.connect(primary, "PRIMARY-ID");
+    mac.volumes.connect(replica, "REPLICA-ID");
+    assert.equal((await mac.run("pair", primary, replica)).code, 0);
+    const replicaBefore = await snapshotTree(replica);
+    mac.answer = true;
+
+    const { code, stderr } = await mac.run("update");
+
+    assert.equal(code, 1);
+    assert.deepEqual(mac.questions, []);
+    assert.match(stderr, /The Replica has [\d.]+ [KM]B free, but the new and changed files need 20\.0 MB\./);
+    assert.match(stderr, /^Nothing was written to the Replica\.$/m);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 });
 

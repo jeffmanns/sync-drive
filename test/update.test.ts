@@ -6,7 +6,15 @@ import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
 import { compare, update, type Approvals, type FileCopier } from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
-import { extendedAttributes, makeDiskImageTree, makeTree, metadataOf, removeTrees, snapshotTree } from "./helpers/trees.ts";
+import {
+  extendedAttributes,
+  makeDiskImageTree,
+  makeTree,
+  metadataOf,
+  removeTrees,
+  snapshotTree,
+  type TreeSpec,
+} from "./helpers/trees.ts";
 
 after(removeTrees);
 
@@ -373,6 +381,63 @@ describe("Update: deletions and the Holding area", () => {
     await assert.rejects(
       update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() }),
       /inside sync-drive's own/,
+    );
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+});
+
+/** `count` one-byte files named `<prefix>0.txt`, `<prefix>1.txt`, … */
+function files(prefix: string, count: number): TreeSpec {
+  return Object.fromEntries(Array.from({ length: count }, (_, i) => [`${prefix}${i}.txt`, "x"]));
+}
+
+describe("Update: safety stops", () => {
+  /** A Primary that has lost 101 of the Replica's 200 files, and gained a new one. */
+  async function drivesPastTheSafetyStop() {
+    const primary = await makeTree({ ...files("kept/", 99), "new.txt": "new" });
+    const replica = await makeTree({ ...files("kept/", 99), ...files("gone/", 101) });
+    return { primary, replica };
+  }
+
+  it("refuses, writing nothing, when the Safety stop applies, even if deletions are not confirmed", async () => {
+    const { primary, replica } = await drivesPastTheSafetyStop();
+    const primaryBefore = await snapshotTree(primary);
+    const replicaBefore = await snapshotTree(replica);
+    const report = await compare(primary, replica);
+    assert.equal(report.safetyStop, true);
+
+    for (const approvals of [APPROVED, APPROVED_WITH_DELETIONS]) {
+      await assert.rejects(
+        update(report, approvals, { primary, replica, copier: new MacFileCopier() }),
+        /Safety stop applies.*nothing was written/,
+      );
+    }
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("goes ahead when the Safety stop is explicitly overridden", async () => {
+    const { primary, replica } = await drivesPastTheSafetyStop();
+
+    const result = await compareAndUpdate(primary, replica, { ...APPROVED_WITH_DELETIONS, overrideSafetyStop: true });
+
+    assert.equal(result.copied.length, 1);
+    assert.equal(result.moved.length, 101);
+    const after = await compare(primary, replica);
+    assert.equal(after.new.count + after.changed.count + after.deleted.count, 0);
+  });
+
+  it("refuses up front, writing nothing, when the Replica lacks the free space for the copies", async () => {
+    const primary = await makeTree({ "small.txt": "fits", "film.mov": "x".repeat(20_000_000) });
+    const replica = await makeDiskImageTree({ "gone.txt": "gone" }, { name: "Replica" });
+    const primaryBefore = await snapshotTree(primary);
+    const replicaBefore = await snapshotTree(replica);
+    const report = await compare(primary, replica);
+
+    await assert.rejects(
+      update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() }),
+      /bytes free but the copies need .*nothing was written/,
     );
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
