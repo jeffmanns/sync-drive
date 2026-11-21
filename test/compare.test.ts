@@ -237,7 +237,20 @@ describe("Quick compare", () => {
       const primary = await makeTree({ [`${name}/mine.txt`]: "the user's own file" });
       const replica = await makeTree();
 
+      const primaryBefore = await snapshotTree(primary);
+
       await assert.rejects(compare(primary, replica), new RegExp(`Primary has an item named "${name}"`));
+      assert.deepEqual(await snapshotTree(primary), primaryBefore);
     }
+  });
+
+  it("suggests renaming the folder when the whole Holding area was copied back to the Primary", async () => {
+    const primary = await makeTree({ "sync-drive Holding Area/Taxes/2019.pdf": "a tax return" });
+    const replica = await makeTree();
+
+    await assert.rejects(
+      compare(primary, replica),
+      /If you restored files by copying the whole Holding area, rename that folder on the Primary \(e\.g\. to "Restored files"\), then compare again\./,
+    );
   });
 });

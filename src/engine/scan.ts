@@ -1,6 +1,7 @@
 import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { isAlwaysSkipped } from "./always-skipped.ts";
+import { HOLDING_AREA } from "./holding-area.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
 /**
@@ -39,10 +40,15 @@ export async function scan(
         // sync-drive's own folders: the Incoming folder and the Holding area.
         if (isSyncDriveFolder(path)) {
           if (role === "Replica") return;
-          // An Update would copy it into sync-drive's own folder on the Replica, where a later Update would delete it.
+          // An Update would copy it into sync-drive's own folder on the Replica, where a later Update would
+          // delete it, so a backup that looked made would be lost (ADR 0007).
+          const howToFix =
+            path.toLowerCase() === HOLDING_AREA.toLowerCase()
+              ? `If you restored files by copying the whole Holding area, rename that folder on the Primary (e.g. to "Restored files"), then compare again.`
+              : `Rename it on the Primary, then compare again.`;
           throw new Error(
             `The Primary has an item named "${path}" at its top level. sync-drive keeps that name for its own folder ` +
-              `on the Replica, so it cannot back the item up. Rename it on the Primary, then compare again.`,
+              `on the Replica, so it cannot back the item up. ${howToFix}`,
           );
         }
         const full = join(dir, entry.name);
