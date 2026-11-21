@@ -9,14 +9,11 @@ import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
 /** What the user has approved for an Update. Nothing is written without `update`. */
 export interface Approvals {
-  /**
-   * The main approval: copy the report's new and changed files to the Replica, and empty the
-   * previous Holding area.
-   */
+  /** The main approval: copy the report's new and changed files to the Replica. */
   update: boolean;
   /**
-   * The separate confirmation for deletions: move the report's deleted files into the Holding area.
-   * Has no effect without the main approval.
+   * The separate confirmation for deletions: empty the previous Holding area, then move the
+   * report's deleted files into it. Has no effect without the main approval.
    */
   deletions: boolean;
 }
@@ -68,9 +65,9 @@ export interface UpdateResult {
 const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Update does not copy yet";
 
 /**
- * Brings the Replica up to date with `report`: empties the previous Holding area, moves the deleted
- * files into the Holding area if `approvals.deletions` is also given, then copies the new and
- * changed files from the Primary. Writes nothing unless `approvals.update` is given. Never writes to
+ * Brings the Replica up to date with `report`. If `approvals.deletions` is
+ * also given and the report has deleted files, empties the previous Holding area and moves them into
+ * it. Then copies the new and changed files from the Primary. Writes nothing unless `approvals.update` is given. Never writes to
  * the Primary.
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
@@ -81,10 +78,11 @@ export async function update(report: Report, approvals: Approvals, setup: Update
   const deletions = approvals.deletions ? report.deleted.files : [];
   for (const file of [...files, ...deletions]) assertInsideDrive(file.path);
   const holdingArea = join(setup.replica, HOLDING_AREA);
-  // The Update is approved, so the files kept from the previous Update are now deleted for good.
-  await rm(holdingArea, { recursive: true, force: true });
   // Deletions first, so a path that changed between a file and a folder is free before copying.
   if (deletions.length > 0) {
+    // New deletions are confirmed, so the files kept from the previous Update are now deleted for
+    // good. Without that confirmation the Holding area is left untouched (ADR 0006).
+    await rm(holdingArea, { recursive: true, force: true });
     await mkdir(holdingArea);
     await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
   }

@@ -274,12 +274,12 @@ describe("Update: deletions and the Holding area", () => {
 
     const readme = await readFile(join(replica, "sync-drive Holding Area", "READ ME.txt"), "utf8");
     assert.match(readme, /Update on 20 November 2026/);
-    assert.match(readme, /permanently deleted at the next Update/);
+    assert.match(readme, /permanently deleted at the next Update whose deletions you confirm/);
     assert.match(readme, /copy it back to the Primary/);
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 
-  it("keeps the previous Holding area through comparisons and declined Updates, and empties it on the next approved Update", async () => {
+  it("keeps the previous Holding area through comparisons and declined Updates, and empties it when the next deletions are confirmed", async () => {
     const primary = await makeTree({ "a.txt": "same" });
     const replica = await makeTree({ "a.txt": "same", "first.txt": "deleted first" });
     await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
@@ -298,14 +298,20 @@ describe("Update: deletions and the Holding area", () => {
     assert.deepEqual((await readdir(holding)).sort(), ["READ ME.txt", "second.txt"]);
   });
 
-  it("empties the previous Holding area on an approved Update even when no deletions are confirmed", async () => {
+  it("keeps the previous Holding area through an approved Update whose deletions are not confirmed", async () => {
     const primary = await makeTree({ "a.txt": "same" });
     const replica = await makeTree({ "a.txt": "same", "first.txt": "deleted first" });
     await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
+    await writeFile(join(primary, "new.txt"), "new");
+    await writeFile(join(replica, "second.txt"), "deleted second");
+    const holding = join(replica, "sync-drive Holding Area");
+    const holdingBefore = await snapshotTree(holding);
 
-    await compareAndUpdate(primary, replica, APPROVED);
+    const result = await compareAndUpdate(primary, replica, APPROVED);
 
-    assert.deepEqual(await readdir(replica), ["a.txt"]);
+    assert.deepEqual(result.copied, [{ path: "new.txt", size: 3 }]);
+    assert.deepEqual(await snapshotTree(holding), holdingBefore);
+    assert.equal(await readFile(join(replica, "second.txt"), "utf8"), "deleted second");
   });
 
   it("moves deletions out of the way first, so a folder replaced by a file of the same name is copied", async () => {

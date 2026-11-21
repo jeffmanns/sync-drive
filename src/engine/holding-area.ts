@@ -3,8 +3,8 @@ import { join } from "node:path";
 
 /**
  * The visible folder at the top level of the Replica where an Update moves files that are no
- * longer on the Primary, keeping their folder paths. They stay there until the next Update, which
- * empties it. It never appears in a comparison.
+ * longer on the Primary, keeping their folder paths. They stay there until the next Update whose
+ * deletions are confirmed, which empties it first (ADR 0006). It never appears in a comparison.
  */
 export const HOLDING_AREA = "sync-drive Holding Area";
 
@@ -25,7 +25,7 @@ export function holdingAreaReadme(date: Date): string {
     `These files were moved here by the sync-drive Update on ${day}, because they`,
     "were no longer on the Primary drive. They keep their original folder paths.",
     "",
-    "They will be permanently deleted at the next Update.",
+    "They will be permanently deleted at the next Update whose deletions you confirm.",
     "",
     "To restore a file, copy it back to the Primary drive, into its original folder.",
     "Do not move it back on this drive: the next Update would treat it as deleted again.",

@@ -31,10 +31,11 @@ export const USAGE = `Usage: sync-drive pair <primary> <replica> [--replace]
 
   update    Compares like compare, shows the report and asks for approval. Once
             approved, copies new and changed files from the Primary to the Replica,
-            keeping all their metadata, and empties the previous Holding area. Files
-            only on the Replica are moved into the "sync-drive Holding Area" folder
-            on the Replica only after a separate confirmation; they stay there
-            until the next Update. Never writes to the Primary.
+            keeping all their metadata. Files only on the Replica are moved into the
+            "sync-drive Holding Area" folder on the Replica only after a separate
+            confirmation, which first empties the previous Holding area; they stay
+            there until the next Update whose deletions are confirmed. Never writes
+            to the Primary.
 
   --list    Show every file, not just the totals for each folder.`;
 
@@ -120,13 +121,6 @@ async function runUpdate(list: boolean, deps: CliDeps): Promise<number> {
     return 0;
   }
   deps.out("");
-  const held = await readHoldingArea(drives.replica.mountPoint);
-  if (held.count > 0) {
-    deps.out(
-      `The Holding area on the Replica holds ${fileCount(held.count)}, ${formatSize(held.totalSize)}, from the previous Update. ` +
-        `Approving this Update deletes ${held.count === 1 ? "it" : "them"} permanently.`,
-    );
-  }
   // The main approval. With nothing to copy, confirming the deletions approves the Update.
   if (copies > 0) {
     const size = formatSize(report.new.totalSize + report.changed.totalSize);
@@ -136,11 +130,13 @@ async function runUpdate(list: boolean, deps: CliDeps): Promise<number> {
       return 0;
     }
   }
-  const deletionsConfirmed =
-    deletions > 0 &&
-    (await deps.confirm(
+  let deletionsConfirmed = false;
+  if (deletions > 0) {
+    await warnAboutHoldingArea(drives.replica.mountPoint, deps);
+    deletionsConfirmed = await deps.confirm(
       `Move ${deletions.toLocaleString("en-US")} deleted ${deletions === 1 ? "file" : "files"} (${formatSize(report.deleted.totalSize)}) into the Holding area on the Replica?`,
-    ));
+    );
+  }
   if (copies === 0 && !deletionsConfirmed) {
     deps.out("Nothing was written to the Replica.");
     return 0;
@@ -169,6 +165,16 @@ async function runUpdate(list: boolean, deps: CliDeps): Promise<number> {
   if (problems.length === 0) return 0;
   deps.err(problems.join("\n"));
   return 1;
+}
+
+/** Says what confirming deletions will permanently delete: whatever the previous Update left in the Holding area. */
+async function warnAboutHoldingArea(replica: string, deps: CliDeps): Promise<void> {
+  const held = await readHoldingArea(replica);
+  if (held.count === 0) return;
+  deps.out(
+    `The Holding area on the Replica holds ${fileCount(held.count)}, ${formatSize(held.totalSize)}, from the previous Update. ` +
+      `Confirming these deletions deletes ${held.count === 1 ? "it" : "them"} permanently.`,
+  );
 }
 
 function totalSize(files: FileEntry[]): number {

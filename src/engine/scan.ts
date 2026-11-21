@@ -39,7 +39,7 @@ export async function scan(
         // sync-drive's own folders: the Incoming folder and the Holding area.
         if (isSyncDriveFolder(path)) {
           if (role === "Replica") return;
-          // An Update would copy it into the Replica's own folder, to be emptied by the next Update.
+          // An Update would copy it into sync-drive's own folder on the Replica, where a later Update would delete it.
           throw new Error(
             `The Primary has an item named "${path}" at its top level. sync-drive keeps that name for its own folder ` +
               `on the Replica, so it cannot back the item up. Rename it on the Primary, then compare again.`,

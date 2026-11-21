@@ -25,6 +25,8 @@ class TestMac {
   /** How the user answers each approval question (by default, every one the same), and the questions asked so far. */
   answer: boolean | ((question: string) => boolean) = false;
   readonly questions: string[] = [];
+  /** What had been printed when each question was asked. */
+  readonly printedBeforeQuestions: string[] = [];
 
   private constructor(pairingFile: string) {
     this.pairingFile = pairingFile;
@@ -43,6 +45,7 @@ class TestMac {
       copier: new MacFileCopier(),
       confirm: async (question) => {
         this.questions.push(question);
+        this.printedBeforeQuestions.push(stdout);
         return typeof this.answer === "function" ? this.answer(question) : this.answer;
       },
       out: (text) => (stdout += text + "\n"),
@@ -258,19 +261,38 @@ describe("sync-drive update", () => {
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 
-  it("warns before asking that approving empties the previous Holding area for good", async () => {
+  it("warns, just before the deletions question, that confirming empties the previous Holding area for good", async () => {
     const { mac, primary, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same", "Docs/first.txt": "12345" });
-    const primaryBefore = await snapshotTree(primary);
     mac.answer = true;
     await mac.run("update");
+    await writeFile(join(primary, "new.txt"), "new");
     await writeFile(join(replica, "second.txt"), "x");
-    mac.answer = false;
+    const primaryBefore = await snapshotTree(primary);
+    mac.questions.length = 0;
+    mac.printedBeforeQuestions.length = 0;
+    mac.answer = (question) => question.startsWith("Copy");
+
+    const { code, stderr } = await mac.run("update");
+
+    assert.equal(code, 0, stderr);
+    const warning = "The Holding area on the Replica holds 1 file, 5 B, from the previous Update. Confirming these deletions deletes it permanently.\n";
+    assert.equal(mac.questions.length, 2);
+    assert.ok(!mac.printedBeforeQuestions[0]!.includes(warning), "not shown before the main approval");
+    assert.ok(mac.printedBeforeQuestions[1]!.endsWith(warning), "shown just before the deletions question");
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "Docs", "first.txt"), "utf8"), "12345");
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("does not warn about the Holding area when there are no deletions to confirm", async () => {
+    const { mac, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same", "first.txt": "12345" });
+    mac.answer = true;
+    await mac.run("update");
+    await writeFile(join(replica, "a.txt"), "changed on the Replica");
 
     const { stdout } = await mac.run("update");
 
-    assert.match(stdout, /^The Holding area on the Replica holds 1 file, 5 B, from the previous Update\. Approving this Update deletes it permanently\.$/m);
-    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "Docs", "first.txt"), "utf8"), "12345");
-    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    assert.doesNotMatch(stdout, /Holding area on the Replica holds/);
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "first.txt"), "utf8"), "12345");
   });
 
   it("takes no drive paths, so the roles can never be given the wrong way round", async () => {

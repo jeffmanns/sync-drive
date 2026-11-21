@@ -15,7 +15,7 @@ The backup drive meant to be an exact copy of the Primary as of its last update;
 _Avoid_: backup, target, destination, mirror
 
 **Holding area**:
-The visible `sync-drive Holding Area` folder at the top level of the Replica, where an Update moves files no longer on the Primary (after their own confirmation) rather than destroying them. They keep their folder paths and stay until the next approved Update, which deletes them for good. Its `READ ME.txt` says when it was filled and how to restore a file (copy it back to the Primary). It is not part of the Replica's contents for comparison. Not the Incoming folder.
+The visible `sync-drive Holding Area` folder at the top level of the Replica, where an Update moves files no longer on the Primary (after their own confirmation) rather than destroying them. They keep their folder paths and stay until the next Update whose deletions are confirmed, which deletes them for good (ADR 0006). Its `READ ME.txt` says when it was filled and how to restore a file (copy it back to the Primary). It is not part of the Replica's contents for comparison. Not the Incoming folder.
 _Avoid_: trash, recycle bin, archive
 
 **Incoming folder**:
