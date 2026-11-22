@@ -722,6 +722,6 @@ describe("Checking an Exclusion as typed", () => {
 
   it("refuses an empty pattern, an empty, . or .. name, and one that would leave out everything", () => {
     for (const typed of ["", "   ", "/", "a//b", "./a", "a/../b"]) assert.throws(() => checkExclusion(typed), Error, typed);
-    for (const typed of ["*", "**", "/*", "*/*", "**/*"]) assert.throws(() => checkExclusion(typed), /everything on the drive/, typed);
+    for (const typed of ["*", "**", "/*", "*/*", "**/*", "?*", "*?", "/?*", "**/?*"]) assert.throws(() => checkExclusion(typed), /everything on the drive/, typed);
   });
 });

@@ -34,13 +34,17 @@ export interface Scanned {
 
 /**
  * Lists every file under the `role` drive's `root`, skipping macOS system files, what `isExcluded`
- * leaves out (an excluded folder is not read at all), and, on the Replica, sync-drive's own folders (the Incoming folder and the Holding area), keyed by `matchKey` of its path
- * relative to `root`. On the Primary, a folder or entry below the top level that cannot be read is
+ * leaves out (an excluded folder is not read at all), and, on the Replica, sync-drive's own folders
+ * (the Incoming folder and the Holding area), keyed by `matchKey` of its path relative to `root`. On the Primary, a folder or entry below the top level that cannot be read is
  * listed in `unreadable` and the scan carries on; on the Replica it rejects. Shortcuts are never
  * followed. Reads only. Rejects if two paths differ only by letter case, or if the Primary holds a
  * top-level item with the name of one of sync-drive's own folders.
  */
-export async function scan(role: "Primary" | "Replica", root: string, isExcluded: ExclusionMatcher = () => false): Promise<Scanned> {
+export async function scan(
+  role: "Primary" | "Replica",
+  root: string,
+  isExcluded: ExclusionMatcher = () => false,
+): Promise<Scanned> {
   const files = new Map<string, ScannedFile>();
   const unreadable: Unreadable[] = [];
   /** Runs `read`; on the Primary, a failure lists `path` as unreadable and gives `undefined`. */

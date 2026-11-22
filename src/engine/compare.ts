@@ -21,11 +21,12 @@ export interface CompareOptions {
 }
 
 /**
- * Compares the Primary with the Replica by Quick compare, leaving out on both what the Exclusions match. Files moved on the Primary are reported as
- * moves once their contents are confirmed identical by checksum; that reads both copies of each in
- * full. Shortcuts are compared as shortcuts, never followed. What cannot be read on the Primary is
- * listed in `unreadable` and left out, and its Replica copies are never reported as deleted. Reads
- * both drives; writes nothing to either. Rejects if either folder is missing or is not a folder, or
+ * Compares the Primary with the Replica by Quick compare, leaving out on both what the Exclusions
+ * match. Files moved on the Primary are reported as moves once their contents are confirmed
+ * identical by checksum; that reads both copies of each in full. Shortcuts are compared as
+ * shortcuts, never followed. What cannot be read on the Primary is listed in `unreadable` and left
+ * out, and its Replica copies are never reported as deleted. Reads both drives; writes nothing to
+ * either. Rejects if either folder is missing or is not a folder, or
  * if anything on the Replica cannot be read.
  */
 export async function compare(

@@ -106,9 +106,10 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * the new and changed files from the Primary, checking each copy against its Primary file by
  * checksum before renaming it into place; a copy that does not match is discarded and listed as
  * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
- * having written nothing, when the report holds a path `setup.exclusions` leave out, when the Safety stop applies to the report's deletions (counted again
- * here, not read from `report.safetyStop`) without `approvals.overrideSafetyStop`, or
- * when the Replica lacks the free space for the copies (ADR 0008). Every rejection is an
+ * having written nothing, when the report holds a path `setup.exclusions` leave out, when the
+ * Safety stop applies to the report's deletions (counted again here, not read from
+ * `report.safetyStop`) without `approvals.overrideSafetyStop`, or when the Replica lacks the free
+ * space for the copies (ADR 0008). Every rejection is an
  * `UpdateStoppedError` saying what had been done before it stopped.
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {

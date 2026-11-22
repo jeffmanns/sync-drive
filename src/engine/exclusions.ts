@@ -16,6 +16,11 @@
 /** Whether `path` (relative to the drive root, using `/`) is left out by the Exclusions it was made from. */
 export type ExclusionMatcher = (path: string) => boolean;
 
+/** Whether two Exclusions are the same pattern, as letter case and Unicode forms do not count when matching. */
+export function sameExclusion(a: string, b: string): boolean {
+  return comparable(a) === comparable(b);
+}
+
 /**
  * `typed` as it is saved, once checked: trimmed, and with any trailing `/` taken off. Rejects,
  * saying why, a pattern that is empty, has an empty, `.` or `..` name in it, or would leave out
@@ -28,7 +33,8 @@ export function checkExclusion(typed: string): string {
   if (names.some((name) => name === "" || name === "." || name === "..")) {
     throw new Error(`"${typed.trim()}" is not a name or path on the drive: it has an empty name, "." or ".." in it.`);
   }
-  if (names.every((name) => /^\*+$/.test(name))) {
+  // A name of only wildcards with a `*` in it, such as `*` or `?*`, matches (nearly) every name.
+  if (names.every((name) => /^[*?]+$/.test(name) && name.includes("*"))) {
     throw new Error(`"${typed.trim()}" would leave out everything on the drive, so nothing would be backed up.`);
   }
   return pattern;

@@ -9,6 +9,7 @@ import {
   readHoldingArea,
   readExclusions,
   readPairing,
+  sameExclusion,
   update,
   UpdateStoppedError,
   writeExclusions,
@@ -553,11 +554,6 @@ function approvedPart(report: Report, review: Review): Report {
 function isNumberOfDeletions(typed: string, count: number): boolean {
   const text = typed.trim();
   return text === String(count) || text === count.toLocaleString("en-US");
-}
-
-/** Whether two Exclusions are the same pattern, as letter case and Unicode forms do not count when matching. */
-function sameExclusion(a: string, b: string): boolean {
-  return a.normalize("NFC").toLowerCase() === b.normalize("NFC").toLowerCase();
 }
 
 /** Whether the app is on one of the review steps, where the owner makes the decisions. */
