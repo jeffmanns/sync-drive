@@ -164,7 +164,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     try {
       // Moved, never destroyed: the rename stays on the Replica, so it is atomic and keeps all metadata.
       const destination = join(holdingArea, file.path);
-      await mkdir(dirname(destination), { recursive: true });
+      await assertNoShortcutAlong(setup.replica, file.path);
+      await makeReplicaFolders(setup.replica, join(HOLDING_AREA, dirname(file.path)));
       // rename replaces whatever is at the destination, so make sure nothing is.
       if (await exists(destination)) throw new Error("the Holding area already holds a file at that path");
       await rename(join(setup.replica, file.path), destination);
@@ -178,6 +179,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   for (const move of moves) {
     try {
       // A rename stays on the Replica: nothing is copied, and the file keeps all its metadata.
+      // Its new path is checked as its folders are made, below.
+      await assertNoShortcutAlong(setup.replica, move.from);
       const [onPrimary, onReplica] = await Promise.all([
         lstat(join(setup.primary, move.to), { bigint: true }),
         lstat(join(setup.replica, move.from), { bigint: true }),
@@ -188,7 +191,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
         throw new Error("it changed on the Primary or the Replica since the comparison");
       }
       const destination = join(setup.replica, move.to);
-      await mkdir(dirname(destination), { recursive: true });
+      await makeReplicaFolders(setup.replica, dirname(move.to));
       // rename replaces whatever is at the destination, so make sure nothing is.
       if (await exists(destination)) throw new Error("the Replica already has a file at its new path");
       await rename(join(setup.replica, move.from), destination);
@@ -211,6 +214,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     try {
       const before = await lstat(source, { bigint: true });
       if (!before.isFile()) throw new Error(NOT_A_FILE);
+      // Checked before copying too, so no time is spent on a copy that could not be put in place.
+      await assertNoShortcutAlong(setup.replica, file.path);
       await setup.copier.copy(source, temporary);
       // Read both back in full, so "copied" means confirmed identical, not just written.
       const [primarySum, copySum] = await Promise.all([hasher.checksum(source), hasher.checksum(temporary)]);
@@ -219,7 +224,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       if (!sameVersion(before, after)) throw new Error("it changed on the Primary while it was being copied");
       if (!sameVersion(before, copy)) throw new Error("the copy's size or dates do not match the Primary");
       if (primarySum !== copySum) throw new Error("the copy's checksum does not match the Primary's");
-      await mkdir(dirname(destination), { recursive: true });
+      await makeReplicaFolders(setup.replica, dirname(file.path));
       await rename(temporary, destination);
       result.copied.push(file);
     } catch (error) {
@@ -248,6 +253,55 @@ async function removeEmptiedFolders(path: string, setup: UpdateSetup): Promise<v
       if (code !== "ENOENT") return;
     }
   }
+}
+
+/**
+ * Rejects if a folder holding `path` (relative to the top of the Replica, below it) is a shortcut
+ * (symbolic link), since a write through it would land wherever it points: elsewhere on the
+ * Replica, or even on the Primary. sync-drive never makes shortcuts, but a Replica filled or
+ * edited by another tool can have one where the Primary has a real folder. Reads only. Stops at
+ * the first folder that does not exist, as nothing below it can be a shortcut. A shortcut made
+ * between this check and the write is not caught; the owner is not expected to edit the Replica
+ * during an Update.
+ */
+async function assertNoShortcutAlong(replica: string, path: string): Promise<void> {
+  for (const folder of foldersAlong(dirname(path))) {
+    const stats = await lstat(join(replica, folder)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (stats === undefined) return;
+    if (stats.isSymbolicLink()) throw new Error(shortcutReason(folder));
+  }
+}
+
+/**
+ * Makes `folder` (relative to the top of the Replica) and every missing folder above it, one
+ * level at a time, so that no folder is ever made through a shortcut. Rejects, having made
+ * nothing below it, at the first folder along the way that is a shortcut.
+ */
+async function makeReplicaFolders(replica: string, folder: string): Promise<void> {
+  for (const route of foldersAlong(folder)) {
+    const full = join(replica, route);
+    try {
+      await mkdir(full);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if ((await lstat(full)).isSymbolicLink()) throw new Error(shortcutReason(route));
+    }
+  }
+}
+
+/** `folder` (relative, using `/`) and each folder above it, top first: `a/b/c` gives `a`, `a/b`, `a/b/c`. `.` gives none. */
+function foldersAlong(folder: string): string[] {
+  if (folder === ".") return [];
+  const names = folder.split("/");
+  return names.map((_, i) => names.slice(0, i + 1).join("/"));
+}
+
+/** Why nothing was written for a file whose Replica path goes through the shortcut `folder`. */
+function shortcutReason(folder: string): string {
+  return `the Replica folder "${folder}" is a shortcut (symbolic link), and sync-drive never writes through one`;
 }
 
 /** Whether anything, even a broken shortcut, is at `path`. */
