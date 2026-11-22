@@ -17,7 +17,7 @@ npm test      # typecheck, build, and run all tests on Electron's runtime (opens
 npm start     # build and open the app
 ```
 
-The app is replacing the command line (ADR 0009). So far it runs a copies-only Update: Pairing (the first time), Start, Comparing, Copies (new and changed files by folder, each folder expanding to its files, with one Approval), Summary, Apply, Result. Back and Next keep the Approval; a new compare, a drive disconnecting or quitting discards it. It does not move deleted files yet, and when the Safety stop or the free-space check refuses, it says why and stops. It uses the same Pairing as the command line.
+The app is replacing the command line (ADR 0009). It runs a full Update: Pairing (the first time), Start, Comparing, Copies, Moves and Deletions (each grouped by folder, each folder expanding to its files, each with its own all-or-nothing Approval), Summary, Apply, Result. Back and Next keep the Approvals; a new compare, a drive disconnecting or quitting discards them. When the Safety stop or the free-space check refuses the Update, a refusal screen comes before any Approval and says why. The only way past the Safety stop is to type the number of deletions, which holds for that one comparison; the free-space check has no override. It uses the same Pairing as the command line.
 
 ## Command line
 

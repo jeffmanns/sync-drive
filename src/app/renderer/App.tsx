@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { reviewSteps, totalsOf, totalsOfFiles, totalsOfMoves } from "../view.ts";
+import { freeSpaceExplanation, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves } from "../view.ts";
 import type {
   Action,
   CopiesState,
@@ -17,6 +17,7 @@ import type {
   ResultState,
   Review,
   ReviewStep,
+  SafetyStopRefusal,
   Section,
   StartState,
   SummaryState,
@@ -142,15 +143,50 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
 }
 
 function RefusedScreen({ state, send, busy }: ScreenProps<RefusedState>) {
+  const { safetyStop, freeSpace } = state;
+  // The Safety stop alone can be overridden, for this one comparison; the free-space check never (ADR 0009).
+  const overridable = safetyStop !== undefined && freeSpace === undefined;
   return (
     <>
       <h1>The Update is refused</h1>
-      {state.reasons.map((reason) => <p key={reason} className="problem">{reason}</p>)}
+      {safetyStop !== undefined && <p className="problem">{safetyStopExplanation(safetyStop)}</p>}
+      {freeSpace !== undefined && <p className="problem">{freeSpaceExplanation(freeSpace)}</p>}
       <p>Nothing was written to the Replica.</p>
+      {overridable && <SafetyStopOverride stop={safetyStop} send={send} busy={busy} />}
       <Buttons>
-        <button className="primary" onClick={() => send({ type: "restart" })} disabled={busy}>Back to Start</button>
+        <button className={overridable ? undefined : "primary"} onClick={() => send({ type: "restart" })} disabled={busy}>Back to Start</button>
       </Buttons>
     </>
+  );
+}
+
+/**
+ * The only way past the Safety stop: typing the number of deletions. It holds for this comparison
+ * only, and the usual Approvals still follow. What is typed stays on this screen until sent, and the
+ * flow checks it.
+ */
+function SafetyStopOverride({ stop, send, busy }: { stop: SafetyStopRefusal; send(action: Action): void; busy: boolean }) {
+  const [typed, setTyped] = useState("");
+  return (
+    <form
+      className="override"
+      onSubmit={(event) => {
+        event.preventDefault();
+        send({ type: "overrideSafetyStop", typed });
+      }}
+    >
+      <h2>If you really did delete or move these files</h2>
+      <p>
+        Type the number of files no longer on the Primary to go ahead with this one comparison. You will still review and
+        approve the copies and the deletions as usual. A new comparison starts without this override.
+      </p>
+      <label>
+        Number of deletions:{" "}
+        <input type="text" inputMode="numeric" autoComplete="off" value={typed} disabled={busy} onChange={(event) => setTyped(event.target.value)} />
+      </label>{" "}
+      <button type="submit" disabled={busy || typed.trim() === ""}>Override the Safety stop</button>
+      <Problem text={stop.error} />
+    </form>
   );
 }
 
@@ -333,6 +369,9 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
         {leaveOnReplica.count > 0 && <li>Leave the files only on the Replica where they are: {describe(leaveOnReplica)}. The deletions are not approved.</li>}
         <li>Write nothing to the Primary.</li>
       </ul>
+      {state.review.safetyStopOverridden && (
+        <p className="warning">The Safety stop is overridden for this Update, as you typed on the refusal screen.</p>
+      )}
       {canApply ? <p className="note">Once Apply starts there is no going back.</p> : <p>Nothing is approved, so there is nothing to apply.</p>}
       <Buttons>
         <button onClick={() => send({ type: "restart" })} disabled={busy}>Start over</button>

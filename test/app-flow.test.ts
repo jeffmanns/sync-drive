@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { after, afterEach, describe, it } from "node:test";
 import { Flow } from "../src/app/flow.ts";
+import { freeSpaceExplanation, safetyStopExplanation } from "../src/app/view.ts";
 import { compare, type FileCopier } from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
 import { FakeRemounter } from "./helpers/fake-remounter.ts";
@@ -372,44 +373,182 @@ function files(prefix: string, count: number): TreeSpec {
 }
 
 describe("app flow: refusals", () => {
-  it("stops with the refusal, before any Approval, when the Safety stop applies, and writes nothing", async () => {
-    const { flow, primary, replica } = await pairedMac(
-      { ...files("kept/", 99), "new.txt": "new" },
-      { ...files("kept/", 99), ...files("gone/", 101) },
-    );
-    const primaryBefore = await snapshotTree(primary);
-    const replicaBefore = await snapshotTree(replica);
+  /** Paired drives where the Primary has lost 101 of the Replica's 200 files, and gained a new one. */
+  function pairedPastTheSafetyStop() {
+    return pairedMac({ ...files("kept/", 99), "new.txt": "new" }, { ...files("kept/", 99), ...files("gone/", 101) });
+  }
 
-    await flow.compare();
-
-    assert.equal(stateOf(flow).step, "refused");
-    assert.match(stateOf(flow).reasons.join("\n"), /Safety stop applies: 101 files \(101 B\) would go into the Holding area, more than 10% of the Replica/);
-    flow.next();
-    flow.approveCopies(true);
-    await flow.apply();
-    assert.equal(stateOf(flow).step, "refused", "no way past the refusal");
-    flow.restart();
-    assert.equal(stateOf(flow).step, "start");
-    assert.deepEqual(await snapshotTree(primary), primaryBefore);
-    assert.deepEqual(await snapshotTree(replica), replicaBefore);
-  });
-
-  it("stops with the refusal when the Replica lacks the free space for the copies, and writes nothing", async () => {
+  /** Paired drives where the Replica, a small disk image, has no room for the Primary's 20 MB film. */
+  async function pairedWithoutRoom(replicaSpec: TreeSpec = {}) {
     const mac = await testMac();
     const primary = await makePrimary({ "film.mov": "x".repeat(20_000_000) });
-    const replica = await makeDiskImageTree({}, { name: "Replica" });
+    const replica = await makeDiskImageTree(replicaSpec, { name: "Replica" });
     mac.volumes.connect(primary, "PRIMARY-ID");
     mac.volumes.connect(replica, "REPLICA-ID");
     const flow = await mac.open();
     flow.choose("primary", primary);
     flow.choose("replica", replica);
     await flow.pair();
+    return { ...mac, flow, primary, replica };
+  }
+
+  it("stops on the refusal screen, before any Approval, when the Safety stop applies, explaining the deleted files' share of the Replica", async () => {
+    const { flow } = await pairedPastTheSafetyStop();
+    const steps: string[] = [];
+    flow.onChange((state) => steps.push(state.step));
+
+    await flow.compare();
+
+    assert.deepEqual(steps, ["comparing", "refused"]);
+    const { safetyStop, freeSpace } = stateOf(flow);
+    assert.equal(freeSpace, undefined);
+    assert.deepEqual(safetyStop, { deleted: { count: 101, totalSize: 101 }, replica: { count: 200, totalSize: 200 } });
+    assert.match(
+      safetyStopExplanation(safetyStop),
+      /^The Safety stop applies: 101 files \(101 B\) are no longer on the Primary\. That is 101 of the Replica's 200 files \(50\.5%\) and 101 B of its 200 B \(50\.5%\), more than 10% of the Replica\./,
+    );
+    assert.match(safetyStopExplanation(safetyStop), /something is wrong with the Primary/);
+  });
+
+  it("writes nothing, and moves on to no Approval, while the Safety stop stands", async () => {
+    const { flow, replica } = await pairedPastTheSafetyStop();
+    const replicaBefore = await snapshotTree(replica);
+    await flow.compare();
+
+    flow.next();
+    flow.approveCopies(true);
+    flow.approveDeletions(true);
+    await flow.apply();
+
+    assert.equal(stateOf(flow).step, "refused", "no way past the refusal but the override");
+    flow.restart();
+    assert.equal(stateOf(flow).step, "start");
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("with the exact number of deletions typed, goes on to the usual Approvals, then updates past the Safety stop", async () => {
+    const { flow, replica } = await pairedPastTheSafetyStop();
+    await flow.compare();
+
+    flow.overrideSafetyStop("101");
+
+    assert.equal(stateOf(flow).step, "copies");
+    const { review } = stateOf(flow);
+    assert.equal(review.safetyStopOverridden, true);
+    assert.equal(review.copiesApproved, false, "the override approves nothing");
+    assert.equal(review.deletionsApproved, false, "the override approves nothing");
+    flow.approveCopies(true);
+    toSummaryApprovingDeletions(flow);
+    await flow.apply();
+    assert.equal(stateOf(flow).step, "result");
+    assert.equal(stateOf(flow).error, undefined);
+    assert.equal(stateOf(flow).moved.length, 101);
+    const after = await snapshotTree(replica);
+    assert.equal(after.some((line) => line.includes("sync-drive Holding Area/gone/0.txt")), true);
+    assert.equal(after.some((line) => line.startsWith("file new.txt ")), true);
+  });
+
+  it("accepts the number with spaces around it", async () => {
+    const { flow } = await pairedPastTheSafetyStop();
+    await flow.compare();
+
+    flow.overrideSafetyStop(" 101 ");
+
+    assert.equal(stateOf(flow).step, "copies");
+  });
+
+  it("does not unlock with a wrong number, saying so, and writes nothing", async () => {
+    const { flow, replica } = await pairedPastTheSafetyStop();
+    const replicaBefore = await snapshotTree(replica);
+    await flow.compare();
+
+    for (const typed of ["100", "102", "", "1O1", "101.0", "+101", "yes", "200"]) {
+      flow.overrideSafetyStop(typed);
+      assert.equal(stateOf(flow).step, "refused", `"${typed}" must not unlock it`);
+    }
+
+    assert.match(stateOf(flow).safetyStop.error, /not the number of deletions/);
+    flow.next();
+    await flow.apply();
+    assert.equal(stateOf(flow).step, "refused");
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("forgets the override on a new comparison", async () => {
+    const { flow } = await pairedPastTheSafetyStop();
+    await flow.compare();
+    flow.overrideSafetyStop("101");
+    flow.restart();
+
+    await flow.compare();
+
+    assert.equal(stateOf(flow).step, "refused");
+  });
+
+  it("forgets the override on a relaunch", async () => {
+    const { flow, open } = await pairedPastTheSafetyStop();
+    await flow.compare();
+    flow.overrideSafetyStop("101");
+
+    const relaunched = await open();
+    await relaunched.compare();
+
+    assert.equal(stateOf(relaunched).step, "refused");
+  });
+
+  it("stops on the refusal screen when the Replica lacks the free space, naming the space needed and free and the Holding area's size", async () => {
+    const { flow, replica } = await pairedWithoutRoom({ "sync-drive Holding Area/old.mov": "x".repeat(5_000) });
     const replicaBefore = await snapshotTree(replica);
 
     await flow.compare();
 
     assert.equal(stateOf(flow).step, "refused");
-    assert.match(stateOf(flow).reasons.join("\n"), /The Replica has [\d.]+ [KM]B free, but the new and changed files need 20\.0 MB\./);
+    const { freeSpace, safetyStop } = stateOf(flow);
+    assert.equal(safetyStop, undefined);
+    assert.equal(freeSpace.needed >= 20_000_000, true);
+    assert.equal(freeSpace.free < freeSpace.needed, true);
+    assert.deepEqual(freeSpace.holdingArea, { count: 1, totalSize: 5_000 });
+    const explanation = freeSpaceExplanation(freeSpace);
+    assert.match(explanation, /^The Replica has [\d.]+ [KM]B free, but the new and changed files need 20\.0 MB\./);
+    assert.match(explanation, /The Holding area on the Replica holds 5\.0 KB from the previous Update\./);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("says the Replica needs more room when there is no Holding area to free", async () => {
+    const { flow } = await pairedWithoutRoom();
+
+    await flow.compare();
+
+    assert.deepEqual(stateOf(flow).freeSpace.holdingArea, { count: 0, totalSize: 0 });
+    assert.match(freeSpaceExplanation(stateOf(flow).freeSpace), /The Replica needs a larger drive/);
+  });
+
+  it("offers no override for the free space, so nothing can be approved, and writes nothing", async () => {
+    const { flow, replica } = await pairedWithoutRoom();
+    const replicaBefore = await snapshotTree(replica);
+    await flow.compare();
+
+    flow.overrideSafetyStop("1");
+    flow.overrideSafetyStop("0");
+    flow.next();
+    flow.approveCopies(true);
+    await flow.apply();
+
+    assert.equal(stateOf(flow).step, "refused");
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("offers no override when the Safety stop and the free space both refuse", async () => {
+    const { flow, replica } = await pairedWithoutRoom({ ...files("gone/", 101) });
+    const replicaBefore = await snapshotTree(replica);
+    await flow.compare();
+    assert.equal(stateOf(flow).step, "refused");
+    assert.notEqual(stateOf(flow).safetyStop, undefined);
+    assert.notEqual(stateOf(flow).freeSpace, undefined);
+
+    flow.overrideSafetyStop("101");
+
+    assert.equal(stateOf(flow).step, "refused");
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 });

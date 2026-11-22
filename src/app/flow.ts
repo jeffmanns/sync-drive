@@ -7,7 +7,6 @@ import {
   pair,
   readHoldingArea,
   readPairing,
-  SAFETY_STOP_PERCENT,
   update,
   UpdateStoppedError,
   writePairing,
@@ -20,7 +19,6 @@ import {
   type Volume,
   type VolumeIdentity,
 } from "../engine/index.ts";
-import { fileCount, formatSize } from "../format.ts";
 import {
   NO_FILES,
   reviewSteps,
@@ -166,35 +164,57 @@ export class Flow {
         return;
       }
       // Both stops are checked before any Approval, so a refused Update asks nothing (ADR 0008).
-      const reasons = await refusals(report, drives);
-      if (comparison !== this.#comparisonGeneration) return;
-      if (reasons.length > 0) {
-        this.#set({ step: "refused", pairing, reasons });
-        return;
-      }
+      const space = newFiles.count + changed.count > 0 ? await checkFreeSpace(report, drives.replica.mountPoint) : undefined;
       // Read now, for the warning before the deletions Approval: approving them deletes these for good.
-      const held = deleted.count > 0 ? await readHoldingArea(drives.replica.mountPoint) : NO_FILES;
+      // Also named when the Replica lacks room, as the space that deleting it would free.
+      const held = deleted.count > 0 || space?.enough === false ? totalsOf(await readHoldingArea(drives.replica.mountPoint)) : NO_FILES;
       if (comparison !== this.#comparisonGeneration) return;
       this.#report = report;
-      this.#set({
-        step: "copies",
-        review: {
-          pairing,
-          drives,
-          new: newFiles,
-          changed,
-          moves,
-          deleted,
-          holdingArea: totalsOf(held),
-          copiesApproved: false,
-          movesApproved: false,
-          deletionsApproved: false,
-        },
-      });
+      const review: Review = {
+        pairing,
+        drives,
+        new: newFiles,
+        changed,
+        moves,
+        deleted,
+        holdingArea: held,
+        copiesApproved: false,
+        movesApproved: false,
+        deletionsApproved: false,
+        safetyStopOverridden: false,
+      };
+      if (report.safetyStop || space?.enough === false) {
+        this.#set({
+          step: "refused",
+          review,
+          ...(report.safetyStop ? { safetyStop: { deleted: totalsOf(deleted), replica: report.replica } } : {}),
+          ...(space?.enough === false ? { freeSpace: { needed: space.needed, free: space.free, holdingArea: held } } : {}),
+        });
+        return;
+      }
+      this.#set({ step: "copies", review });
     } catch (error) {
       if (comparison !== this.#comparisonGeneration) return;
       this.#set({ step: "start", pairing, error: (error as Error).message });
     }
+  }
+
+  /**
+   * On the refusal screen: overrides the Safety stop for this comparison only, when `typed` is
+   * exactly the number of deletions, and goes on to the usual Approvals (ADR 0009). Anything else
+   * leaves the refusal standing. Never overrides the free-space check.
+   */
+  overrideSafetyStop(typed: string): void {
+    const state = this.#state;
+    if (state.step !== "refused" || state.safetyStop === undefined || state.freeSpace !== undefined) return;
+    if (!isCount(typed, state.safetyStop.deleted.count)) {
+      this.#set({
+        ...state,
+        safetyStop: { ...state.safetyStop, error: "That is not the number of deletions. Nothing is overridden." },
+      });
+      return;
+    }
+    this.#set({ step: "copies", review: { ...state.review, safetyStopOverridden: true } });
   }
 
   /** On Copies: gives or withdraws the one all-or-nothing Approval for the copies. */
@@ -248,10 +268,10 @@ export class Flow {
    */
   restart(): void {
     const state = this.#state;
-    if (isReviewing(state)) {
+    if (isReviewing(state) || state.step === "refused") {
       this.#discardComparison();
       this.#set({ step: "start", pairing: state.review.pairing });
-    } else if (state.step === "result" || state.step === "refused") {
+    } else if (state.step === "result") {
       this.#set({ step: "start", pairing: state.pairing });
     }
   }
@@ -264,8 +284,8 @@ export class Flow {
     const state = this.#state;
     let pairing: Pairing;
     let drives: PairedDrives | undefined;
-    if (state.step === "comparing" || state.step === "refused") pairing = state.pairing;
-    else if (isReviewing(state)) ({ pairing, drives } = state.review);
+    if (state.step === "comparing") pairing = state.pairing;
+    else if (isReviewing(state) || state.step === "refused") ({ pairing, drives } = state.review);
     else return;
     const comparison = this.#comparisonGeneration;
     const gone = await this.#whyDrivesGone(pairing, drives);
@@ -309,7 +329,9 @@ export class Flow {
   /**
    * On Summary: applies the Update exactly as summarised. Copies are written only with the copies
    * approved. Only with the deletions approved is the Holding area emptied and the deleted files
-   * moved into it (ADR 0006). The Safety stop is never overridden.
+   * moved into it (ADR 0006). The Safety stop is overridden only when the owner typed the number
+   * of deletions on the refusal screen for this comparison (ADR 0009); `update()` checks both stops
+   * again before it writes.
    */
   async apply(): Promise<void> {
     if (this.#applying !== undefined) return;
@@ -368,7 +390,12 @@ export class Flow {
     let done: UpdateResult;
     let error: string | undefined;
     try {
-      done = await update(approvedPart(report, review), { update: true, moves: review.movesApproved, deletions: review.deletionsApproved }, {
+      done = await update(approvedPart(report, review), {
+          update: true,
+          moves: review.movesApproved,
+          deletions: review.deletionsApproved,
+          overrideSafetyStop: review.safetyStopOverridden,
+        }, {
         primary: primary.mountPoint,
         replica: review.drives.replica.mountPoint,
         copier: this.#copier,
@@ -438,34 +465,13 @@ function approvedPart(report: Report, review: Review): Report {
   return { ...report, new: none, changed: none };
 }
 
-/** Why an Update of `report` must be refused, if it must: the Safety stop, and the free-space check. */
-async function refusals(report: Report, drives: PairedDrives): Promise<string[]> {
-  const reasons: string[] = [];
-  const { deleted } = report;
-  if (report.safetyStop) {
-    reasons.push(
-      `The Safety stop applies: ${fileCount(deleted.count)} (${formatSize(deleted.totalSize)}) would go into the Holding area, ` +
-        `more than ${SAFETY_STOP_PERCENT}% of the Replica. That often means something is wrong with the Primary: ` +
-        `it is failing, was only partly read, or was erased. Check the Primary first. ` +
-        `This version of the app cannot go past the Safety stop.`,
-    );
-  }
-  if (report.new.count + report.changed.count > 0) {
-    const replica = drives.replica.mountPoint;
-    const space = await checkFreeSpace(report, replica);
-    if (!space.enough) {
-      const held = await readHoldingArea(replica);
-      reasons.push(
-        `The Replica has ${formatSize(space.free)} free, but the new and changed files need ${formatSize(space.needed)}. ` +
-          (held.count > 0
-            ? `The Holding area on the Replica holds ${formatSize(held.totalSize)} from the previous Update. Deleting it frees that space, ` +
-              `but its files are then gone for good, so first copy back to the Primary any you want to keep. `
-            : `The Replica needs a larger drive, or files other than those copied from the Primary removed from it. `) +
-          `Then compare again.`,
-      );
-    }
-  }
-  return reasons;
+/**
+ * Whether the owner typed exactly `count`: digits only, with or without thousands separators
+ * ("1234" or "1,234"), and spaces around them.
+ */
+function isCount(typed: string, count: number): boolean {
+  const text = typed.trim();
+  return text === String(count) || text === count.toLocaleString("en-US");
 }
 
 /** Whether the app is on one of the review steps, where the owner makes the decisions. */
