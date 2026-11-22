@@ -15,7 +15,7 @@ The backup drive meant to be an exact copy of the Primary as of its last update;
 _Avoid_: backup, target, destination, mirror
 
 **Holding area**:
-The visible `sync-drive Holding Area` folder at the top level of the Replica, where an Update moves files no longer on the Primary (after their own confirmation) rather than destroying them. They keep their folder paths and stay until the next Update whose deletions are confirmed, which deletes them for good (ADR 0006). Its `READ ME.txt` says when it was filled and how to restore a file (copy it back to the Primary). It is not part of the Replica's contents for comparison. Not the Incoming folder.
+The visible `sync-drive Holding Area` folder at the top level of the Replica, where an Update moves files no longer on the Primary (after their own Approval) rather than destroying them. They keep their folder paths and stay until the next Update whose deletions are approved, which deletes them for good (ADR 0006). Its `READ ME.txt` says when it was filled and how to restore a file (copy it back to the Primary). It is not part of the Replica's contents for comparison. Not the Incoming folder.
 _Avoid_: trash, recycle bin, archive
 
 **Incoming folder**:
@@ -35,10 +35,18 @@ The approved act of making the Replica match the Primary: copying new and change
 _Avoid_: sync, backup, mirror run
 
 **Safety stop**:
-The check that refuses a whole Update, before anything is written, when the deleted files are more than 10% of the Replica (by file count or by size) and more than 100 files (ADR 0008). Only `--allow-mass-deletion`, given for that run, overrides it. Every Report says whether it applies. Not the free-space check, which refuses an Update when the Replica lacks room for the copies.
+The check that refuses a whole Update, before anything is written, when the deleted files are more than 10% of the Replica (by file count or by size) and more than 100 files (ADR 0008). Only the owner's override for that run, given by typing the number of deletions, overrides it (ADR 0009). Every Report says whether it applies. Not the free-space check, which refuses an Update when the Replica lacks room for the copies.
 _Avoid_: mass-deletion guard, threshold, limit
 
+**Approval**:
+The owner's all-or-nothing yes to one section of a Report: one for the new and changed files, a separate one for the deletions. It can be changed freely until the Update is applied, and it belongs to that Report only. The per-file choices on content-mismatch Anomalies are not Approvals.
+_Avoid_: confirmation, consent, selection
+
 ### Comparing
+
+**Report**:
+The result of a comparison: every difference between the Primary and the Replica, grouped by kind and by folder, which the owner reviews before any Update. Making it never writes to either drive.
+_Avoid_: diff, results, plan
 
 **Quick compare**:
 A comparison that judges files equal by size and modification date alone (dates less than a hundredth of a second apart count as the same), without reading their contents.
