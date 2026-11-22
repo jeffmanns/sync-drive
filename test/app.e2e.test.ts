@@ -8,12 +8,18 @@ import { pair, writePairing } from "../src/engine/index.ts";
 import { MacVolumes } from "../src/macos/volume-identity.ts";
 import { makeDiskImageTree, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
-after(removeTrees);
+after(async () => {
+  const started = performance.now();
+  await removeTrees();
+  // Not a test diagnostic: the test has ended by now.
+  console.log(`e2e phase: cleanup ${Math.round(performance.now() - started)} ms`);
+});
 
 const PROJECT = fileURLToPath(new URL("..", import.meta.url));
 
 describe("the desktop app", () => {
-  it("launches and runs an Update with copies and deletions from Start to Result", async () => {
+  it("launches and runs an Update with copies and deletions from Start to Result", async (t) => {
+    const phase = phaseTimer(t);
     const primary = await makeDiskImageTree({ "Photos/a.jpg": "new photo", "readme.txt": "changed!" }, { name: "Smoke Primary" });
     const replica = await makeDiskImageTree(
       { "readme.txt": "old", "old.txt": "only here", "sync-drive Holding Area/earlier.txt": "held" },
@@ -22,22 +28,29 @@ describe("the desktop app", () => {
     const pairingFile = join(await makeTree(), "pairing.json");
     await writePairing(pairingFile, await pair(primary, replica, new MacVolumes()));
     const primaryBefore = await primarySnapshot(primary);
+    phase("disk images and Pairing");
     // Tests run with ELECTRON_RUN_AS_NODE; the app must not, or it would start as plain Node.
     const { ELECTRON_RUN_AS_NODE: _, ...env } = process.env;
 
     const app = await electron.launch({
-      timeout: 30_000,
+      // Electron sometimes takes nearly 30 s to start on the CI runner, even with no other test running
+      // (#45). The test checks what the app does, not how fast it starts.
+      timeout: 90_000,
       // The tests run on Electron's own runtime, so this is the Electron the app runs on.
       executablePath: process.execPath,
       args: [PROJECT],
       env: { ...env, SYNC_DRIVE_PAIRING_FILE: pairingFile },
     });
+    phase("launch");
     try {
       const window = await app.firstWindow();
       window.setDefaultTimeout(30_000);
+      phase("first window");
       await window.getByText('"Smoke Primary"').waitFor();
+      phase("Start screen");
       await window.getByRole("button", { name: "Compare" }).click();
       await window.getByRole("heading", { name: "Copies" }).waitFor({ timeout: 30_000 });
+      phase("compare");
       assert.equal(await window.locator(".warning").count(), 0, "no Holding area warning before the copies Approval");
       await window.getByRole("button", { name: /Photos\// }).click();
       await window.getByText("a.jpg").waitFor();
@@ -57,12 +70,15 @@ describe("the desktop app", () => {
       await window.getByText("Copy 2 files (17 B) from the Primary to the Replica.").waitFor();
       await window.getByText("Move 1 file (9 B) no longer on the Primary into the Holding area.").waitFor();
       await window.getByText("Permanently delete the 1 file (4 B) in the Holding area from an earlier Update.").waitFor();
+      phase("review steps");
       await window.getByRole("button", { name: "Apply" }).click();
       await window.getByRole("heading", { name: "Update done" }).waitFor({ timeout: 30_000 });
+      phase("Update, including remounting the Primary");
       await window.getByText("Copied: 2 files (17 B)").waitFor();
       await window.getByText("Moved into the Holding area: 1 file (9 B)").waitFor();
     } finally {
       await app.close();
+      phase("close");
     }
 
     assert.equal(await readFile(join(replica, "Photos", "a.jpg"), "utf8"), "new photo");
@@ -70,6 +86,7 @@ describe("the desktop app", () => {
     assert.equal(await readFile(join(replica, "sync-drive Holding Area", "old.txt"), "utf8"), "only here");
     assert.equal(await readdir(join(replica, "sync-drive Holding Area")).then((names) => names.includes("earlier.txt")), false);
     assert.deepEqual(await primarySnapshot(primary), primaryBefore);
+    phase("checks");
   });
 });
 
@@ -80,4 +97,17 @@ describe("the desktop app", () => {
  */
 async function primarySnapshot(primary: string): Promise<string[]> {
   return (await snapshotTree(primary)).filter((line) => !/^(dir |file) \.fseventsd(\/| )/.test(line));
+}
+
+/**
+ * Reports, as a test diagnostic, how long each phase of the test took since the previous one
+ * (#45), so a slow run on CI shows where the time went.
+ */
+function phaseTimer(t: { diagnostic(message: string): void }): (name: string) => void {
+  let last = performance.now();
+  return (name) => {
+    const now = performance.now();
+    t.diagnostic(`e2e phase: ${name} ${Math.round(now - last)} ms`);
+    last = now;
+  };
 }
