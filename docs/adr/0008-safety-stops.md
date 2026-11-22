@@ -9,6 +9,7 @@ An Update can go badly wrong if something is wrong with the Primary, for example
 - **The 100-file minimum** stops false alarms on a small Replica, where a few files can already be 10%. On an everyday drive with tens of thousands of files, the minimum never matters. A month of iPhone photos (about 250 files) moved to another folder trips the stop only on a Replica of under 2,500 files.
 - **When it applies, the whole Update is refused**, copies included. Something is probably wrong with the Primary, so copying from it is not trusted either. No questions are asked.
 - **The only override is `--allow-mass-deletion`, given for that one run.** It is never remembered. Even with it, the Update still asks for the main approval and the deletions confirmation as usual.
+- **The engine counts again just before it writes.** `update()` measures the deletions it is handed against the Replica's contents itself, rather than trusting the Report's flag, so the Safety stop holds however the Report reached it. The owner settled this in #28.
 - **Every Report says whether the Safety stop applies**, with the deleted files' share of the Replica by count and by size.
 
 ## The free-space check
