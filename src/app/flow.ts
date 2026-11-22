@@ -159,8 +159,9 @@ export class Flow {
       const drives = await findPairedDrives(pairing, this.#deps.volumes);
       const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint);
       if (comparison !== this.#comparisonGeneration) return;
-      const { new: newFiles, changed, moves, deleted } = report;
-      if (newFiles.count + changed.count + moves.count + deleted.count === 0) {
+      const { new: newFiles, changed, moves, deleted, unreadable } = report;
+      // Anything unreadable is shown in the review, even with nothing else to do: it was not compared.
+      if (newFiles.count + changed.count + moves.count + deleted.count + unreadable.length === 0) {
         this.#set({ step: "start", pairing, notice: "The Replica matches the Primary. Nothing to update." });
         return;
       }
@@ -179,6 +180,7 @@ export class Flow {
         changed,
         moves,
         deleted,
+        unreadable,
         holdingArea: held,
         copiesApproved: false,
         movesApproved: false,
@@ -416,6 +418,7 @@ export class Flow {
     this.#set({
       step: "result",
       pairing: review.pairing,
+      unreadable: review.unreadable,
       copied: done.copied,
       failed: done.failed,
       renamed: done.renamed,

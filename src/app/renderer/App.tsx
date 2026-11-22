@@ -22,6 +22,7 @@ import type {
   StartState,
   SummaryState,
   Totals,
+  Unreadable,
   UpdatingState,
 } from "../view.ts";
 
@@ -196,6 +197,7 @@ function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
     <>
       <Steps current="copies" review={review} />
       <h1>Copies</h1>
+      <UnreadableList unreadable={review.unreadable} />
       <SectionList title="New" section={review.new} />
       <SectionList title="Changed" section={review.changed} />
       {copies.count > 0 ? (
@@ -366,6 +368,11 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
         )}
         {moveToHoldingArea.count > 0 && <li>Move {describe(moveToHoldingArea)} no longer on the Primary into the Holding area.</li>}
         {leaveOnReplica.count > 0 && <li>Leave the files only on the Replica where they are: {describe(leaveOnReplica)}. The deletions are not approved.</li>}
+        {state.review.unreadable.length > 0 && (
+          <li className="warning">
+            Skip {itemCount(state.review.unreadable.length)} that could not be read on the Primary, leaving what the Replica holds there as it is.
+          </li>
+        )}
         <li>Write nothing to the Primary.</li>
       </ul>
       {state.review.safetyStopOverridden && (
@@ -409,12 +416,13 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
   const copied = totalsOfFiles(state.copied);
   const moved = totalsOfFiles(state.moved);
   const renamed = totalsOfMoves(state.renamed);
-  const problems = state.error !== undefined || state.primaryStillReadOnly !== undefined || state.failed.length > 0 || state.notRenamed.length > 0 || state.notMoved.length > 0;
+  const problems = state.error !== undefined || state.primaryStillReadOnly !== undefined || state.failed.length > 0 || state.notRenamed.length > 0 || state.notMoved.length > 0 || state.unreadable.length > 0;
   return (
     <>
       <h1>{problems ? "Update finished with problems" : "Update done"}</h1>
       <Problem text={state.error === undefined ? undefined : `The Update stopped: ${state.error}`} />
       <Problem text={state.primaryStillReadOnly === undefined ? undefined : `The Primary may still be read-only: ${state.primaryStillReadOnly}`} />
+      <UnreadableList unreadable={state.unreadable} />
       <section>
         <h2>Copied: {copied.count === 0 ? "none" : describe(copied)}</h2>
         {copied.count > 0 && (
@@ -468,6 +476,36 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
       </Buttons>
     </>
   );
+}
+
+/**
+ * Unreadable: what could not be read on the Primary, so it was skipped. Shown in full, since each
+ * one is something the Replica may not have an up-to-date backup of.
+ */
+function UnreadableList({ unreadable }: { unreadable: Unreadable[] }) {
+  if (unreadable.length === 0) return null;
+  return (
+    <section>
+      <h2 className="problem">Could not be read on the Primary: {itemCount(unreadable.length)}</h2>
+      <p>
+        These were skipped. Whatever the Replica holds at these paths stays where it is, and is never moved into the
+        Holding area. Check the Primary (permissions, or a failing drive), then compare again.
+      </p>
+      <ul className="files">
+        {unreadable.map((item) => (
+          <li key={item.path}>
+            <span className="name">{item.folder ? `${item.path}/ (folder)` : item.path}</span>
+            <span className="reason">{item.reason}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** "1 item", "3 items". */
+function itemCount(count: number): string {
+  return `${count.toLocaleString("en-US")} ${count === 1 ? "item" : "items"}`;
 }
 
 function Waiting({ title, detail }: { title: string; detail: string }) {

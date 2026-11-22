@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lutimes, symlink } from "node:fs/promises";
+import { chmod, lstat, lutimes, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { compare, Sha256Hasher, type Hasher } from "../src/engine/index.ts";
@@ -435,5 +435,173 @@ describe("Move detection", () => {
     assert.deepEqual(report.moves.moves, [{ from: "Old/a.jpg", to: "New/a.jpg", size: 4 }]);
     assert.deepEqual(report.new.files, [{ path: "New/b.jpg", size: 4 }]);
     assert.deepEqual(report.deleted.files, [{ path: "Old/b.jpg", size: 4 }]);
+  });
+});
+
+describe("Shortcuts on the Primary", () => {
+  /** Makes a shortcut (symbolic link) at `path` under `root`, pointing at `target`, dated `DEFAULT_MTIME`. */
+  async function shortcut(root: string, path: string, target: string): Promise<void> {
+    await symlink(target, join(root, path));
+    await lutimes(join(root, path), DEFAULT_MTIME, DEFAULT_MTIME);
+  }
+
+  /** Compares, then checks the Primary came through untouched: its shortcuts and what they point to. */
+  async function compareUnchanged(primary: string, replica: string) {
+    const before = await snapshotTree(primary);
+    const report = await compare(primary, replica);
+    assert.deepEqual(await snapshotTree(primary), before, "the Primary must never be written to");
+    return report;
+  }
+
+  it("judges two shortcuts with the same target, size and date equal", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree();
+    await shortcut(primary, "link", "Photos/beach.jpg");
+    await shortcut(replica, "link", "Photos/beach.jpg");
+
+    const report = await compareUnchanged(primary, replica);
+
+    assert.deepEqual([report.new.count, report.changed.count, report.deleted.count], [0, 0, 0]);
+  });
+
+  it("reports a shortcut pointing somewhere else as changed, even with the same size and date", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree();
+    await shortcut(primary, "link", "Photos/2026");
+    await shortcut(replica, "link", "Photos/2025");
+
+    const report = await compareUnchanged(primary, replica);
+
+    assert.deepEqual(report.changed.files, [{ path: "link", size: 11 }]);
+  });
+
+  it("never follows a shortcut to a folder: what it points to is not compared", async () => {
+    const primary = await makeTree({ "Real/a.txt": "a" });
+    const replica = await makeTree({ "Real/a.txt": "a" });
+    await shortcut(primary, "Alias of Real", "Real");
+
+    const report = await compareUnchanged(primary, replica);
+
+    assert.deepEqual(report.new.files, [{ path: "Alias of Real", size: 4 }]);
+  });
+});
+
+describe("Unreadable files on the Primary", () => {
+  /**
+   * Compares with `paths` (under the Primary) unreadable to everyone, then makes them readable
+   * again, and checks the Primary came through untouched.
+   */
+  async function compareWithUnreadable(primary: string, replica: string, paths: string[]) {
+    const before = await snapshotTree(primary);
+    const modes = await Promise.all(paths.map(async (path) => (await lstat(join(primary, path))).mode & 0o7777));
+    await Promise.all(paths.map((path) => chmod(join(primary, path), 0o000)));
+    try {
+      return await compare(primary, replica);
+    } finally {
+      await Promise.all(paths.map((path, i) => chmod(join(primary, path), modes[i]!)));
+      assert.deepEqual(await snapshotTree(primary), before, "the Primary must never be written to");
+    }
+  }
+
+  it("lists a folder that cannot be read, keeps its Replica files out of the deletions, and compares the rest", async () => {
+    const primary = await makeTree({ "Private/diary.txt": "d", "Private/Deeper/notes.txt": "n", "Photos/new.jpg": "j" });
+    const replica = await makeTree({ "Private/diary.txt": "d", "private/Deeper/old.txt": "o", "Old/gone.txt": "g" });
+
+    const report = await compareWithUnreadable(primary, replica, ["Private"]);
+
+    assert.deepEqual(report.unreadable, [{ path: "Private", folder: true, reason: "permission denied" }]);
+    assert.deepEqual(report.new.files, [{ path: "Photos/new.jpg", size: 1 }]);
+    assert.deepEqual(report.deleted.files, [{ path: "Old/gone.txt", size: 1 }]);
+  });
+
+  it("skips a new file that cannot be read, and lists it instead", async () => {
+    const primary = await makeTree({ "locked.txt": "secret", "open.txt": "open" });
+    const replica = await makeTree();
+
+    const report = await compareWithUnreadable(primary, replica, ["locked.txt"]);
+
+    assert.deepEqual(report.new.files, [{ path: "open.txt", size: 4 }]);
+    assert.deepEqual(report.unreadable, [{ path: "locked.txt", folder: false, reason: "permission denied" }]);
+  });
+
+  it("skips a changed file that cannot be read, and keeps its Replica copy out of the deletions", async () => {
+    const primary = await makeTree({ "locked.txt": "edited since" });
+    const replica = await makeTree({ "locked.txt": "older" });
+
+    const report = await compareWithUnreadable(primary, replica, ["locked.txt"]);
+
+    assert.deepEqual([report.changed.count, report.deleted.count], [0, 0]);
+    assert.deepEqual(report.unreadable, [{ path: "locked.txt", folder: false, reason: "permission denied" }]);
+  });
+
+  it("lists nothing for a file that cannot be read but matches its Replica copy, as there is nothing to copy", async () => {
+    const primary = await makeTree({ "locked.txt": "same" });
+    const replica = await makeTree({ "locked.txt": "same" });
+
+    const report = await compareWithUnreadable(primary, replica, ["locked.txt"]);
+
+    assert.deepEqual(report.unreadable, []);
+    assert.deepEqual([report.new.count, report.changed.count, report.deleted.count], [0, 0, 0]);
+  });
+
+  it("keeps out of the deletions the Replica copy of a moved file that cannot be read on the Primary", async () => {
+    const primary = await makeTree({ "New/photo.jpg": "pixels" });
+    const replica = await makeTree({ "Old/photo.jpg": "pixels" });
+
+    const report = await compareWithUnreadable(primary, replica, ["New/photo.jpg"]);
+
+    assert.deepEqual([report.new.count, report.moves.count, report.deleted.count], [0, 0, 0]);
+    assert.deepEqual(report.unreadable, [{ path: "New/photo.jpg", folder: false, reason: "permission denied" }]);
+  });
+
+  it("keeps out of the deletions every Replica file that looks like a moved file that cannot be read, even when more than one does", async () => {
+    const primary = await makeTree({ "New/photo.jpg": "pixels" });
+    const replica = await makeTree({ "Old/photo.jpg": "pixels", "Older/photo.jpg": "pixels", "Old/other.jpg": "pixels" });
+
+    const report = await compareWithUnreadable(primary, replica, ["New/photo.jpg"]);
+
+    assert.deepEqual(report.deleted.files, [{ path: "Old/other.jpg", size: 6 }]);
+    assert.deepEqual(report.unreadable, [{ path: "New/photo.jpg", folder: false, reason: "permission denied" }]);
+  });
+
+  it("keeps a Replica file that looks like a moved file that cannot be read out of the moves too", async () => {
+    // A/photo.jpg is changed and cannot be read, so the Replica's Old/photo.jpg may be its only backup.
+    // B/photo.jpg alone would make Old/photo.jpg a move to B: it must stay where it is instead.
+    const primary = await makeTree({ "A/photo.jpg": "pixels", "B/photo.jpg": "pixels" });
+    const replica = await makeTree({ "A/photo.jpg": "older", "Old/photo.jpg": "pixels" });
+
+    const report = await compareWithUnreadable(primary, replica, ["A/photo.jpg"]);
+
+    assert.equal(report.moves.count, 0);
+    assert.deepEqual(report.new.files, [{ path: "B/photo.jpg", size: 6 }]);
+    assert.deepEqual([report.changed.count, report.deleted.count], [0, 0]);
+    assert.deepEqual(report.unreadable, [{ path: "A/photo.jpg", folder: false, reason: "permission denied" }]);
+  });
+
+  it("names a cause it has no words for, rather than showing the bare code", async () => {
+    const primary = await makeTree({ "New/photo.jpg": "pixels" });
+    const replica = await makeTree({ "Old/photo.jpg": "pixels" });
+    const sha256 = new Sha256Hasher();
+    const failing: Hasher = {
+      checksum: (path) =>
+        path.startsWith(primary)
+          ? Promise.reject(Object.assign(new Error("ELOOP: too many symbolic links"), { code: "ELOOP" }))
+          : sha256.checksum(path),
+    };
+
+    const report = await compare(primary, replica, { hasher: failing });
+
+    assert.deepEqual(report.unreadable, [{ path: "New/photo.jpg", folder: false, reason: "unexpected reason: ELOOP" }]);
+  });
+
+  it("does not count a Replica file kept back this way towards the Safety stop", async () => {
+    const files = Object.fromEntries(Array.from({ length: 150 }, (_, i) => [`Private/${i}.txt`, "x"]));
+    const primary = await makeTree(files);
+    const replica = await makeTree(files);
+
+    const report = await compareWithUnreadable(primary, replica, ["Private"]);
+
+    assert.equal(report.deleted.count, 0);
+    assert.equal(report.safetyStop, false);
   });
 });

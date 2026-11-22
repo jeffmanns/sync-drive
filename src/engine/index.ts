@@ -20,6 +20,7 @@ export {
   type Report,
   type Section,
   type Totals,
+  type Unreadable,
 } from "./report.ts";
 export {
   checkFreeSpace,

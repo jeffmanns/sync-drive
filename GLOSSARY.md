@@ -53,7 +53,7 @@ A file moved or renamed into another folder on the Primary since the last Update
 _Avoid_: relocation, rename (for the Report section)
 
 **Quick compare**:
-A comparison that judges files equal by size and modification date alone (dates less than a hundredth of a second apart count as the same), without reading their contents.
+A comparison that judges files equal by size and modification date alone (dates less than a hundredth of a second apart count as the same), without reading their contents. Two Shortcuts must also point to the same path (ADR 0015).
 _Avoid_: fast scan, shallow compare
 
 **Deep verify**:
@@ -63,6 +63,14 @@ _Avoid_: full scan, integrity check, hash compare
 **Exclusion**:
 A path pattern the user has chosen to leave out of every comparison, in addition to the macOS system files that are always skipped.
 _Avoid_: ignore rule, filter
+
+**Shortcut**:
+A symbolic link. sync-drive never follows one: it compares a shortcut by its target, size and date, and an Update copies it as a shortcut with the same target (ADR 0015). Not a Finder alias, which is an ordinary file to sync-drive and is copied byte for byte, never resolved.
+_Avoid_: symlink, link (in what the owner reads)
+
+**Unreadable**:
+Something on the Primary that a comparison could not read: a folder it could not list, or a file it could not look at or open to copy. It is skipped and listed in the Report as unreadable, and what the Replica holds at or under its path is never treated as deleted (ADR 0015).
+_Avoid_: corrupt, missing, failed
 
 **Anomaly**:
 A difference that should not occur if the Replica is only ever changed by updates, such as a Replica copy newer than its Primary counterpart. Flagged in the report for the user's attention.

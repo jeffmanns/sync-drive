@@ -1,6 +1,6 @@
 # Copies are verified by SHA-256 before they are renamed into place
 
-An Update must not count a file as copied until the copy is confirmed identical to the Primary's. The size and dates matching (ADR 0005) does not prove the contents match. So after each copy, Update reads the Primary file and the copy in full and compares their SHA-256 checksums. Only a match is renamed into place. A mismatch is discarded from the Incoming folder and listed as failed, so the Replica keeps its earlier version, if any. The owner settled this while building #7.
+An Update must not count a file as copied until the copy is confirmed identical to the Primary's. The size and dates matching (ADR 0005) does not prove the contents match. So after each copy, Update reads the Primary file and the copy in full and compares their SHA-256 checksums. Only a match is renamed into place. A Shortcut is checked by reading both targets instead, as a checksum would follow it (ADR 0015, #10). A mismatch is discarded from the Incoming folder and listed as failed, so the Replica keeps its earlier version, if any. The owner settled this while building #7.
 
 ## The decision
 

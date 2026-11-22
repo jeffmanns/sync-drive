@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { after, afterEach, describe, it } from "node:test";
@@ -235,6 +235,51 @@ describe("app flow: Comparing and Copies", () => {
 
     assert.equal(stateOf(flow).step, "start");
     assert.match(stateOf(flow).notice, /matches the Primary/);
+  });
+});
+
+describe("app flow: what cannot be read on the Primary", () => {
+  /** Runs `during` with the Primary folder `folder` unreadable, then makes it readable again for the Primary's check. */
+  async function withUnreadable(primary: string, folder: string, during: () => Promise<void>): Promise<void> {
+    await chmod(join(primary, folder), 0o000);
+    try {
+      await during();
+    } finally {
+      await chmod(join(primary, folder), 0o755);
+    }
+  }
+
+  it("lists it in the review and on the Result, copies the rest, and keeps its Replica copy", async () => {
+    const { flow, primary, replica } = await pairedMac(
+      { "Private/diary.txt": "diary", "new.txt": "new" },
+      { "Private/diary.txt": "diary", "Private/older.txt": "older" },
+    );
+    const unreadable = [{ path: "Private", folder: true, reason: "permission denied" }];
+
+    await withUnreadable(primary, "Private", async () => {
+      await flow.compare();
+      assert.equal(stateOf(flow).step, "copies");
+      assert.deepEqual(stateOf(flow).review.unreadable, unreadable);
+      assert.deepEqual(stateOf(flow).review.deleted.files, [], "never treated as deleted");
+      flow.approveCopies(true);
+      toSummary(flow);
+      assert.deepEqual(stateOf(flow).review.unreadable, unreadable, "still shown on the Summary");
+      await flow.apply();
+    });
+
+    assert.equal(stateOf(flow).step, "result");
+    assert.deepEqual(stateOf(flow).copied, [{ path: "new.txt", size: 3 }]);
+    assert.deepEqual(stateOf(flow).unreadable, unreadable);
+    assert.equal(await readFile(join(replica, "Private/older.txt"), "utf8"), "older");
+  });
+
+  it("goes on to the review, rather than saying the drives match, when only something unreadable stands out", async () => {
+    const { flow, primary } = await pairedMac({ "Private/diary.txt": "diary", "a.txt": "same" }, { "a.txt": "same" });
+
+    await withUnreadable(primary, "Private", () => flow.compare());
+
+    assert.equal(stateOf(flow).step, "copies");
+    assert.deepEqual(stateOf(flow).review.unreadable, [{ path: "Private", folder: true, reason: "permission denied" }]);
   });
 });
 

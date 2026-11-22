@@ -4,7 +4,7 @@
  * nothing from Node, so the screens can use it too.
  */
 import type { PairedDrives, Pairing } from "../engine/pairing.ts";
-import type { FileEntry, Move, MoveGroup, MovesSection, Section, Totals } from "../engine/report.ts";
+import type { FileEntry, Move, MoveGroup, MovesSection, Section, Totals, Unreadable } from "../engine/report.ts";
 import { SAFETY_STOP_PERCENT } from "../engine/safety-stop-limits.ts";
 import { fileCount, formatSize } from "../format.ts";
 
@@ -105,6 +105,11 @@ export interface Review {
   deleted: Section;
   /** Files moved or renamed on the Primary, confirmed by checksum, which the moves Approval renames on the Replica. */
   moves: MovesSection;
+  /**
+   * Unreadable: what could not be read on the Primary, in path order. Each is skipped, and what the
+   * Replica holds at or under its path stays there, whatever is approved.
+   */
+  unreadable: Unreadable[];
   /** The one all-or-nothing Approval for copying the new and changed files. */
   copiesApproved: boolean;
   /**
@@ -198,6 +203,8 @@ export type PrimaryMountState = "remounting read-only" | "read-only" | "remounti
 export interface ResultState {
   step: "result";
   pairing: Pairing;
+  /** What could not be read on the Primary when compared, and so was skipped. What the Replica holds there was left alone. */
+  unreadable: Unreadable[];
   copied: FileEntry[];
   /** Every file that was not copied, and why. The Replica keeps its earlier version of each, if any. */
   failed: FailedFile[];
@@ -332,4 +339,4 @@ function percent(part: number, whole: number): string {
 /** The IPC channels between the main process and the screens. */
 export const CHANNELS = { state: "flow:state", action: "flow:action" } as const;
 
-export type { FileEntry, Move, MoveGroup, MovesSection, PairedDrives, Pairing, Section, Totals };
+export type { FileEntry, Move, MoveGroup, MovesSection, PairedDrives, Pairing, Section, Totals, Unreadable };

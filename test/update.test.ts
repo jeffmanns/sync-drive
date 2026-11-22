@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { lstat, mkdir, readdir, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, lstat, lutimes, mkdir, readdir, readFile, readlink, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
 import { compare, update, UpdateStoppedError, type Approvals, type FileCopier } from "../src/engine/index.ts";
@@ -17,6 +17,8 @@ import {
 } from "./helpers/trees.ts";
 
 after(removeTrees);
+
+const run = promisify(execFile);
 
 const APPROVED: Approvals = { update: true, moves: false, deletions: false };
 const APPROVED_WITH_DELETIONS: Approvals = { update: true, moves: false, deletions: true };
@@ -80,7 +82,6 @@ describe("Update", () => {
     const created = new Date("2020-01-01T00:00:00Z");
     await utimes(file, created, created);
     await utimes(file, 1_700_000_000.123456, 1_700_000_000.123456);
-    const run = promisify(execFile);
     await run("xattr", ["-wx", "com.apple.metadata:_kMDItemUserTags", RED_TAG_HEX, file]);
     await run("xattr", ["-w", "com.example.note", "kept", file]);
     await run("chflags", ["hidden", file]);
@@ -201,21 +202,6 @@ describe("Update", () => {
     ]);
     assert.deepEqual(await readdir(replica), []);
     assert.deepEqual(await snapshotTree(primary), primaryAfterEdit, "only the user's edit touched the Primary");
-  });
-
-  it("never follows a shortcut on the Primary, and says it was not copied", async () => {
-    const elsewhere = await makeTree({ "secret.txt": "not on the Primary" });
-    const primary = await makeTree();
-    await symlink(join(elsewhere, "secret.txt"), join(primary, "link.txt"));
-    const replica = await makeTree();
-
-    const result = await compareAndUpdate(primary, replica);
-
-    assert.deepEqual(result.copied, []);
-    assert.equal(result.failed.length, 1);
-    assert.equal(result.failed[0]!.path, "link.txt");
-    assert.match(result.failed[0]!.reason, /shortcut/);
-    assert.deepEqual(await readdir(replica), []);
   });
 
   it("refuses, writing nothing, when the Replica is the Primary or inside it", async () => {
@@ -438,6 +424,48 @@ describe("Update: deletions and the Holding area", () => {
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 
+  for (const [mode, what] of [[0o000, "cannot be opened"], [0o100, "can be opened but not listed"]] as const) {
+    it(`leaves a deleted file in place when its folder on the Primary ${what} since the comparison, as a comparison would not call it deleted`, async () => {
+      const primary = await makeTree();
+      const replica = await makeTree({ "Private/diary.txt": "d", "gone.txt": "gone" });
+      const report = await compare(primary, replica);
+      await mkdir(join(primary, "Private"));
+      const primaryBefore = await snapshotTree(primary);
+      await chmod(join(primary, "Private"), mode);
+      let result;
+      try {
+        result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() });
+      } finally {
+        await chmod(join(primary, "Private"), 0o755);
+      }
+
+      assert.deepEqual(result.moved, [{ path: "gone.txt", size: 4 }]);
+      assert.deepEqual(result.notMoved.map((file) => file.path), ["Private/diary.txt"]);
+      assert.match(result.notMoved[0]!.reason, /permission denied|cannot be read/);
+      assert.equal(await readFile(join(replica, "Private/diary.txt"), "utf8"), "d");
+      assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    });
+  }
+
+  it("leaves a deleted file in place when a folder of its name that cannot be read is on the Primary since the comparison", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree({ "Private": "a file on the Replica" });
+    const report = await compare(primary, replica);
+    await mkdir(join(primary, "Private"));
+    const primaryBefore = await snapshotTree(primary);
+    await chmod(join(primary, "Private"), 0o000);
+    let result;
+    try {
+      result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() });
+    } finally {
+      await chmod(join(primary, "Private"), 0o755);
+    }
+
+    assert.deepEqual(result.moved, []);
+    assert.deepEqual(result.notMoved.map((file) => file.path), ["Private"]);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
   it("moves a deleted file when a folder of its name is on the Primary since the comparison, as a comparison would still call it deleted", async () => {
     const primary = await makeTree();
     const replica = await makeTree({ "now-a-folder": "x" });
@@ -606,6 +634,106 @@ describe("Update: moves", () => {
 
     assert.deepEqual(result.moved, [{ path: "Projects", size: 8 }]);
     assert.deepEqual(result.renamed, [{ from: "Old/a.jpg", to: "Projects/a.jpg", size: 4 }]);
+  });
+});
+
+describe("Update: shortcuts, Finder aliases and special files on the Primary", () => {
+  /** Makes a shortcut (symbolic link) at `path` under `root`, pointing at `target`, dated `date`. */
+  async function shortcut(root: string, path: string, target: string, date = new Date("2026-02-03T04:05:06Z")): Promise<void> {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await symlink(target, join(root, path));
+    await lutimes(join(root, path), date, date);
+  }
+
+  it("copies a shortcut as a shortcut with the same target and metadata, never following it", async () => {
+    const elsewhere = await makeTree({ "secret.txt": "not on the Primary" });
+    const primary = await makeTree();
+    await shortcut(primary, "Links/to-secret", join(elsewhere, "secret.txt"));
+    await shortcut(primary, "Links/to-folder", "../Photos");
+    await run("xattr", ["-s", "-w", "com.example.tag", "kept", join(primary, "Links/to-secret")]);
+    const replica = await makeTree();
+
+    const result = await compareAndUpdate(primary, replica);
+
+    assert.deepEqual(result.failed, []);
+    assert.deepEqual(result.copied.map((file) => file.path).sort(), ["Links/to-folder", "Links/to-secret"]);
+    for (const path of ["Links/to-secret", "Links/to-folder"]) {
+      const copy = await lstat(join(replica, path));
+      assert.ok(copy.isSymbolicLink(), `${path} is a shortcut on the Replica`);
+      assert.equal(await readlink(join(replica, path)), await readlink(join(primary, path)));
+      assert.equal(await metadataOf(join(replica, path)), await metadataOf(join(primary, path)));
+    }
+    const again = await compare(primary, replica);
+    assert.deepEqual([again.new.count, again.changed.count, again.deleted.count], [0, 0, 0]);
+  });
+
+  it("copies a broken shortcut as it is", async () => {
+    const primary = await makeTree();
+    await shortcut(primary, "broken", "nowhere/at/all");
+    const replica = await makeTree();
+
+    const result = await compareAndUpdate(primary, replica);
+
+    assert.deepEqual(result.copied.map((file) => file.path), ["broken"]);
+    assert.equal(await readlink(join(replica, "broken")), "nowhere/at/all");
+  });
+
+  it("replaces a Replica shortcut that points somewhere else, and not what it points to", async () => {
+    const primary = await makeTree({ "2025/a.txt": "a", "2026/b.txt": "b" });
+    const replica = await makeTree({ "2025/a.txt": "a", "2026/b.txt": "b" });
+    await shortcut(primary, "Latest", "2026");
+    await shortcut(replica, "Latest", "2025");
+    const replicaFolders = await snapshotTree(join(replica, "2025"));
+
+    const result = await compareAndUpdate(primary, replica);
+
+    assert.deepEqual(result.copied.map((file) => file.path), ["Latest"]);
+    assert.equal(await readlink(join(replica, "Latest")), "2026");
+    assert.deepEqual(await snapshotTree(join(replica, "2025")), replicaFolders);
+  });
+
+  it("replaces a Replica file with the Primary's shortcut, and a Replica shortcut with the Primary's file", async () => {
+    const primary = await makeTree({ "was-a-link.txt": "now a file" });
+    await shortcut(primary, "was-a-file.txt", "somewhere.txt");
+    const replica = await makeTree({ "was-a-file.txt": "a file" });
+    await shortcut(replica, "was-a-link.txt", "somewhere-else.txt");
+
+    const result = await compareAndUpdate(primary, replica);
+
+    assert.deepEqual(result.failed, []);
+    assert.equal(await readlink(join(replica, "was-a-file.txt")), "somewhere.txt");
+    assert.ok((await lstat(join(replica, "was-a-link.txt"))).isFile());
+    assert.equal(await readFile(join(replica, "was-a-link.txt"), "utf8"), "now a file");
+  });
+
+  it("copies a Finder alias as an alias file, never resolving it", async () => {
+    const elsewhere = await makeTree({ "original.txt": "the original, not on the Primary" });
+    const primary = await makeTree({ "Alias to original": "book\0\0\0\0mark bookmark data naming the original" });
+    // A Finder alias is a file whose Finder info has the type "alis", the creator "MACS" and the alias flag.
+    const finderInfo = "616C69734D414353" + "8000" + "0".repeat(44);
+    await run("xattr", ["-w", "-x", "com.apple.FinderInfo", finderInfo, join(primary, "Alias to original")]);
+    const replica = await makeTree();
+    const elsewhereBefore = await snapshotTree(elsewhere);
+
+    const result = await compareAndUpdate(primary, replica);
+
+    assert.deepEqual(result.copied.map((file) => file.path), ["Alias to original"]);
+    assert.deepEqual(await snapshotTree(replica), await snapshotTree(primary));
+    assert.equal((await extendedAttributes(join(replica, "Alias to original")))["com.apple.FinderInfo"], finderInfo);
+    assert.deepEqual(await snapshotTree(elsewhere), elsewhereBefore);
+  });
+
+  it("does not copy a special file such as a named pipe, and says why", async () => {
+    const primary = await makeTree({ "ok.txt": "ok" });
+    await run("mkfifo", [join(primary, "pipe")]);
+    const replica = await makeTree();
+
+    const result = await compareAndUpdate(primary, replica);
+
+    assert.deepEqual(result.copied.map((file) => file.path), ["ok.txt"]);
+    assert.deepEqual(result.failed.map((file) => file.path), ["pipe"]);
+    assert.match(result.failed[0]!.reason, /special file/);
+    assert.deepEqual(await readdir(replica), ["ok.txt"]);
   });
 });
 
