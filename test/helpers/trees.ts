@@ -14,7 +14,10 @@ export type FileSpec = string | { content: string; mtime?: Date };
 /** Relative path (with `/`) → file contents, optionally with a modification date. */
 export type TreeSpec = Record<string, FileSpec>;
 
+const run = promisify(execFile);
+
 const created: string[] = [];
+/** Device nodes (e.g. `/dev/disk5`) of the disk images mounted by `makeDiskImageTree`. */
 const mountedImages: string[] = [];
 
 /** Builds a real directory tree in a fresh temporary directory and returns its path. */
@@ -44,11 +47,12 @@ export async function makeDiskImageTree(
   const dir = await makeTree();
   const image = join(dir, "drive.dmg");
   const mountPoint = join(dir, "volume");
-  const run = promisify(execFile);
-  await run("hdiutil", ["create", "-quiet", "-size", "8m", "-fs", fileSystem, "-volname", name, image]);
+  await withRetries(() => run("hdiutil", ["create", "-quiet", "-size", "8m", "-fs", fileSystem, "-volname", name, image]));
   await mkdir(mountPoint);
-  await run("hdiutil", ["attach", "-quiet", "-nobrowse", "-mountpoint", mountPoint, image]);
-  mountedImages.push(mountPoint);
+  const { stdout } = await withRetries(() =>
+    run("hdiutil", ["attach", "-nobrowse", "-mountpoint", mountPoint, image]),
+  );
+  mountedImages.push(deviceOf(stdout));
   await writeTree(mountPoint, spec);
   return mountPoint;
 }
@@ -66,27 +70,43 @@ async function writeTree(root: string, spec: TreeSpec): Promise<void> {
 /** Removes every tree made by `makeTree` and `makeCaseSensitiveTree`. Call from an `after` hook. */
 export async function removeTrees(): Promise<void> {
   const failures: unknown[] = [];
-  for (const mountPoint of mountedImages.splice(0)) {
-    await detach(mountPoint).catch((error: unknown) => failures.push(error));
+  for (const device of mountedImages.splice(0)) {
+    await detach(device).catch((error: unknown) => failures.push(error));
   }
   await Promise.all(created.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   if (failures.length > 0) throw new AggregateError(failures, "Could not detach every test disk image");
 }
 
+/** The whole-disk device node (e.g. `/dev/disk5`) in the output of `hdiutil attach`. */
+function deviceOf(attachOutput: string): string {
+  const device = attachOutput.match(/^\/dev\/disk\d+/m)?.[0];
+  if (device === undefined) throw new Error(`hdiutil attach did not name a device:\n${attachOutput}`);
+  return device;
+}
+
 /**
- * Detaches the disk image mounted at `mountPoint`. macOS (Spotlight, fseventsd) can hold a freshly
- * mounted volume for a moment, and then even a forced detach fails as busy (exit code 16), so it is
- * tried again a few times before giving up.
+ * Detaches the disk image at `device`. macOS (Spotlight, fseventsd) can hold a freshly used volume
+ * for a while, and on a slow CI runner even a forced detach then fails as busy. So it is retried,
+ * and the last resort is to force the volume to unmount through `diskutil` before detaching again.
  */
-async function detach(mountPoint: string): Promise<void> {
-  const attempts = 6;
+async function detach(device: string): Promise<void> {
+  try {
+    await withRetries(() => run("hdiutil", ["detach", "-force", device]));
+  } catch {
+    await run("diskutil", ["unmountDisk", "force", device]).catch(() => undefined);
+    await run("hdiutil", ["detach", "-force", device]);
+  }
+}
+
+/** Runs `action`, retrying with a growing pause (about 30 s in all) while it fails. */
+async function withRetries<T>(action: () => Promise<T>): Promise<T> {
+  const attempts = 8;
   for (let attempt = 1; ; attempt++) {
     try {
-      await promisify(execFile)("hdiutil", ["detach", "-quiet", "-force", mountPoint]);
-      return;
+      return await action();
     } catch (error) {
       if (attempt === attempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
     }
   }
 }
@@ -128,13 +148,12 @@ export async function metadataOf(path: string, stats?: BigIntStats): Promise<str
 
 /** The file's BSD flags (e.g. hidden, locked) in hex, via `stat`. Shortcuts are not followed. */
 async function fileFlags(path: string): Promise<string> {
-  const { stdout } = await promisify(execFile)("stat", ["-f", "%Xf", path]);
+  const { stdout } = await run("stat", ["-f", "%Xf", path]);
   return stdout.trim();
 }
 
 /** Every extended attribute of `path` (not following shortcuts), name → value in hex, via `xattr`. */
 export async function extendedAttributes(path: string): Promise<Record<string, string>> {
-  const run = promisify(execFile);
   const { stdout } = await run("xattr", ["-s", path]);
   const names = stdout.split("\n").filter((name) => name !== "").sort();
   const result: Record<string, string> = {};
