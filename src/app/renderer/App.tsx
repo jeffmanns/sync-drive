@@ -1,17 +1,22 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { hasDeletionsStep, totalsOf, totalsOfFiles } from "../view.ts";
+import { reviewSteps, totalsOf, totalsOfFiles } from "../view.ts";
 import type {
   Action,
   CopiesState,
   DeletionsState,
   FailedFile,
+  FailedMove,
   FileEntry,
   FlowState,
+  Move,
+  MovesSection,
+  MovesState,
   PairingState,
   RefusedState,
   ResultState,
   Review,
+  ReviewStep,
   Section,
   StartState,
   SummaryState,
@@ -52,6 +57,8 @@ export function App() {
             return <RefusedScreen state={state} {...props} />;
           case "copies":
             return <CopiesScreen state={state} {...props} />;
+          case "moves":
+            return <MovesScreen state={state} {...props} />;
           case "deletions":
             return <DeletionsScreen state={state} {...props} />;
           case "summary":
@@ -172,6 +179,64 @@ function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
   );
 }
 
+function MovesScreen({ state, send, busy }: ScreenProps<MovesState>) {
+  const { review } = state;
+  return (
+    <>
+      <Steps current="moves" review={review} />
+      <h1>Moves</h1>
+      <p>
+        These files were moved or renamed on the Primary. Each was matched by name, size and date, and its contents confirmed
+        identical by checksum. Approving renames them on the Replica: nothing is copied, and nothing goes into the Holding area.
+      </p>
+      <MovesList title="Moved" moves={review.moves} />
+      <label className="confirm">
+        <input type="checkbox" checked={review.movesApproved} disabled={busy} onChange={(event) => send({ type: "approveMoves", approved: event.target.checked })} />
+        Rename all {describe(review.moves)} on the Replica.
+      </label>
+      <p className="note">Without this Approval, they stay at their old paths on the Replica, and nothing is copied to the new ones.</p>
+      <Buttons>
+        <button onClick={() => send({ type: "restart" })} disabled={busy}>Start over</button>
+        <button onClick={() => send({ type: "back" })} disabled={busy}>Back</button>
+        <button className="primary" onClick={() => send({ type: "next" })} disabled={busy}>Next</button>
+      </Buttons>
+    </>
+  );
+}
+
+/** The Report's moves, grouped by the folder moved. Every folder expands to its full list of moves. */
+function MovesList({ title, moves }: { title: string; moves: MovesSection }) {
+  return (
+    <section>
+      <h2>{title}: {moves.count === 0 ? "none" : describe(moves)}</h2>
+      {moves.folders.map((group) => (
+        <Expandable key={`${group.from}\0${group.to}`} label={`${folderLabel(group.from)} → ${folderLabel(group.to)}`} totals={group}>
+          <MoveList moves={group.moves} />
+        </Expandable>
+      ))}
+    </section>
+  );
+}
+
+function folderLabel(folder: string): string {
+  return folder === "" ? "(top level)" : `${folder}/`;
+}
+
+/** Each move, old path → new path. */
+function MoveList({ moves }: { moves: (Move | FailedMove)[] }) {
+  return (
+    <ul className="files">
+      {moves.map((move) => (
+        <li key={move.from}>
+          <span className="name">{move.from} → {move.to}</span>
+          <span className="size">{formatSize(move.size)}</span>
+          {"reason" in move && <span className="reason">{move.reason}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function DeletionsScreen({ state, send, busy }: ScreenProps<DeletionsState>) {
   const { review } = state;
   const held = review.holdingArea;
@@ -208,7 +273,7 @@ function SectionList({ title, section }: { title: string; section: Section }) {
     <section>
       <h2>{title}: {section.count === 0 ? "none" : describe(section)}</h2>
       {section.folders.map((group) => (
-        <Expandable key={group.folder} label={group.folder === "" ? "(top level)" : `${group.folder}/`} totals={group}>
+        <Expandable key={group.folder} label={folderLabel(group.folder)} totals={group}>
           <FileList files={group.files} inFolder={group.folder} />
         </Expandable>
       ))}
@@ -247,8 +312,8 @@ function FileList({ files, inFolder }: { files: (FileEntry | FailedFile)[]; inFo
 }
 
 function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
-  const { copy, moveToHoldingArea, deleteFromHoldingArea, leaveOnReplica } = state.apply;
-  const canApply = copy.count + moveToHoldingArea.count > 0;
+  const { copy, renameOnReplica, leaveAtOldPaths, moveToHoldingArea, deleteFromHoldingArea, leaveOnReplica } = state.apply;
+  const canApply = copy.count + renameOnReplica.count + moveToHoldingArea.count > 0;
   const hasCopies = totalsOf(state.review.new, state.review.changed).count > 0;
   return (
     <>
@@ -259,6 +324,8 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
         {copy.count > 0
           ? <li>Copy {describe(copy)} from the Primary to the Replica.</li>
           : hasCopies && <li>Copy nothing: the copies are not approved.</li>}
+        {renameOnReplica.count > 0 && <li>Rename {describe(renameOnReplica)} moved on the Primary to their new paths on the Replica.</li>}
+        {leaveAtOldPaths.count > 0 && <li>Leave the moved files at their old paths on the Replica: {describe(leaveAtOldPaths)}. The moves are not approved.</li>}
         {deleteFromHoldingArea.count > 0 && (
           <li className="warning">Permanently delete the {describe(deleteFromHoldingArea)} in the Holding area from an earlier Update.</li>
         )}
@@ -277,23 +344,21 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
 }
 
 function UpdatingScreen({ state }: { state: UpdatingState }) {
-  const { moving, copying } = state;
-  let work: string;
-  // Apply moves the deletions first, then copies (see update()).
-  if (moving.count > 0 && copying.count > 0) {
-    work = `Moving ${describe(moving)} into the Holding area, then copying ${describe(copying)} to the Replica.`;
-  } else if (moving.count > 0) {
-    work = `Moving ${describe(moving)} into the Holding area.`;
-  } else {
-    work = `Copying ${describe(copying)} to the Replica.`;
-  }
-  return <Waiting title="Updating…" detail={`${work} Keep both drives connected.`} />;
+  const { moving, renaming, copying } = state;
+  // In the order Apply does them: deletions, then moves, then copies (see update()).
+  const work = [
+    ...(moving.count > 0 ? [`moving ${describe(moving)} into the Holding area`] : []),
+    ...(renaming.count > 0 ? [`renaming ${describe(renaming)} moved on the Primary`] : []),
+    ...(copying.count > 0 ? [`copying ${describe(copying)} to the Replica`] : []),
+  ].join(", then ");
+  return <Waiting title="Updating…" detail={`${work.charAt(0).toUpperCase()}${work.slice(1)}. Keep both drives connected.`} />;
 }
 
 function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
   const copied = totalsOfFiles(state.copied);
   const moved = totalsOfFiles(state.moved);
-  const problems = state.error !== undefined || state.failed.length > 0 || state.notMoved.length > 0;
+  const renamed = totalsOf(...state.renamed.map((move) => ({ count: 1, totalSize: move.size })));
+  const problems = state.error !== undefined || state.failed.length > 0 || state.notRenamed.length > 0 || state.notMoved.length > 0;
   return (
     <>
       <h1>{problems ? "Update finished with problems" : "Update done"}</h1>
@@ -313,6 +378,22 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
           <FileList files={state.failed} />
         </section>
       )}
+      {renamed.count > 0 && (
+        <section>
+          <h2>Renamed to their new paths: {describe(renamed)}</h2>
+          <Expandable label="Every renamed file" totals={renamed}>
+            <MoveList moves={state.renamed} />
+          </Expandable>
+        </section>
+      )}
+      {state.notRenamed.length > 0 && (
+        <section>
+          <h2 className="problem">Not renamed: {fileCount(state.notRenamed.length)}</h2>
+          <p>Each is still at its old path on the Replica. Compare again to see it.</p>
+          <MoveList moves={state.notRenamed} />
+        </section>
+      )}
+      {state.movesLeftAtOldPaths.count > 0 && <p className="note">Left at their old paths on the Replica: {describe(state.movesLeftAtOldPaths)} moved on the Primary.</p>}
       {moved.count > 0 && (
         <section>
           <h2>Moved into the Holding area: {describe(moved)}</h2>
@@ -346,16 +427,13 @@ function Waiting({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-/** Where the review is, among the steps up to Apply. Deletions is there only when there is something to delete. */
-function Steps({ current, review }: { current: "copies" | "deletions" | "summary"; review: Review }) {
-  const steps = [
-    { step: "copies", label: "Copies" },
-    ...(hasDeletionsStep(review) ? [{ step: "deletions", label: "Deletions" }] : []),
-    { step: "summary", label: "Summary" },
-  ];
+const STEP_LABELS: Record<ReviewStep, string> = { copies: "Copies", moves: "Moves", deletions: "Deletions", summary: "Summary" };
+
+/** Where the review is, among the steps up to Apply. Moves and Deletions are there only when there is something to move or delete. */
+function Steps({ current, review }: { current: ReviewStep; review: Review }) {
   return (
     <ol className="steps">
-      {steps.map(({ step, label }) => <li key={step} aria-current={current === step ? "step" : undefined}>{label}</li>)}
+      {reviewSteps(review).map((step) => <li key={step} aria-current={current === step ? "step" : undefined}>{STEP_LABELS[step]}</li>)}
       <li>Apply</li>
     </ol>
   );

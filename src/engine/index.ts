@@ -9,7 +9,18 @@ export {
   type Pairing,
 } from "./pairing.ts";
 export { readPairing, writePairing } from "./pairing-file.ts";
-export { makeSection, type FileEntry, type FolderGroup, type Report, type Section, type Totals } from "./report.ts";
+export {
+  makeMovesSection,
+  makeSection,
+  type FileEntry,
+  type FolderGroup,
+  type Move,
+  type MoveGroup,
+  type MovesSection,
+  type Report,
+  type Section,
+  type Totals,
+} from "./report.ts";
 export {
   checkFreeSpace,
   safetyStopApplies,
@@ -22,6 +33,7 @@ export {
   UpdateStoppedError,
   type Approvals,
   type FailedFile,
+  type FailedMove,
   type FileCopier,
   type UpdateResult,
   type UpdateSetup,

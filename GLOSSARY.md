@@ -31,7 +31,7 @@ The unique ID macOS gives each drive (shown as "Volume UUID" in Disk Utility and
 _Avoid_: UUID, disk ID, serial
 
 **Update**:
-The approved act of making the Replica match the Primary: copying new and changed files, and moving files no longer on the Primary into the Holding area.
+The approved act of making the Replica match the Primary: copying new and changed files, renaming Moves, and moving files no longer on the Primary into the Holding area.
 _Avoid_: sync, backup, mirror run
 
 **Safety stop**:
@@ -39,7 +39,7 @@ The check that refuses a whole Update, before anything is written, when the dele
 _Avoid_: mass-deletion guard, threshold, limit
 
 **Approval**:
-The owner's all-or-nothing yes to one section of a Report: one for the new and changed files, a separate one for the deletions. It can be changed freely until the Update is applied, and it belongs to that Report only. The per-file choices on content-mismatch Anomalies are not Approvals.
+The owner's all-or-nothing yes to one section of a Report: one for the new and changed files, one for the Moves, and one for the deletions (ADR 0011). It can be changed freely until the Update is applied, and it belongs to that Report only. The per-file choices on content-mismatch Anomalies are not Approvals.
 _Avoid_: confirmation, consent, selection
 
 ### Comparing
@@ -47,6 +47,10 @@ _Avoid_: confirmation, consent, selection
 **Report**:
 The result of a comparison: every difference between the Primary and the Replica, grouped by kind and by folder, which the owner reviews before any Update. Making it never writes to either drive.
 _Avoid_: diff, results, plan
+
+**Move**:
+A file moved or renamed into another folder on the Primary since the last Update, keeping its name: one file only on the Primary and one only on the Replica with the same name, size and modification date, and confirmed identical by checksum. An Update renames it on the Replica, with nothing copied and nothing sent to the Holding area (ADR 0011). Not the moving of deleted files into the Holding area.
+_Avoid_: relocation, rename (for the Report section)
 
 **Quick compare**:
 A comparison that judges files equal by size and modification date alone (dates less than a hundredth of a second apart count as the same), without reading their contents.

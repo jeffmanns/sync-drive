@@ -254,3 +254,136 @@ describe("Quick compare", () => {
     );
   });
 });
+
+describe("Move detection", () => {
+  it("reports a folder moved on the Primary as moves grouped by folder, not as new and deleted files", async () => {
+    const primary = await makeTree({ "Photos/2026/Iceland/a.jpg": "aaaa", "Photos/2026/Iceland/b.jpg": "bb" });
+    const replica = await makeTree({ "Photos/Iceland/a.jpg": "aaaa", "Photos/Iceland/b.jpg": "bb" });
+
+    const report = await compare(primary, replica);
+
+    assert.deepEqual(report.new.files, []);
+    assert.deepEqual(report.deleted.files, []);
+    assert.equal(report.moves.count, 2);
+    assert.equal(report.moves.totalSize, 6);
+    assert.deepEqual(report.moves.folders, [
+      {
+        from: "Photos/Iceland",
+        to: "Photos/2026/Iceland",
+        count: 2,
+        totalSize: 6,
+        moves: [
+          { from: "Photos/Iceland/a.jpg", to: "Photos/2026/Iceland/a.jpg", size: 4 },
+          { from: "Photos/Iceland/b.jpg", to: "Photos/2026/Iceland/b.jpg", size: 2 },
+        ],
+      },
+    ]);
+  });
+
+  it("treats a candidate whose contents differ as a new file and a deleted file, not a move", async () => {
+    // Same name, size and date, but different contents: perhaps the Replica copy is damaged.
+    const primary = await makeTree({ "Photos/2026/a.jpg": "good" });
+    const replica = await makeTree({ "Photos/a.jpg": "bad!" });
+
+    const report = await compare(primary, replica);
+
+    assert.equal(report.moves.count, 0);
+    assert.deepEqual(report.new.files, [{ path: "Photos/2026/a.jpg", size: 4 }]);
+    assert.deepEqual(report.deleted.files, [{ path: "Photos/a.jpg", size: 4 }]);
+  });
+
+  it("falls back to new plus deleted when two Replica files could be the one moved", async () => {
+    const primary = await makeTree({ "Photos/2026/IMG_0001.jpg": "same" });
+    const replica = await makeTree({ "Photos/Iceland/IMG_0001.jpg": "same", "Photos/Norway/IMG_0001.jpg": "same" });
+
+    const report = await compare(primary, replica);
+
+    assert.equal(report.moves.count, 0);
+    assert.deepEqual(report.new.files, [{ path: "Photos/2026/IMG_0001.jpg", size: 4 }]);
+    assert.equal(report.deleted.count, 2);
+  });
+
+  it("falls back to new plus deleted when two Primary files could be the one moved", async () => {
+    const primary = await makeTree({ "A/IMG_0001.jpg": "same", "B/IMG_0001.jpg": "same" });
+    const replica = await makeTree({ "Old/IMG_0001.jpg": "same" });
+
+    const report = await compare(primary, replica);
+
+    assert.equal(report.moves.count, 0);
+    assert.equal(report.new.count, 2);
+    assert.deepEqual(report.deleted.files, [{ path: "Old/IMG_0001.jpg", size: 4 }]);
+  });
+
+  it("still finds a move when a same-named file of another size or date is also on one side only", async () => {
+    const primary = await makeTree({ "New/a.jpg": "same" });
+    const replica = await makeTree({
+      "Old/a.jpg": "same",
+      "Other/a.jpg": "longer",
+      "Dated/a.jpg": { content: "same", mtime: new Date("2025-01-01T00:00:00Z") },
+    });
+
+    const report = await compare(primary, replica);
+
+    assert.deepEqual(report.moves.moves, [{ from: "Old/a.jpg", to: "New/a.jpg", size: 4 }]);
+    assert.equal(report.deleted.count, 2);
+  });
+
+  it("does not treat a file renamed to another name as a move", async () => {
+    const primary = await makeTree({ "Docs/report-final.pdf": "same" });
+    const replica = await makeTree({ "Docs/report.pdf": "same" });
+
+    const report = await compare(primary, replica);
+
+    assert.equal(report.moves.count, 0);
+  });
+
+  it("groups a moved folder's subfolders under the folder that moved", async () => {
+    const primary = await makeTree({
+      "Photos/2026/Iceland/a.jpg": "a",
+      "Photos/2026/Iceland/Day 2/b.jpg": "bb",
+      "Archive/notes.txt": "nnn",
+    });
+    const replica = await makeTree({
+      "Photos/Iceland/a.jpg": "a",
+      "Photos/Iceland/Day 2/b.jpg": "bb",
+      "notes.txt": "nnn",
+    });
+
+    const report = await compare(primary, replica);
+
+    assert.deepEqual(
+      report.moves.folders.map(({ from, to, count, totalSize }) => ({ from, to, count, totalSize })),
+      [
+        { from: "", to: "Archive", count: 1, totalSize: 3 },
+        { from: "Photos/Iceland", to: "Photos/2026/Iceland", count: 2, totalSize: 3 },
+      ],
+    );
+  });
+
+  it("does not count moves towards the Safety stop", async () => {
+    // 150 files moved out of a Replica of 150: as deletions this would be 100% of the Replica.
+    const moved = (prefix: string) =>
+      Object.fromEntries(Array.from({ length: 150 }, (_, i) => [`${prefix}/${i}.txt`, `file ${i}`]));
+    const primary = await makeTree(moved("Photos/2026/Iceland"));
+    const replica = await makeTree(moved("Photos/Iceland"));
+
+    const report = await compare(primary, replica);
+
+    assert.equal(report.moves.count, 150);
+    assert.equal(report.deleted.count, 0);
+    assert.equal(report.safetyStop, false);
+  });
+
+  it("writes nothing to either drive while confirming moves", async () => {
+    const primary = await makeTree({ "New/a.jpg": "same", "New/b.jpg": "good" });
+    const replica = await makeTree({ "Old/a.jpg": "same", "Old/b.jpg": "bad!" });
+    const primaryBefore = await snapshotTree(primary);
+    const replicaBefore = await snapshotTree(replica);
+
+    const report = await compare(primary, replica);
+
+    assert.equal(report.moves.count, 1);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+});

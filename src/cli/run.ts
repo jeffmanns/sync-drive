@@ -11,7 +11,6 @@ import {
   update,
   writePairing,
   type FileCopier,
-  type FileEntry,
   type PairedDrives,
   type Report,
   type Volume,
@@ -129,8 +128,9 @@ async function runCompare(list: boolean, deps: CliDeps): Promise<number> {
 async function runUpdate(list: boolean, allowMassDeletion: boolean, deps: CliDeps): Promise<number> {
   const { drives, report } = await compareAndShow(list, deps);
   const copies = report.new.count + report.changed.count;
+  const moves = report.moves.count;
   const deletions = report.deleted.count;
-  if (copies === 0 && deletions === 0) {
+  if (copies === 0 && moves === 0 && deletions === 0) {
     deps.out("\nNothing to update.");
     return 0;
   }
@@ -164,7 +164,7 @@ async function runUpdate(list: boolean, allowMassDeletion: boolean, deps: CliDep
     return 1;
   }
   deps.out("");
-  // The main approval. With nothing to copy, confirming the deletions approves the Update.
+  // The main approval. With nothing to copy, approving the moves or the deletions approves the Update.
   if (copies > 0) {
     const size = formatSize(report.new.totalSize + report.changed.totalSize);
     const approved = await deps.confirm(`Copy ${copies.toLocaleString("en-US")} new and changed ${copies === 1 ? "file" : "files"} (${size}) to the Replica?`);
@@ -173,6 +173,12 @@ async function runUpdate(list: boolean, allowMassDeletion: boolean, deps: CliDep
       return 0;
     }
   }
+  let movesApproved = false;
+  if (moves > 0) {
+    movesApproved = await deps.confirm(
+      `Rename ${moves.toLocaleString("en-US")} moved ${moves === 1 ? "file" : "files"} (${formatSize(report.moves.totalSize)}) on the Replica to their new paths?`,
+    );
+  }
   let deletionsConfirmed = false;
   if (deletions > 0) {
     await warnAboutHoldingArea(drives.replica.mountPoint, deps);
@@ -180,16 +186,18 @@ async function runUpdate(list: boolean, allowMassDeletion: boolean, deps: CliDep
       `Move ${deletions.toLocaleString("en-US")} deleted ${deletions === 1 ? "file" : "files"} (${formatSize(report.deleted.totalSize)}) into the Holding area on the Replica?`,
     );
   }
-  if (copies === 0 && !deletionsConfirmed) {
+  if (copies === 0 && !movesApproved && !deletionsConfirmed) {
     deps.out("Nothing was written to the Replica.");
     return 0;
   }
-  const result = await update(report, { update: true, deletions: deletionsConfirmed, overrideSafetyStop: allowMassDeletion }, {
+  const result = await update(report, { update: true, moves: movesApproved, deletions: deletionsConfirmed, overrideSafetyStop: allowMassDeletion }, {
     primary: drives.primary.mountPoint,
     replica: drives.replica.mountPoint,
     copier: deps.copier,
   });
   if (copies > 0) deps.out(`Copied ${fileCount(result.copied.length)}, ${formatSize(totalSize(result.copied))}.`);
+  if (movesApproved) deps.out(`Renamed ${fileCount(result.renamed.length)}, ${formatSize(totalSize(result.renamed))}, to their new paths.`);
+  else if (moves > 0) deps.out("Moved files were left at their old paths on the Replica.");
   if (deletionsConfirmed) deps.out(`Moved ${fileCount(result.moved.length)}, ${formatSize(totalSize(result.moved))}, into the Holding area.`);
   else if (deletions > 0) deps.out("Deleted files were left on the Replica.");
   const problems: string[] = [];
@@ -197,6 +205,12 @@ async function runUpdate(list: boolean, allowMassDeletion: boolean, deps: CliDep
     problems.push(
       `Not copied (${result.failed.length}); the Replica keeps its earlier version of each, if any:\n` +
         result.failed.map((file) => `  ${file.path}: ${file.reason}`).join("\n"),
+    );
+  }
+  if (result.notRenamed.length > 0) {
+    problems.push(
+      `Not renamed (${result.notRenamed.length}); each is still at its old path on the Replica:\n` +
+        result.notRenamed.map((move) => `  ${move.from} → ${move.to}: ${move.reason}`).join("\n"),
     );
   }
   if (result.notMoved.length > 0) {
@@ -220,7 +234,7 @@ async function warnAboutHoldingArea(replica: string, deps: CliDeps): Promise<voi
   );
 }
 
-function totalSize(files: FileEntry[]): number {
+function totalSize(files: { size: number }[]): number {
   return files.reduce((total, file) => total + file.size, 0);
 }
 

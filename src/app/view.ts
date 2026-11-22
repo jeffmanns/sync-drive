@@ -4,7 +4,7 @@
  * nothing from Node, so the screens can use it too.
  */
 import type { PairedDrives, Pairing } from "../engine/pairing.ts";
-import type { FileEntry, Section, Totals } from "../engine/report.ts";
+import type { FileEntry, Move, MoveGroup, MovesSection, Section, Totals } from "../engine/report.ts";
 
 /** Which screen the app is on. */
 export type Step = FlowState["step"];
@@ -16,6 +16,7 @@ export type FlowState =
   | ComparingState
   | RefusedState
   | CopiesState
+  | MovesState
   | DeletionsState
   | SummaryState
   | UpdatingState
@@ -75,8 +76,15 @@ export interface Review {
   changed: Section;
   /** Files only on the Replica, which the deletions Approval moves into the Holding area. */
   deleted: Section;
+  /** Files moved or renamed on the Primary, confirmed by checksum, which the moves Approval renames on the Replica. */
+  moves: MovesSection;
   /** The one all-or-nothing Approval for copying the new and changed files. */
   copiesApproved: boolean;
+  /**
+   * The one all-or-nothing Approval for the moves, separate from the others: rename the moved files
+   * on the Replica. Without it they stay at their old paths and nothing is copied to the new ones.
+   */
+  movesApproved: boolean;
   /**
    * What the Holding area on the Replica held when compared, which the deletions Approval deletes
    * permanently. Read only when there are deletions; otherwise none.
@@ -96,8 +104,17 @@ export interface CopiesState {
 }
 
 /**
- * Reviewing the files only on the Replica, and approving the deletions. Comes after Copies, and
- * only when there is something to delete.
+ * Reviewing the files moved on the Primary, and approving their renames on the Replica. Comes after
+ * Copies, and only when something was moved.
+ */
+export interface MovesState {
+  step: "moves";
+  review: Review;
+}
+
+/**
+ * Reviewing the files only on the Replica, and approving the deletions. Comes after Copies and
+ * Moves, and only when there is something to delete.
  */
 export interface DeletionsState {
   step: "deletions";
@@ -111,6 +128,10 @@ export interface SummaryState {
   apply: {
     /** The files Apply copies to the Replica: none unless the copies are approved. */
     copy: Totals;
+    /** The moved files Apply renames on the Replica: none unless the moves are approved. */
+    renameOnReplica: Totals;
+    /** The moved files Apply leaves at their old paths on the Replica: all of them unless the moves are approved. */
+    leaveAtOldPaths: Totals;
     /** The files only on the Replica that Apply moves into the Holding area: none unless the deletions are approved. */
     moveToHoldingArea: Totals;
     /**
@@ -127,6 +148,8 @@ export interface SummaryState {
 export interface UpdatingState {
   step: "updating";
   copying: Totals;
+  /** The moved files being renamed on the Replica: none unless the moves are approved. */
+  renaming: Totals;
   /** The deleted files being moved into the Holding area: none unless the deletions are approved. */
   moving: Totals;
 }
@@ -138,6 +161,15 @@ export interface ResultState {
   copied: FileEntry[];
   /** Every file that was not copied, and why. The Replica keeps its earlier version of each, if any. */
   failed: FailedFile[];
+  /** Moved files renamed to their new paths on the Replica. */
+  renamed: Move[];
+  /** Every moved file that was not renamed, and why. Each is still at its old path on the Replica. */
+  notRenamed: FailedMove[];
+  /**
+   * The moved files left at their old paths that are not in `notRenamed`: all of them unless the
+   * moves were approved, and any the Update stopped before reaching.
+   */
+  movesLeftAtOldPaths: Totals;
   /** Deleted files moved into the Holding area. */
   moved: FileEntry[];
   /** Every deleted file that was not moved into the Holding area, and why. Each is still where it was on the Replica. */
@@ -156,6 +188,11 @@ export interface FailedFile extends FileEntry {
   reason: string;
 }
 
+/** A moved file that was not renamed, and why. The engine's `FailedMove`, restated so the screens need nothing from Node. */
+export interface FailedMove extends Move {
+  reason: string;
+}
+
 /** Everything the screens can ask for. The main process carries each out on the flow. */
 export type Action =
   /** Opens the folder chooser for one role on Pairing. */
@@ -166,6 +203,7 @@ export type Action =
   | { type: "cancelRepair" }
   | { type: "compare" }
   | { type: "approveCopies"; approved: boolean }
+  | { type: "approveMoves"; approved: boolean }
   | { type: "approveDeletions"; approved: boolean }
   | { type: "next" }
   | { type: "back" }
@@ -193,12 +231,20 @@ export function totalsOfFiles(files: FileEntry[]): Totals {
   return { count: files.length, totalSize: files.reduce((total, file) => total + file.size, 0) };
 }
 
-/** Whether the review has a Deletions step: only when there is something to delete. */
-export function hasDeletionsStep(review: Review): boolean {
-  return review.deleted.count > 0;
+/** The review steps for `review`, in order: Moves and Deletions only when there is something to move or delete. */
+export function reviewSteps(review: Review): ReviewStep[] {
+  return [
+    "copies",
+    ...(review.moves.count > 0 ? (["moves"] as const) : []),
+    ...(review.deleted.count > 0 ? (["deletions"] as const) : []),
+    "summary",
+  ];
 }
+
+/** The steps on which the owner reviews the comparison and makes the decisions. */
+export type ReviewStep = "copies" | "moves" | "deletions" | "summary";
 
 /** The IPC channels between the main process and the screens. */
 export const CHANNELS = { state: "flow:state", action: "flow:action" } as const;
 
-export type { FileEntry, PairedDrives, Pairing, Section, Totals };
+export type { FileEntry, Move, MoveGroup, MovesSection, PairedDrives, Pairing, Section, Totals };

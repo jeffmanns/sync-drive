@@ -251,6 +251,35 @@ describe("sync-drive update", () => {
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 
+  it("shows moves grouped by folder, and renames them on the Replica only after their own question", async () => {
+    const { mac, primary, replica } = await pairedMacWith(
+      { "Photos/2026/Iceland/a.jpg": "aaaa", "Photos/2026/Iceland/b.jpg": "bb" },
+      { "Photos/Iceland/a.jpg": "aaaa", "Photos/Iceland/b.jpg": "bb" },
+    );
+    const primaryBefore = await snapshotTree(primary);
+    const replicaBefore = await snapshotTree(replica);
+
+    const declined = await mac.run("update");
+
+    assert.equal(declined.code, 0, declined.stderr);
+    assert.match(declined.stdout, /^Moved: 2 files, 6 B$/m);
+    assert.match(declined.stdout, /^ {2}Photos\/Iceland\/ → Photos\/2026\/Iceland\/ +2 files +6 B$/m);
+    assert.match(declined.stdout, /^New: none$/m);
+    assert.deepEqual(mac.questions, ["Rename 2 moved files (6 B) on the Replica to their new paths?"]);
+    assert.match(declined.stdout, /^Nothing was written to the Replica\.$/m);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+
+    mac.answer = true;
+    const renamed = await mac.run("update");
+
+    assert.equal(renamed.code, 0, renamed.stderr);
+    assert.match(renamed.stdout, /^Renamed 2 files, 6 B, to their new paths\.$/m);
+    assert.equal(await readFile(join(replica, "Photos/2026/Iceland/a.jpg"), "utf8"), "aaaa");
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    const after = await mac.run("compare");
+    assert.match(after.stdout, /^Moved: none$/m);
+  });
+
   it("does not ask when nothing differs", async () => {
     const { mac, primary, replica } = await pairedMacWith({ "a.txt": "same" }, { "a.txt": "same" });
     const primaryBefore = await snapshotTree(primary);

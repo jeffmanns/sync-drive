@@ -1,4 +1,4 @@
-import type { Report, Section } from "../engine/index.ts";
+import type { MovesSection, Report, Section } from "../engine/index.ts";
 import { fileCount, formatSize } from "../format.ts";
 
 export interface RenderOptions {
@@ -11,6 +11,7 @@ export function renderReport(report: Report, options: RenderOptions): string {
   return [
     renderSection("New", report.new, options),
     renderSection("Changed", report.changed, options),
+    renderMoves(report.moves, options),
     renderSection("Deleted", report.deleted, options),
     renderSafetyStop(report),
   ].join("\n\n");
@@ -29,6 +30,26 @@ function renderSafetyStop({ deleted, replica, safetyStop }: Report): string {
 
 function percent(part: number, whole: number): string {
   return whole === 0 ? "0%" : `${((part / whole) * 100).toFixed(1)}%`;
+}
+
+/** The moves, grouped by the folder moved; with `list`, each file's old and new path. */
+function renderMoves(moves: MovesSection, { list }: RenderOptions): string {
+  if (moves.count === 0) return "Moved: none";
+  const folder = (path: string) => (path === "" ? "(top level)" : `${path}/`);
+  const rows = moves.folders.map((group) => ({
+    label: `${folder(group.from)} → ${folder(group.to)}`,
+    count: fileCount(group.count),
+    size: formatSize(group.totalSize),
+    moves: group.moves,
+  }));
+  const labelWidth = Math.max(...rows.map((row) => row.label.length));
+  const countWidth = Math.max(...rows.map((row) => row.count.length));
+  const lines = [`Moved: ${fileCount(moves.count)}, ${formatSize(moves.totalSize)}`];
+  for (const row of rows) {
+    lines.push(`  ${row.label.padEnd(labelWidth)}  ${row.count.padEnd(countWidth)}  ${row.size}`);
+    if (list) for (const move of row.moves) lines.push(`    ${move.from} → ${move.to}  ${formatSize(move.size)}`);
+  }
+  return lines.join("\n");
 }
 
 function renderSection(title: string, section: Section, { list }: RenderOptions): string {
