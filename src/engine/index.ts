@@ -1,4 +1,5 @@
 export { compare, type CompareOptions } from "./compare.ts";
+export { Sha256Hasher, type Hasher } from "./hashing.ts";
 export { readHoldingArea, type HoldingAreaContents } from "./holding-area.ts";
 export {
   findPairedDrives,
