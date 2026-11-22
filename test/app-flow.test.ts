@@ -7,6 +7,7 @@ import { after, afterEach, describe, it } from "node:test";
 import { Flow } from "../src/app/flow.ts";
 import { compare, type FileCopier } from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
+import { FakeRemounter } from "./helpers/fake-remounter.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
 import { makeDiskImageTree, makeTree, removeTrees, snapshotTree, type TreeSpec } from "./helpers/trees.ts";
 
@@ -31,13 +32,14 @@ afterEach(async () => {
 /** A Mac with its own place for the Pairing and its own connected drives, and the app's flow on it. */
 async function testMac(copier: FileCopier = new MacFileCopier()) {
   const volumes = new FakeVolumes();
+  const remounter = new FakeRemounter();
   const pairingFile = join(await makeTree(), "sync-drive", "pairing.json");
   const open = async () => {
-    const flow = new Flow({ volumes, pairingFile, copier });
+    const flow = new Flow({ volumes, pairingFile, copier, remounter });
     await flow.open();
     return flow;
   };
-  return { volumes, pairingFile, open };
+  return { volumes, remounter, pairingFile, open };
 }
 
 describe("app flow: opening", () => {
@@ -251,7 +253,7 @@ describe("app flow: Approval, Summary and Apply", () => {
     flow.onChange((state) => steps.push(state.step));
     await flow.apply();
 
-    assert.deepEqual(steps, ["updating", "result"]);
+    assert.deepEqual([...new Set(steps)], ["updating", "result"]);
     assert.deepEqual(stateOf(flow).copied, [
       { path: "Photos/2026/a.jpg", size: 1_500_000 },
       { path: "Photos/2026/b.jpg", size: 5 },
@@ -504,7 +506,7 @@ describe("app flow: Deletions", () => {
     flow.onChange((state) => steps.push(state.step));
     await flow.apply();
 
-    assert.deepEqual(steps, ["updating", "result"]);
+    assert.deepEqual([...new Set(steps)], ["updating", "result"]);
     assert.deepEqual(stateOf(flow).copied, []);
     assert.deepEqual(stateOf(flow).moved, [{ path: "Docs/old.pdf", size: 3 }]);
     assert.deepEqual(stateOf(flow).notMoved, []);
@@ -783,5 +785,141 @@ describe("app flow: Moves", () => {
     assert.equal(stateOf(flow).notRenamed.length, 1);
     assert.equal(stateOf(flow).notRenamed[0].from, "Photos/Iceland/b.jpg");
     assert.match(stateOf(flow).notRenamed[0].reason, /changed .* since the comparison/);
+  });
+});
+
+describe("app flow: the Primary read-only during the Update", () => {
+  it("remounts the Primary read-only before writing anything, and normally again afterwards", async () => {
+    const real = new MacFileCopier();
+    const copiedWhileReadOnly: boolean[] = [];
+    let remounter: FakeRemounter | undefined;
+    const copier: FileCopier = {
+      copy: (source, destination) => {
+        copiedWhileReadOnly.push(remounter!.isReadOnly(primary));
+        return real.copy(source, destination);
+      },
+    };
+    const paired = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA, copier);
+    const { flow, primary } = paired;
+    remounter = paired.remounter;
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+    const states: Record<string, any>[] = [];
+    flow.onChange((state) => states.push(state));
+
+    await flow.apply();
+
+    assert.deepEqual(remounter.log, [`read-only ${primary}`, `normally ${primary}`]);
+    assert.deepEqual(copiedWhileReadOnly, [true, true, true]);
+    assert.deepEqual(
+      states.map((state) => (state.step === "updating" ? `updating: ${state.primary}` : state.step)),
+      ["updating: remounting read-only", "updating: read-only", "updating: remounting normally", "result"],
+      "the Updating screen says what is happening to the Primary",
+    );
+    assert.equal(stateOf(flow).primaryStillReadOnly, undefined);
+    assert.equal(remounter.isReadOnly(primary), false);
+  });
+
+  it("refuses to start the Update, writing nothing, when the Primary cannot be remounted read-only", async () => {
+    const { flow, remounter, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    const replicaBefore = await snapshotTree(replica);
+    remounter.failReadOnly = new Error("Volume in use by Finder.");
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummaryApprovingDeletions(flow);
+
+    await flow.apply();
+
+    assert.equal(stateOf(flow).step, "start");
+    assert.match(stateOf(flow).error, /did not start, and nothing was written.*read-only.*Volume in use by Finder\./);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("remounts the Primary normally when the Update stops partway", async () => {
+    const { flow, remounter, primary, replica } = await pairedMac({ "new.txt": "new" }, { ".sync-drive-incoming/stuck": "left over" });
+    const stuck = join(replica, ".sync-drive-incoming", "stuck");
+    // Locked, so emptying the Incoming folder fails and the Update stops.
+    await promisify(execFile)("chflags", ["uchg", stuck]);
+    try {
+      await flow.compare();
+      flow.approveCopies(true);
+      toSummary(flow);
+
+      await flow.apply();
+
+      assert.match(stateOf(flow).error, /EPERM/);
+      assert.deepEqual(remounter.log, [`read-only ${primary}`, `normally ${primary}`]);
+      assert.equal(remounter.isReadOnly(primary), false);
+    } finally {
+      await promisify(execFile)("chflags", ["nouchg", stuck]);
+    }
+  });
+
+  it("says on the Result when the Primary could not be remounted normally afterwards", async () => {
+    const { flow, remounter, primary } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    remounter.failNormally = new Error("Volume busy.");
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+
+    await flow.apply();
+
+    assert.equal(stateOf(flow).step, "result");
+    assert.equal(stateOf(flow).copied.length, 3, "the Update itself still happened");
+    assert.equal(stateOf(flow).primaryStillReadOnly, "Volume busy.");
+    assert.equal(remounter.isReadOnly(primary), true);
+  });
+
+  it("reads the Primary where it is mounted read-only, if that is somewhere else", async () => {
+    const { flow, remounter, primary, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    remounter.remountAt = `${primary} 1`;
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+
+    await flow.apply();
+
+    assert.deepEqual(remounter.log, [`read-only ${primary}`, `normally ${primary} 1`]);
+    assert.deepEqual(stateOf(flow).failed, []);
+    assert.equal(await readFile(join(replica, "readme.txt"), "utf8"), "changed!");
+  });
+
+  it("remounts the Primary normally, once, when the app quits during the Update", async () => {
+    const real = new MacFileCopier();
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let copying!: () => void;
+    const copyStarted = new Promise<void>((resolve) => (copying = resolve));
+    const blocking: FileCopier = {
+      copy: async (source, destination) => {
+        copying();
+        await released;
+        return real.copy(source, destination);
+      },
+    };
+    const { flow, remounter, primary } = await pairedMac({ "new.txt": "new" }, {}, blocking);
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+
+    const applying = flow.apply();
+    await copyStarted;
+    // Quitting can overlap the Update remounting the Primary itself: still only one remount.
+    await Promise.all([flow.quit(), flow.quit()]);
+
+    assert.equal(remounter.isReadOnly(primary), false, "remounted normally before the app quits");
+    release();
+    await applying;
+    assert.deepEqual(remounter.log, [`read-only ${primary}`, `normally ${primary}`]);
+  });
+
+  it("quits without remounting anything when no Update is running", async () => {
+    const { flow, remounter } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    await flow.compare();
+
+    await flow.quit();
+
+    assert.deepEqual(remounter.log, []);
   });
 });

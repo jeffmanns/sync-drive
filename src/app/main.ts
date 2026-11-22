@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { MacFileCopier } from "../macos/file-copier.ts";
+import { MacRemounter } from "../macos/remounter.ts";
 import { MacVolumes } from "../macos/volume-identity.ts";
 import { Flow } from "./flow.ts";
 import { CHANNELS, type Action } from "./view.ts";
@@ -18,7 +19,12 @@ const PAIRING_FILE =
 /** Where macOS mounts drives. A change here is a drive connecting or disconnecting. */
 const VOLUMES = "/Volumes";
 
-const flow = new Flow({ volumes: new MacVolumes(), pairingFile: PAIRING_FILE, copier: new MacFileCopier() });
+const flow = new Flow({
+  volumes: new MacVolumes(),
+  pairingFile: PAIRING_FILE,
+  copier: new MacFileCopier(),
+  remounter: new MacRemounter(),
+});
 
 app.on("web-contents-created", (_event, contents) => {
   // The app shows only its own screens: no new windows, and no navigating away.
@@ -27,6 +33,15 @@ app.on("web-contents-created", (_event, contents) => {
 });
 
 app.on("window-all-closed", () => app.quit());
+
+let remountedBeforeQuitting = false;
+app.on("before-quit", (event) => {
+  // Quitting during an Update must not leave the Primary read-only: remount it normally first.
+  if (remountedBeforeQuitting) return;
+  remountedBeforeQuitting = true;
+  event.preventDefault();
+  void flow.quit().finally(() => app.quit());
+});
 
 app.whenReady().then(start, (error: unknown) => {
   dialog.showErrorBox("sync-drive could not start", String(error));

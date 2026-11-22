@@ -14,8 +14,10 @@ import {
   type FileCopier,
   type PairedDrives,
   type Pairing,
+  type Remounter,
   type Report,
   type UpdateResult,
+  type Volume,
   type VolumeIdentity,
 } from "../engine/index.ts";
 import { fileCount, formatSize } from "../format.ts";
@@ -40,6 +42,8 @@ export interface FlowDeps {
   pairingFile: string;
   /** Copies files to the Replica with all their metadata. */
   copier: FileCopier;
+  /** Remounts the Primary read-only for each Update, and normally afterwards. */
+  remounter: Remounter;
 }
 
 /**
@@ -55,6 +59,10 @@ export class Flow {
   #comparisonGeneration = 0;
   /** The Report of the comparison under review, exactly as `compare()` returned it, for Apply. */
   #report: Report | undefined;
+  /** The Primary while an Update holds it read-only. */
+  #readOnlyPrimary: Volume | undefined;
+  /** Remounting the Primary normally, once begun: resolves with why it could not, if it could not. */
+  #remountingNormally: Promise<string | undefined> | undefined;
 
   constructor(deps: FlowDeps) {
     this.#deps = deps;
@@ -330,12 +338,30 @@ export class Flow {
       }
     }
     this.#discardComparison();
-    this.#set({ step: "updating", copying: apply.copy, renaming: apply.renameOnReplica, moving: apply.moveToHoldingArea });
+    const updating = { step: "updating", copying: apply.copy, renaming: apply.renameOnReplica, moving: apply.moveToHoldingArea } as const;
+    // Read-only first, so that even a bug cannot write to the Primary: macOS itself refuses.
+    this.#set({ ...updating, primary: "remounting read-only" });
+    let primary: Volume;
+    try {
+      primary = await this.#deps.remounter.readOnly(review.drives.primary);
+    } catch (error) {
+      this.#set({
+        step: "start",
+        pairing: review.pairing,
+        error:
+          `The Update did not start, and nothing was written: the Primary could not be remounted read-only first. ${(error as Error).message} ` +
+          "Close any app using the Primary, then compare again. The comparison and its decisions were discarded.",
+      });
+      return;
+    }
+    this.#readOnlyPrimary = primary;
+    this.#remountingNormally = undefined;
+    this.#set({ ...updating, primary: "read-only" });
     let done: UpdateResult;
     let error: string | undefined;
     try {
       done = await update(approvedPart(report, review), { update: true, moves: review.movesApproved, deletions: review.deletionsApproved }, {
-        primary: review.drives.primary.mountPoint,
+        primary: primary.mountPoint,
         replica: review.drives.replica.mountPoint,
         copier: this.#deps.copier,
       });
@@ -344,6 +370,8 @@ export class Flow {
       done = stopped instanceof UpdateStoppedError ? stopped.result : nothingDone();
       error = (stopped as Error).message;
     }
+    this.#set({ ...updating, primary: "remounting normally" });
+    const primaryStillReadOnly = await this.#remountPrimaryNormally();
     const handled = totalsOf(totalsOfFiles(done.moved), totalsOfFiles(done.notMoved));
     const leftOnReplica = { count: review.deleted.count - handled.count, totalSize: review.deleted.totalSize - handled.totalSize };
     const renamedOrNot = totalsOf(totalsOfMoves(done.renamed), totalsOfMoves(done.notRenamed));
@@ -360,7 +388,33 @@ export class Flow {
       notMoved: done.notMoved,
       leftOnReplica,
       ...(error === undefined ? {} : { error }),
+      ...(primaryStillReadOnly === undefined ? {} : { primaryStillReadOnly }),
     });
+  }
+
+  /**
+   * Call before the app quits. If an Update holds the Primary read-only, remounts it normally first,
+   * so that quitting partway through an Update does not leave it read-only.
+   */
+  async quit(): Promise<void> {
+    await this.#remountPrimaryNormally();
+  }
+
+  /**
+   * Remounts the Primary normally if an Update holds it read-only, only once however often it is
+   * called. Resolves with why it could not, if it could not.
+   */
+  #remountPrimaryNormally(): Promise<string | undefined> {
+    const primary = this.#readOnlyPrimary;
+    if (primary === undefined) return Promise.resolve(undefined);
+    this.#remountingNormally ??= this.#deps.remounter.normally(primary).then(
+      () => {
+        this.#readOnlyPrimary = undefined;
+        return undefined;
+      },
+      (error: unknown) => (error as Error).message,
+    );
+    return this.#remountingNormally;
   }
 }
 

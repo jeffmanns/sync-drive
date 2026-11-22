@@ -18,3 +18,18 @@ export interface VolumeIdentity {
   /** Every drive currently connected. */
   connected(): Promise<Volume[]>;
 }
+
+/**
+ * Remounts the Primary read-only for an Update, so that macOS itself, and not only sync-drive's
+ * code, keeps it from being written to; and remounts it normally afterwards. Tests substitute a fake.
+ */
+export interface Remounter {
+  /**
+   * Remounts `volume` read-only, and confirms with macOS that it is. Resolves with the volume as it
+   * is now mounted, whose mount point may have changed. Rejects if it cannot do either, having put
+   * the volume back mounted normally wherever it can.
+   */
+  readOnly(volume: Volume): Promise<Volume>;
+  /** Remounts `volume`, which `readOnly()` made read-only, normally again, and confirms it is. */
+  normally(volume: Volume): Promise<Volume>;
+}
