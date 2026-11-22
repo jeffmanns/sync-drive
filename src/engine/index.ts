@@ -1,4 +1,6 @@
 export { compare, type CompareOptions } from "./compare.ts";
+export { exclusionsFileBeside, readExclusions, writeExclusions } from "./exclusions-file.ts";
+export { checkExclusion, exclusionMatcher, sameExclusion, type ExclusionMatcher } from "./exclusions.ts";
 export { Sha256Hasher, type Hasher } from "./hashing.ts";
 export { readHoldingArea, type HoldingAreaContents } from "./holding-area.ts";
 export {

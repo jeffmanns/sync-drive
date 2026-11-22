@@ -47,3 +47,6 @@ button.primary { font-weight: 600; }
 .waiting { margin-top: 30vh; text-align: center; }
 .override { margin: 24px 0; }
 .override input { width: 8em; font: inherit; }
+.exclusions ul { list-style: none; padding: 0; margin: 8px 0; }
+.exclusions li { display: flex; justify-content: space-between; align-items: baseline; padding: 4px; border-bottom: 1px solid var(--line); }
+.exclusions input { width: 20em; font: inherit; }

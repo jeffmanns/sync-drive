@@ -133,6 +133,7 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
         <dt>Replica</dt>
         <dd>"{replica.name}" <span className="note">volume ID {replica.id}</span></dd>
       </dl>
+      <ExclusionsList state={state} send={send} busy={busy} />
       <Problem text={state.error} />
       {state.notice !== undefined && <p className="notice">{state.notice}</p>}
       <Buttons>
@@ -140,6 +141,54 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
         <button className="primary" onClick={() => send({ type: "compare" })} disabled={busy}>Compare</button>
       </Buttons>
     </>
+  );
+}
+
+/**
+ * The owner's Exclusions, with a field to add a pattern and a Remove button on each. What is typed
+ * stays here until sent; the flow checks it, and clears it from the field only once it is saved.
+ */
+function ExclusionsList({ state, send, busy }: ScreenProps<StartState>) {
+  const [typed, setTyped] = useState("");
+  const { exclusions } = state;
+  // Cleared once the flow has saved what was typed; kept, with the problem shown, when it was refused.
+  useEffect(() => {
+    if (state.exclusionProblem === undefined) setTyped("");
+  }, [exclusions, state.exclusionProblem]);
+  return (
+    <section className="exclusions">
+      <h2>Exclusions</h2>
+      <p className="note">
+        Left out of every comparison, on both drives: never copied, moved or deleted. A name such as <span className="path">*.tmp</span> or{" "}
+        <span className="path">node_modules</span> matches in any folder; a path such as <span className="path">Movies/Cache</span> starts at the
+        top level of the drive. <span className="path">*</span> is any characters in a name, <span className="path">**</span> any number of folders.
+      </p>
+      {exclusions.length === 0 ? (
+        <p>No Exclusions. Everything on the Primary is compared, apart from macOS's own system files.</p>
+      ) : (
+        <ul>
+          {exclusions.map((pattern) => (
+            <li key={pattern}>
+              <span className="path">{pattern}</span>
+              <button onClick={() => send({ type: "removeExclusion", pattern })} disabled={busy} aria-label={`Remove ${pattern}`}>Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          send({ type: "addExclusion", typed });
+        }}
+      >
+        <label>
+          Exclude:{" "}
+          <input type="text" autoComplete="off" spellCheck={false} value={typed} disabled={busy} onChange={(event) => setTyped(event.target.value)} />
+        </label>{" "}
+        <button type="submit" disabled={busy || typed.trim() === ""}>Add</button>
+      </form>
+      <Problem text={state.exclusionProblem} />
+    </section>
   );
 }
 
@@ -197,6 +246,9 @@ function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
     <>
       <Steps current="copies" review={review} />
       <h1>Copies</h1>
+      {review.exclusions.length > 0 && (
+        <p className="note">Left out by the Exclusions: {review.exclusions.join(", ")}.</p>
+      )}
       <UnreadableList unreadable={review.unreadable} />
       <SectionList title="New" section={review.new} />
       <SectionList title="Changed" section={review.changed} />

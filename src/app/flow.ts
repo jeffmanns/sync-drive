@@ -1,4 +1,5 @@
 import {
+  checkExclusion,
   checkFreeSpace,
   compare,
   findPairedDrives,
@@ -6,9 +7,12 @@ import {
   nothingDone,
   pair,
   readHoldingArea,
+  readExclusions,
   readPairing,
+  sameExclusion,
   update,
   UpdateStoppedError,
+  writeExclusions,
   writePairing,
   type FileCopier,
   type PairedDrives,
@@ -31,6 +35,7 @@ import {
   type FlowState,
   type MovesState,
   type Review,
+  type StartState,
   type SummaryState,
 } from "./view.ts";
 
@@ -39,6 +44,8 @@ export interface FlowDeps {
   volumes: VolumeIdentity;
   /** Where the Pairing is stored. */
   pairingFile: string;
+  /** Where the Exclusions are stored, beside the Pairing. */
+  exclusionsFile: string;
   /** Copies files to the Replica with all their metadata. */
   copier: FileCopier;
   /** Remounts the Primary read-only for each Update, and normally afterwards. */
@@ -62,6 +69,10 @@ export class Flow {
   #applying: Promise<void> | undefined;
   /** Set once the app is quitting: no new copy starts, so the Update ends soon. */
   #quitting = false;
+  /** The owner's Exclusions, as saved. */
+  #exclusions: string[] = [];
+  /** Why the saved Exclusions cannot be used, if they are damaged. Nothing is compared, or saved over them, until they are fixed. */
+  #exclusionsDamaged: string | undefined;
 
   constructor(deps: FlowDeps) {
     this.#deps = deps;
@@ -83,8 +94,24 @@ export class Flow {
     for (const listener of this.#listeners) listener(state);
   }
 
+  /** Start for `pairing`, with the Exclusions as saved. */
+  #start(pairing: Pairing, extra: Pick<StartState, "error" | "notice" | "exclusionProblem"> = {}): StartState {
+    return {
+      step: "start",
+      pairing,
+      exclusions: this.#exclusions,
+      ...(this.#exclusionsDamaged === undefined ? {} : { exclusionProblem: this.#exclusionsDamaged }),
+      ...extra,
+    };
+  }
+
   /** Opens the app: on Pairing when no Pairing is saved, otherwise on Start. */
   async open(): Promise<void> {
+    try {
+      this.#exclusions = await readExclusions(this.#deps.exclusionsFile);
+    } catch (error) {
+      this.#exclusionsDamaged = (error as Error).message;
+    }
     let pairing: Pairing | undefined;
     try {
       pairing = await readPairing(this.#deps.pairingFile);
@@ -97,7 +124,7 @@ export class Flow {
       });
       return;
     }
-    this.#set(pairing === undefined ? { step: "pairing" } : { step: "start", pairing });
+    this.#set(pairing === undefined ? { step: "pairing" } : this.#start(pairing));
   }
 
   /** On Start: the deliberate Re-pair, e.g. after replacing a drive. Nothing changes until it is confirmed. */
@@ -119,7 +146,7 @@ export class Flow {
   cancelRepair(): void {
     const state = this.#state;
     if (state.step !== "pairing" || state.replacing?.pairing === undefined) return;
-    this.#set({ step: "start", pairing: state.replacing.pairing });
+    this.#set(this.#start(state.replacing.pairing));
   }
 
   /** On Pairing: chooses the top level of the drive for one role. */
@@ -141,28 +168,76 @@ export class Flow {
     try {
       const pairing = await pair(state.primary, state.replica, this.#deps.volumes);
       await writePairing(this.#deps.pairingFile, pairing);
-      this.#set({ step: "start", pairing });
+      this.#set(this.#start(pairing));
     } catch (error) {
       this.#set({ ...state, error: (error as Error).message });
     }
   }
 
-  /** On Start: finds the paired drives and compares them, then moves on to Copies. */
+  /**
+   * On Start: adds the pattern the owner typed to the Exclusions and saves them. A pattern that
+   * cannot be used, or is already listed, is not added, and Start says why.
+   */
+  async addExclusion(typed: string): Promise<void> {
+    const state = this.#state;
+    if (state.step !== "start" || this.#exclusionsDamaged !== undefined) return;
+    let pattern: string;
+    try {
+      pattern = checkExclusion(typed);
+    } catch (error) {
+      this.#set(this.#start(state.pairing, { exclusionProblem: (error as Error).message }));
+      return;
+    }
+    const listed = this.#exclusions.find((saved) => sameExclusion(saved, pattern));
+    if (listed !== undefined) {
+      this.#set(this.#start(state.pairing, { exclusionProblem: `"${listed}" is already in the Exclusions.` }));
+      return;
+    }
+    await this.#saveExclusions(state.pairing, [...this.#exclusions, pattern]);
+  }
+
+  /** On Start: removes `pattern` from the Exclusions and saves them. */
+  async removeExclusion(pattern: string): Promise<void> {
+    const state = this.#state;
+    if (state.step !== "start" || this.#exclusionsDamaged !== undefined || !this.#exclusions.includes(pattern)) return;
+    await this.#saveExclusions(state.pairing, this.#exclusions.filter((saved) => saved !== pattern));
+  }
+
+  /** Saves `exclusions` and shows them on Start. If they cannot be saved, the saved ones stay in use, and Start says why. */
+  async #saveExclusions(pairing: Pairing, exclusions: string[]): Promise<void> {
+    try {
+      await writeExclusions(this.#deps.exclusionsFile, exclusions);
+      this.#exclusions = exclusions;
+      if (this.#state.step === "start") this.#set(this.#start(pairing));
+    } catch (error) {
+      if (this.#state.step === "start") {
+        this.#set(this.#start(pairing, { exclusionProblem: `The Exclusions could not be saved: ${(error as Error).message}` }));
+      }
+    }
+  }
+
+  /** On Start: finds the paired drives and compares them, leaving out the Exclusions, then moves on to Copies. */
   async compare(): Promise<void> {
     const state = this.#state;
     if (state.step !== "start") return;
     const { pairing } = state;
+    if (this.#exclusionsDamaged !== undefined) {
+      // Comparing without the owner's Exclusions would offer to delete or copy what they left out.
+      this.#set(this.#start(pairing, { error: this.#exclusionsDamaged }));
+      return;
+    }
+    const exclusions = this.#exclusions;
     this.#discardComparison();
     const comparison = this.#comparisonGeneration;
     this.#set({ step: "comparing", pairing });
     try {
       const drives = await findPairedDrives(pairing, this.#deps.volumes);
-      const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint);
+      const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint, { exclusions });
       if (comparison !== this.#comparisonGeneration) return;
       const { new: newFiles, changed, moves, deleted, unreadable } = report;
       // Anything unreadable is shown in the review, even with nothing else to do: it was not compared.
       if (newFiles.count + changed.count + moves.count + deleted.count + unreadable.length === 0) {
-        this.#set({ step: "start", pairing, notice: "The Replica matches the Primary. Nothing to update." });
+        this.#set(this.#start(pairing, { notice: "The Replica matches the Primary. Nothing to update." }));
         return;
       }
       // Both stops are checked before any Approval, so a refused Update asks nothing (ADR 0008).
@@ -176,6 +251,7 @@ export class Flow {
       const review: Review = {
         pairing,
         drives,
+        exclusions,
         new: newFiles,
         changed,
         moves,
@@ -199,7 +275,7 @@ export class Flow {
       this.#set({ step: "copies", review });
     } catch (error) {
       if (comparison !== this.#comparisonGeneration) return;
-      this.#set({ step: "start", pairing, error: (error as Error).message });
+      this.#set(this.#start(pairing, { error: (error as Error).message }));
     }
   }
 
@@ -274,9 +350,9 @@ export class Flow {
     const state = this.#state;
     if (isReviewing(state) || state.step === "refused") {
       this.#discardComparison();
-      this.#set({ step: "start", pairing: state.review.pairing });
+      this.#set(this.#start(state.review.pairing));
     } else if (state.step === "result") {
-      this.#set({ step: "start", pairing: state.pairing });
+      this.#set(this.#start(state.pairing));
     }
   }
 
@@ -300,11 +376,11 @@ export class Flow {
   /** Discards the comparison and its decisions because of `gone`, back on Start. */
   #discardForGoneDrives(pairing: Pairing, gone: string): void {
     this.#discardComparison();
-    this.#set({
-      step: "start",
-      pairing,
-      error: `${gone} The comparison and its decisions were discarded. Compare again once both drives are connected.`,
-    });
+    this.#set(
+      this.#start(pairing, {
+        error: `${gone} The comparison and its decisions were discarded. Compare again once both drives are connected.`,
+      }),
+    );
   }
 
   /**
@@ -363,13 +439,13 @@ export class Flow {
       if (this.#state !== state) return;
       if (held.count !== review.holdingArea.count || held.totalSize !== review.holdingArea.totalSize) {
         this.#discardComparison();
-        this.#set({
-          step: "start",
-          pairing: review.pairing,
-          error:
-            "The Holding area on the Replica changed since the comparison, so approving the deletions would delete files you were not shown. " +
-            "Nothing was written. The comparison and its decisions were discarded. Compare again.",
-        });
+        this.#set(
+          this.#start(review.pairing, {
+            error:
+              "The Holding area on the Replica changed since the comparison, so approving the deletions would delete files you were not shown. " +
+              "Nothing was written. The comparison and its decisions were discarded. Compare again.",
+          }),
+        );
         return;
       }
     }
@@ -381,13 +457,13 @@ export class Flow {
     try {
       primary = await this.#deps.remounter.readOnly(review.drives.primary);
     } catch (error) {
-      this.#set({
-        step: "start",
-        pairing: review.pairing,
-        error:
-          `The Update did not start, and nothing was written: the Primary could not be remounted read-only first. ${(error as Error).message} ` +
-          "Close any app using the Primary, then compare again. The comparison and its decisions were discarded.",
-      });
+      this.#set(
+        this.#start(review.pairing, {
+          error:
+            `The Update did not start, and nothing was written: the Primary could not be remounted read-only first. ${(error as Error).message} ` +
+            "Close any app using the Primary, then compare again. The comparison and its decisions were discarded.",
+        }),
+      );
       return;
     }
     this.#set({ ...updating, primary: "read-only" });
@@ -403,6 +479,7 @@ export class Flow {
         primary: primary.mountPoint,
         replica: review.drives.replica.mountPoint,
         copier: this.#copier,
+        exclusions: review.exclusions,
       });
     } catch (stopped) {
       // Stopped partway: still say exactly what it did first.

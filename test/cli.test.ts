@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
 import { run } from "../src/cli/run.ts";
+import { exclusionsFileBeside, writeExclusions } from "../src/engine/index.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
 import { makeDiskImageTree, makeTree, removeTrees, snapshotTree, type TreeSpec } from "./helpers/trees.ts";
@@ -346,6 +347,30 @@ describe("sync-drive update", () => {
 function files(prefix: string, count: number): TreeSpec {
   return Object.fromEntries(Array.from({ length: count }, (_, i) => [`${prefix}${i}.txt`, "x"]));
 }
+
+describe("sync-drive update: the Exclusions saved by the app", () => {
+  it("leaves out what the saved Exclusions match, never moving it into the Holding area", async () => {
+    const { mac, replica } = await pairedMac();
+    await writeExclusions(exclusionsFileBeside(mac.pairingFile), ["Docs"]);
+    mac.answer = true;
+
+    const { code, stdout, stderr } = await mac.run("update");
+
+    assert.equal(code, 0, stderr);
+    assert.match(stdout, /^Deleted: none$/m);
+    assert.equal(await readFile(join(replica, "Docs", "old.pdf"), "utf8"), "abc");
+  });
+
+  it("compares nothing when the saved Exclusions are damaged", async () => {
+    const { mac } = await pairedMac();
+    await writeFile(exclusionsFileBeside(mac.pairingFile), "{ not json");
+
+    const { code, stderr } = await mac.run("compare");
+
+    assert.equal(code, 1);
+    assert.match(stderr, /Exclusions saved in .* are damaged/);
+  });
+});
 
 describe("sync-drive update: safety stops", () => {
   /** Paired drives where the Primary has lost 101 of the Replica's 200 files, and gained a new one. */

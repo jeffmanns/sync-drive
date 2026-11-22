@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { exclusionsFileBeside } from "../engine/index.ts";
 import { MacFileCopier } from "../macos/file-copier.ts";
 import { MacRemounter } from "../macos/remounter.ts";
 import { MacVolumes } from "../macos/volume-identity.ts";
@@ -16,12 +17,16 @@ const SCREENS = join(HERE, "renderer", "index.html");
 const PAIRING_FILE =
   process.env.SYNC_DRIVE_PAIRING_FILE ?? join(homedir(), "Library", "Application Support", "sync-drive", "pairing.json");
 
+/** Where the Exclusions are stored: beside the Pairing. */
+const EXCLUSIONS_FILE = exclusionsFileBeside(PAIRING_FILE);
+
 /** Where macOS mounts drives. A change here is a drive connecting or disconnecting. */
 const VOLUMES = "/Volumes";
 
 const flow = new Flow({
   volumes: new MacVolumes(),
   pairingFile: PAIRING_FILE,
+  exclusionsFile: EXCLUSIONS_FILE,
   copier: new MacFileCopier(),
   remounter: new MacRemounter(),
 });
@@ -94,6 +99,10 @@ async function perform(action: Action, window: BrowserWindow): Promise<void> {
       return flow.cancelRepair();
     case "compare":
       return flow.compare();
+    case "addExclusion":
+      return flow.addExclusion(String(action.typed));
+    case "removeExclusion":
+      return flow.removeExclusion(String(action.pattern));
     case "overrideSafetyStop":
       return flow.overrideSafetyStop(String(action.typed));
     case "approveCopies":
