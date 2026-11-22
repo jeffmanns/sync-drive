@@ -17,7 +17,8 @@ import {
   type Volume,
   type VolumeIdentity,
 } from "../engine/index.ts";
-import { fileCount, formatSize, renderReport } from "./render-report.ts";
+import { fileCount, formatSize } from "../format.ts";
+import { renderReport } from "./render-report.ts";
 
 export const USAGE = `Usage: sync-drive pair <primary> <replica> [--replace]
        sync-drive compare [--list]

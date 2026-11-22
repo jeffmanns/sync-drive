@@ -4,5 +4,11 @@
     "rootDir": "src",
     "noEmit": false
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/app/renderer",
+    "src/app/preload.ts"
+  ]
 }

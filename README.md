@@ -4,14 +4,22 @@ A personal Mac tool that compares an everyday external drive (the **Primary**) a
 
 ## Setup
 
-Requires Node 26 (see `.nvmrc`) and `clang` (from the Xcode Command Line Tools: `xcode-select --install`), which builds the small native helper Update copies files with (see ADR 0005).
+Requires Node 24.22.1 or later (see `.nvmrc`; the app and the tests run on the Node bundled with Electron, ADR 0009) and `clang` (from the Xcode Command Line Tools: `xcode-select --install`), which builds the small native helper Update copies files with (see ADR 0005).
 
 ```sh
 npm install
-npm test      # typecheck, build, and run all tests
+npm test      # typecheck, build, and run all tests on Electron's runtime (opens the app briefly)
 ```
 
-## Usage
+## The desktop app
+
+```sh
+npm start     # build and open the app
+```
+
+The app is replacing the command line (ADR 0009). So far it runs a copies-only Update: Pairing (the first time), Start, Comparing, Copies (new and changed files by folder, each folder expanding to its files, with one Approval), Summary, Apply, Result. Back and Next keep the Approval; a new compare, a drive disconnecting or quitting discards it. It does not move deleted files yet, and when the Safety stop or the free-space check refuses, it says why and stops. It uses the same Pairing as the command line.
+
+## Command line
 
 ```sh
 npm run build
