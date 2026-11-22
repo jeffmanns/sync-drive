@@ -565,6 +565,23 @@ describe("Update: shortcut folders on the Replica", () => {
     assert.deepEqual(replicaAfter, replicaBefore, "nothing but notes.txt is written to the Replica");
   });
 
+  it("copies into a real folder once the shortcut's deletion is approved in the same Update", async () => {
+    const primary = await makeTree({ "Photos/report.pdf": "this year's report", "Archive/report.pdf": "last year's report" });
+    const replica = await makeTree({ "Archive/report.pdf": "last year's report" });
+    await symlink("Archive", join(replica, "Photos"));
+    const archiveBefore = await snapshotTree(join(replica, "Archive"));
+
+    const result = await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
+
+    assert.deepEqual(result.moved.map((file) => file.path), ["Photos"]);
+    assert.deepEqual(result.copied.map((file) => file.path), ["Photos/report.pdf"]);
+    assert.ok((await lstat(join(replica, "Photos"))).isDirectory());
+    assert.ok((await lstat(join(replica, "sync-drive Holding Area/Photos"))).isSymbolicLink());
+    assert.deepEqual(await snapshotTree(join(replica, "Archive")), archiveBefore);
+    const after = await compare(primary, replica);
+    assert.equal(after.new.count + after.changed.count + after.deleted.count, 0);
+  });
+
   it("never makes a folder on the Primary through a Replica shortcut that points into it", async () => {
     const primary = await makeDiskImageTree({ "Photos/2026/beach.jpg": "a photo", "Other/kept.txt": "kept" }, { name: "Primary" });
     const replica = await makeDiskImageTree({}, { name: "Replica" });
