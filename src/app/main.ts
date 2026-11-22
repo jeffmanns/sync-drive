@@ -94,6 +94,8 @@ async function perform(action: Action, window: BrowserWindow): Promise<void> {
       return flow.cancelRepair();
     case "compare":
       return flow.compare();
+    case "overrideSafetyStop":
+      return flow.overrideSafetyStop(String(action.typed));
     case "approveCopies":
       return flow.approveCopies(action.approved === true);
     case "approveMoves":

@@ -683,6 +683,18 @@ describe("Update: safety stops", () => {
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 
+  it("counts the deletions itself, refusing past the Safety stop even when the Report's flag says it does not apply", async () => {
+    const { primary, replica } = await drivesPastTheSafetyStop();
+    const replicaBefore = await snapshotTree(replica);
+    const report = { ...(await compare(primary, replica)), safetyStop: false };
+
+    await assert.rejects(
+      update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() }),
+      /Safety stop applies.*nothing was written/,
+    );
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
   it("goes ahead when the Safety stop is explicitly overridden", async () => {
     const { primary, replica } = await drivesPastTheSafetyStop();
 

@@ -7,7 +7,7 @@ import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
 import { sameDate } from "./same-date.ts";
-import { checkFreeSpace } from "./safety-stops.ts";
+import { checkFreeSpace, safetyStopApplies } from "./safety-stops.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
 /** What the user has approved for an Update. Nothing is written without `update`. */
@@ -97,7 +97,8 @@ const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Upda
  * the new and changed files from the Primary, checking each copy against its Primary file by
  * checksum before renaming it into place; a copy that does not match is discarded and listed as
  * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
- * having written nothing, when the Safety stop applies without `approvals.overrideSafetyStop`, or
+ * having written nothing, when the Safety stop applies to the report's deletions (counted again
+ * here, not read from `report.safetyStop`) without `approvals.overrideSafetyStop`, or
  * when the Replica lacks the free space for the copies (ADR 0008). Every rejection is an
  * `UpdateStoppedError` saying what had been done before it stopped.
  */
@@ -142,7 +143,9 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     assertInsideDrive(move.from);
     assertInsideDrive(move.to);
   }
-  if (report.safetyStop && !approvals.overrideSafetyStop) {
+  // Counted again from the deletions it was handed, rather than trusting the Report's flag, so the
+  // Safety stop holds whoever built the Report (ADR 0008).
+  if (safetyStopApplies(report.deleted, report.replica) && !approvals.overrideSafetyStop) {
     throw new Error("The Safety stop applies and was not overridden; nothing was written");
   }
   const space = await checkFreeSpace(report, setup.replica);

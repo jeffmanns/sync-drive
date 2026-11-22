@@ -5,6 +5,8 @@
  */
 import type { PairedDrives, Pairing } from "../engine/pairing.ts";
 import type { FileEntry, Move, MoveGroup, MovesSection, Section, Totals } from "../engine/report.ts";
+import { SAFETY_STOP_PERCENT } from "../engine/safety-stop-limits.ts";
+import { fileCount, formatSize } from "../format.ts";
 
 /** Which screen the app is on. */
 export type Step = FlowState["step"];
@@ -52,14 +54,39 @@ export interface ComparingState {
 }
 
 /**
- * The Update is refused, before any Approval and with nothing written: the Safety stop applies,
- * or the Replica lacks the free space for the copies (ADR 0008). There is no way past it here.
+ * The Update is refused, after Comparing and before any Approval, with nothing written: the Safety
+ * stop applies, or the Replica lacks the free space for the copies, or both (ADR 0008). Only the
+ * Safety stop can be overridden, by typing the number of deletions, and only when it is the sole
+ * refusal (ADR 0009).
  */
 export interface RefusedState {
   step: "refused";
-  pairing: Pairing;
-  /** Each refusal, explained. */
-  reasons: string[];
+  /** The comparison that was refused, which the override goes on to review. */
+  review: Review;
+  /** Set when the Safety stop applies. */
+  safetyStop?: SafetyStopRefusal;
+  /** Set when the Replica lacks the free space for the copies. There is no override. */
+  freeSpace?: FreeSpaceRefusal;
+}
+
+/** Why the Safety stop applies: the deleted files' share of the Replica. */
+export interface SafetyStopRefusal {
+  /** The files only on the Replica, which approving the deletions would move into the Holding area. */
+  deleted: Totals;
+  /** The Replica's contents for comparison: the Holding area and the Incoming folder are not counted. */
+  replica: Totals;
+  /** Why the last number typed did not override it. */
+  error?: string;
+}
+
+/** Why the Replica lacks room for the copies. */
+export interface FreeSpaceRefusal {
+  /** Bytes the new and changed files need on the Replica. */
+  needed: number;
+  /** Bytes free on the Replica. */
+  free: number;
+  /** What the Holding area on the Replica holds, which the owner could delete to free space. */
+  holdingArea: Totals;
 }
 
 /**
@@ -95,6 +122,11 @@ export interface Review {
    * Holding area, then move the deleted files into it (ADR 0006).
    */
   deletionsApproved: boolean;
+  /**
+   * Whether the owner typed the number of deletions on the refusal screen, overriding the Safety
+   * stop for this comparison only (ADR 0009). Never remembered beyond it.
+   */
+  safetyStopOverridden: boolean;
 }
 
 /** Reviewing the new and changed files, and approving the copies. */
@@ -212,6 +244,8 @@ export type Action =
   | { type: "confirmReplace"; confirmed: boolean }
   | { type: "cancelRepair" }
   | { type: "compare" }
+  /** On the refusal screen: the number of deletions as the owner typed it. */
+  | { type: "overrideSafetyStop"; typed: string }
   | { type: "approveCopies"; approved: boolean }
   | { type: "approveMoves"; approved: boolean }
   | { type: "approveDeletions"; approved: boolean }
@@ -258,6 +292,42 @@ export function reviewSteps(review: Review): ReviewStep[] {
 
 /** The steps on which the owner reviews the comparison and makes the decisions. */
 export type ReviewStep = "copies" | "moves" | "deletions" | "summary";
+
+/**
+ * Whether the refusal can be overridden: only when the Safety stop is the sole refusal. The
+ * free-space check never can be (ADR 0009).
+ */
+export function canOverrideSafetyStop(state: RefusedState): state is RefusedState & { safetyStop: SafetyStopRefusal } {
+  return state.safetyStop !== undefined && state.freeSpace === undefined;
+}
+
+/** What the refusal screen says about the Safety stop: the deleted files' share of the Replica, by count and by size. */
+export function safetyStopExplanation({ deleted, replica }: SafetyStopRefusal): string {
+  return (
+    `The Safety stop applies: ${fileCount(deleted.count)} (${formatSize(deleted.totalSize)}) are no longer on the Primary. ` +
+    `That is ${deleted.count.toLocaleString("en-US")} of the Replica's ${fileCount(replica.count)} (${percent(deleted.count, replica.count)}) ` +
+    `and ${formatSize(deleted.totalSize)} of its ${formatSize(replica.totalSize)} (${percent(deleted.totalSize, replica.totalSize)}), ` +
+    `more than ${SAFETY_STOP_PERCENT}% of the Replica. That often means something is wrong with the Primary: ` +
+    `it is failing, was only partly read, or was erased. Check the Primary first.`
+  );
+}
+
+/** What the refusal screen says about the free space: what is needed and free, and what the Holding area holds. */
+export function freeSpaceExplanation({ needed, free, holdingArea }: FreeSpaceRefusal): string {
+  return (
+    `The Replica has ${formatSize(free)} free, but the new and changed files need ${formatSize(needed)}. ` +
+    (holdingArea.count > 0
+      ? `The Holding area on the Replica holds ${formatSize(holdingArea.totalSize)} from the previous Update. Deleting it frees that space, ` +
+        `but its files are then gone for good, so first copy back to the Primary any you want to keep. `
+      : `The Replica needs a larger drive, or files other than those copied from the Primary removed from it. `) +
+    `Then compare again.`
+  );
+}
+
+/** `part` as a share of `whole`, to one decimal place: "50.5%". */
+function percent(part: number, whole: number): string {
+  return whole === 0 ? "0%" : `${((part / whole) * 100).toFixed(1)}%`;
+}
 
 /** The IPC channels between the main process and the screens. */
 export const CHANNELS = { state: "flow:state", action: "flow:action" } as const;

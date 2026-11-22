@@ -45,3 +45,5 @@ button.primary { font-weight: 600; }
 .steps [aria-current] { color: inherit; font-weight: 600; }
 .summary li { margin: 4px 0; }
 .waiting { margin-top: 30vh; text-align: center; }
+.override { margin: 24px 0; }
+.override input { width: 8em; font: inherit; }

@@ -1,11 +1,6 @@
 import { statfs } from "node:fs/promises";
 import type { Report, Totals } from "./report.ts";
-
-/** The Safety stop applies above this share of the Replica, by file count or by size (ADR 0008). */
-export const SAFETY_STOP_PERCENT = 10;
-
-/** The Safety stop never applies to this many deleted files or fewer (ADR 0008). */
-export const SAFETY_STOP_MIN_FILES = 100;
+import { SAFETY_STOP_MIN_FILES, SAFETY_STOP_PERCENT } from "./safety-stop-limits.ts";
 
 /**
  * Whether the Safety stop applies: the `deleted` files are more than `SAFETY_STOP_PERCENT` of the
