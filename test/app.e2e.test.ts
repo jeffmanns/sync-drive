@@ -33,7 +33,9 @@ describe("the desktop app", () => {
     const { ELECTRON_RUN_AS_NODE: _, ...env } = process.env;
 
     const app = await electron.launch({
-      timeout: 30_000,
+      // Electron sometimes takes nearly 30 s to start on the CI runner, even with no other test running
+      // (#45). The test checks what the app does, not how fast it starts.
+      timeout: 90_000,
       // The tests run on Electron's own runtime, so this is the Electron the app runs on.
       executablePath: process.execPath,
       args: [PROJECT],
