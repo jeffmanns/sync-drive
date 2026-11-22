@@ -1,7 +1,8 @@
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readdir, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { isAlwaysSkipped } from "./always-skipped.ts";
 import { HOLDING_AREA } from "./holding-area.ts";
+import type { Unreadable } from "./report.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
 /**
@@ -18,21 +19,42 @@ export interface ScannedFile {
   size: number;
   /** Modification date in nanoseconds since the epoch, at the file system's full precision. */
   mtimeNs: bigint;
+  /** For a shortcut, the path it points to, exactly as stored. Never followed. */
+  target?: string;
+}
+
+/** What a scan found: every file, and on the Primary, what could not be read. */
+export interface Scanned {
+  /** Every file, keyed by `matchKey` of its path. */
+  files: Map<string, ScannedFile>;
+  /** What could not be read below the top level. Always empty on the Replica, which rejects instead. */
+  unreadable: Unreadable[];
 }
 
 /**
  * Lists every file under the `role` drive's `root`, skipping macOS system files and, on the Replica,
  * sync-drive's own folders (the Incoming folder and the Holding area), keyed by `matchKey` of its path
- * relative to `root`. Reads only. Rejects if two paths differ only by letter case, or if the Primary
- * holds a top-level item with the name of one of sync-drive's own folders.
+ * relative to `root`. On the Primary, a folder or entry below the top level that cannot be read is
+ * listed in `unreadable` and the scan carries on; on the Replica it rejects. Shortcuts are never
+ * followed. Reads only. Rejects if two paths differ only by letter case, or if the Primary holds a
+ * top-level item with the name of one of sync-drive's own folders.
  */
-export async function scan(
-  role: "Primary" | "Replica",
-  root: string,
-): Promise<Map<string, ScannedFile>> {
+export async function scan(role: "Primary" | "Replica", root: string): Promise<Scanned> {
   const files = new Map<string, ScannedFile>();
+  const unreadable: Unreadable[] = [];
+  /** Runs `read`; on the Primary, a failure lists `path` as unreadable and gives `undefined`. */
+  async function orUnreadable<T>(path: string, folder: boolean, read: () => Promise<T>): Promise<T | undefined> {
+    try {
+      return await read();
+    } catch (error) {
+      if (role === "Replica" || path === "") throw error;
+      unreadable.push({ path, folder, reason: readFailure(error as NodeJS.ErrnoException) });
+      return undefined;
+    }
+  }
   async function walk(dir: string, prefix: string): Promise<void> {
-    const entries = await readdir(dir, { withFileTypes: true });
+    const entries = await orUnreadable(prefix.slice(0, -1), true, () => readdir(dir, { withFileTypes: true }));
+    if (entries === undefined) return;
     await Promise.all(
       entries.map(async (entry) => {
         const path = prefix + entry.name;
@@ -55,7 +77,13 @@ export async function scan(
         if (entry.isDirectory()) {
           await walk(full, path + "/");
         } else {
-          const stats = await lstat(full, { bigint: true });
+          const kind = entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other";
+          const read = await orUnreadable(path, false, async () => ({
+            stats: await lstat(full, { bigint: true }),
+            target: kind === "symlink" ? await readlink(full) : undefined,
+          }));
+          if (read === undefined) return;
+          const { stats, target } = read;
           const key = matchKey(path);
           const clash = files.get(key);
           if (clash !== undefined) {
@@ -67,16 +95,24 @@ export async function scan(
           }
           files.set(key, {
             path,
-            kind: entry.isFile() ? "file" : entry.isSymbolicLink() ? "symlink" : "other",
+            kind,
             size: Number(stats.size),
             mtimeNs: stats.mtimeNs,
+            ...(target === undefined ? {} : { target }),
           });
         }
       }),
     );
   }
   await walk(root, "");
-  return files;
+  return { files, unreadable };
+}
+
+/** Why something could not be read, in words, from the error reading it. */
+export function readFailure(error: NodeJS.ErrnoException): string {
+  if (error.code === "EACCES" || error.code === "EPERM") return "permission denied";
+  if (error.code === "EIO") return "the drive could not read it (EIO)";
+  return error.code ?? error.message;
 }
 
 /**
@@ -84,6 +120,6 @@ export async function scan(
  * ignored, so `Photo.JPG` and `photo.jpg` are the same file. Unicode forms are not unified: a
  * name stored in two different forms counts as two different files.
  */
-function matchKey(path: string): string {
+export function matchKey(path: string): string {
   return path.toLowerCase();
 }

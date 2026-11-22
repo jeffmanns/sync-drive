@@ -27,6 +27,16 @@ export interface Section extends Totals {
   folders: FolderGroup[];
 }
 
+/** Something on the Primary that could not be read, so it was left out of the comparison. */
+export interface Unreadable {
+  /** Path relative to the drive root, using `/`, exactly as stored on the drive. */
+  path: string;
+  /** Whether it is a folder, whose contents could not be listed. */
+  folder: boolean;
+  /** Why it could not be read, e.g. "permission denied". */
+  reason: string;
+}
+
 /** What differs between the Primary and the Replica. */
 export interface Report {
   /** Files on the Primary that are not on the Replica. Sizes are the Primary's. */
@@ -40,6 +50,11 @@ export interface Report {
   moves: MovesSection;
   /** Files on the Replica that are no longer on the Primary. Sizes are the Replica's. */
   deleted: Section;
+  /**
+   * The errors: what could not be read on the Primary, in path order. Each is left out of the other
+   * sections, and the Replica files at or under its path are never treated as deleted.
+   */
+  unreadable: Unreadable[];
   /** The Replica's contents for comparison, not counting sync-drive's own folders. */
   replica: Totals;
   /** Whether the Safety stop applies to this report's deleted files (ADR 0008). */

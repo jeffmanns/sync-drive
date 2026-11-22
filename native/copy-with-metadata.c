@@ -1,13 +1,14 @@
 /*
  * copy-with-metadata <source> <destination>
  *
- * Copies one regular file with all of its macOS metadata, for sync-drive's Update.
- * See docs/adr/0005-copying-with-all-metadata.md for why this exists.
+ * Copies one regular file or shortcut (symbolic link) with all of its macOS metadata, for
+ * sync-drive's Update. See docs/adr/0005-copying-with-all-metadata.md for why this exists.
+ * A shortcut is copied as a shortcut with the same target, never followed (#10).
  *
  *   1. copyfile(3) with COPYFILE_ALL copies the data, extended attributes (including Finder
  *      tags and the resource fork), ACLs, permissions, file flags, and the modification and
  *      access dates to the nanosecond. COPYFILE_EXCL refuses to overwrite anything, and
- *      COPYFILE_NOFOLLOW never follows a shortcut (symbolic link).
+ *      COPYFILE_NOFOLLOW never follows a shortcut: it copies the shortcut itself.
  *   2. copyfile(3) does not copy the creation date, so it is set with setattrlist(2).
  *   3. F_FULLFSYNC makes sure the data is on the drive itself before this exits, so the file
  *      can safely be renamed into place afterwards.
@@ -41,8 +42,9 @@ int main(int argc, char *argv[]) {
 
   struct stat source_stat;
   if (lstat(source, &source_stat) != 0) return fail("reading the file on the Primary", destination, 0);
-  if (!S_ISREG(source_stat.st_mode)) {
-    fprintf(stderr, "reading the file on the Primary: not a regular file\n");
+  int is_shortcut = S_ISLNK(source_stat.st_mode);
+  if (!S_ISREG(source_stat.st_mode) && !is_shortcut) {
+    fprintf(stderr, "reading the file on the Primary: not a regular file or shortcut\n");
     return 1;
   }
 
@@ -58,7 +60,8 @@ int main(int argc, char *argv[]) {
     return fail("setting the creation date", destination, 1);
   }
 
-  int fd = open(destination, O_RDONLY | O_NOFOLLOW);
+  // O_SYMLINK opens a shortcut itself, so it is flushed without being followed.
+  int fd = open(destination, O_RDONLY | (is_shortcut ? O_SYMLINK : O_NOFOLLOW));
   if (fd < 0) return fail("opening the copy", destination, 1);
   if (fcntl(fd, F_FULLFSYNC) != 0 && fsync(fd) != 0) {
     close(fd);

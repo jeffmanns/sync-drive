@@ -19,7 +19,7 @@ Checked on this Mac (macOS 15, Node v26.13.1) by copying one file between two AP
 
 ## The decision
 
-`copy-with-metadata <source> <destination>` calls `copyfile(3)` with `COPYFILE_ALL | COPYFILE_EXCL | COPYFILE_NOFOLLOW`. It then sets the creation date with `setattrlist(ATTR_CMN_CRTIME)` and flushes the copy to the drive with `F_FULLFSYNC` before it exits. It never overwrites an existing file and never follows a shortcut. The engine reaches it only through its `FileCopier` interface (the macOS side is `src/macos/file-copier.ts`), so tests can substitute a copier that fails part-way.
+`copy-with-metadata <source> <destination>` calls `copyfile(3)` with `COPYFILE_ALL | COPYFILE_EXCL | COPYFILE_NOFOLLOW`. It then sets the creation date with `setattrlist(ATTR_CMN_CRTIME)` and flushes the copy to the drive with `F_FULLFSYNC` before it exits. It never overwrites an existing file and never follows a shortcut: since #10 it copies a shortcut as a shortcut (ADR 0015). The engine reaches it only through its `FileCopier` interface (the macOS side is `src/macos/file-copier.ts`), so tests can substitute a copier that fails part-way.
 
 Update also writes each copy under a temporary name in a hidden `.sync-drive-incoming` folder at the top level of the Replica, then renames it into place. The folder is on the same drive, so the rename is atomic, and an interrupted run never leaves a truncated file under a real name. The next Update empties the folder, and comparisons never show it.
 

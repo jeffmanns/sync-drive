@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { BigIntStats } from "node:fs";
-import { lstat, mkdir, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { constants, type BigIntStats } from "node:fs";
+import { access, lstat, mkdir, readlink, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { FileEntry, Move, Report } from "./report.ts";
 import { Sha256Hasher, type Hasher } from "./hashing.ts";
@@ -8,6 +8,7 @@ import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-
 import { INCOMING_FOLDER } from "./incoming.ts";
 import { sameDate } from "./same-date.ts";
 import { checkFreeSpace, safetyStopApplies } from "./safety-stops.ts";
+import { readFailure } from "./scan.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
 /** What the user has approved for an Update. Nothing is written without `update`. */
@@ -38,9 +39,10 @@ export interface Approvals {
  */
 export interface FileCopier {
   /**
-   * Copies the regular file `source` to `destination`, which must not exist yet, keeping its
-   * modification and creation dates, extended attributes (including Finder tags), permissions and
-   * flags. Resolves only once the copy is safely on the drive. Never writes to `source`.
+   * Copies the regular file or shortcut (symbolic link) `source` to `destination`, which must not
+   * exist yet, keeping its modification and creation dates, extended attributes (including Finder
+   * tags), permissions and flags. A shortcut is copied as a shortcut with the same target, never
+   * followed. Resolves only once the copy is safely on the drive. Never writes to `source`.
    */
   copy(source: string, destination: string): Promise<void>;
 }
@@ -86,8 +88,8 @@ export interface UpdateResult {
   notMoved: FailedFile[];
 }
 
-/** Copying shortcuts as shortcuts, and special files, comes later (#10). Until then they are never followed. */
-const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Update does not copy yet";
+/** Why a special file (a named pipe, socket or device) is not copied: it holds no data to back up. */
+const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), which Update does not copy";
 
 /**
  * Brings the Replica up to date with `report`. If `approvals.deletions` is also given and the
@@ -221,17 +223,21 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     const source = join(setup.primary, file.path);
     try {
       const before = await lstat(source, { bigint: true });
-      if (!before.isFile()) throw new Error(NOT_A_FILE);
+      if (!before.isFile() && !before.isSymbolicLink()) throw new Error(SPECIAL_FILE);
       // Checked before copying too, so no time is spent on a copy that could not be put in place.
       await assertNoShortcutAlong(setup.replica, file.path);
       await setup.copier.copy(source, temporary);
-      // Read both back in full, so "copied" means confirmed identical, not just written.
-      const [primarySum, copySum] = await Promise.all([hasher.checksum(source), hasher.checksum(temporary)]);
+      // Read both back in full, so "copied" means confirmed identical, not just written. A shortcut is
+      // never followed: what it holds is the path it points to.
+      const contents = (path: string) => (before.isSymbolicLink() ? readlink(path) : hasher.checksum(path));
+      const [primarySum, copySum] = await Promise.all([contents(source), contents(temporary)]);
       // Looked at after hashing, so an edit during the copy or the read-back is caught as such.
       const [after, copy] = await Promise.all([lstat(source, { bigint: true }), lstat(temporary, { bigint: true })]);
       if (!sameVersion(before, after)) throw new Error("it changed on the Primary while it was being copied");
       if (!sameVersion(before, copy)) throw new Error("the copy's size or dates do not match the Primary");
-      if (primarySum !== copySum) throw new Error("the copy's checksum does not match the Primary's");
+      if (primarySum !== copySum) {
+        throw new Error(before.isSymbolicLink() ? "the copy points somewhere other than the Primary's shortcut" : "the copy's checksum does not match the Primary's");
+      }
       await makeReplicaFolders(setup.replica, dirname(file.path));
       await rename(temporary, destination);
       result.copied.push(file);
@@ -327,21 +333,42 @@ async function exists(path: string): Promise<boolean> {
  * Whether the Primary has a file at `path` (relative to its top) as a comparison sees it: anything
  * but a folder, even a broken shortcut. A folder there is not one, as a Replica file in its place
  * is deleted (a file replaced by a folder of the same name). Nor is anything when a folder along
- * the way is missing or is now a file. Reads only.
+ * the way is missing or is now a file. Rejects, so the file is left in place, when the Primary
+ * cannot be read there: a comparison would list that folder as unreadable and keep back what the
+ * Replica holds at or under it. That includes a folder that can be opened but not listed, where the
+ * path alone looks free, and an unreadable folder at the path itself. Reads only.
  */
 async function onPrimary(primary: string, path: string): Promise<boolean> {
-  return lstat(join(primary, path)).then(
-    (stats) => !stats.isDirectory(),
-    (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
-      throw error;
-    },
-  );
+  /** Looks at `route` on the Primary: `undefined` when nothing is there, a rejection when it cannot be read. */
+  const look = (route: string) =>
+    lstat(join(primary, route)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined;
+      throw new Error(`the Primary cannot be read there (${readFailure(error)})`, { cause: error });
+    });
+  const there = await look(path);
+  if (there !== undefined && !there.isDirectory()) return true;
+  // Nothing but a folder, if anything, is at the path: it and each folder above it must be listable.
+  for (const folder of foldersAlong(path)) {
+    const stats = await look(folder);
+    // Missing, or now a file or shortcut: nothing below it is on the Primary.
+    if (stats === undefined || !stats.isDirectory()) return false;
+    const listable = await access(join(primary, folder), constants.R_OK | constants.X_OK).then(() => true, () => false);
+    if (!listable) throw new Error(`the Primary folder "${folder}" cannot be read (permission denied)`);
+  }
+  return false;
 }
 
-/** Whether two looks at a file see the same version of it: same size, and the same dates to the nanosecond. */
+/**
+ * Whether two looks at a file see the same version of it: the same kind (file or shortcut), the
+ * same size, and the same dates to the nanosecond.
+ */
 function sameVersion(a: BigIntStats, b: BigIntStats): boolean {
-  return a.size === b.size && a.mtimeNs === b.mtimeNs && a.birthtimeNs === b.birthtimeNs;
+  return (
+    a.isSymbolicLink() === b.isSymbolicLink() &&
+    a.size === b.size &&
+    a.mtimeNs === b.mtimeNs &&
+    a.birthtimeNs === b.birthtimeNs
+  );
 }
 
 /** Rejects unless the Primary and the Replica are separate folders, neither inside the other, so no write can reach the Primary. */

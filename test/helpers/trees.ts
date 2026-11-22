@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { type BigIntStats } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -114,7 +114,8 @@ async function withRetries<T>(action: () => Promise<T>): Promise<T> {
 /**
  * Captures everything about a tree that a write could change: every entry's path, type,
  * size, modification and creation dates (to the nanosecond), permissions, file flags,
- * extended attributes (including Finder tags) and a checksum of each file's contents.
+ * extended attributes (including Finder tags), a checksum of each file's contents, and the
+ * path each shortcut points to.
  */
 export async function snapshotTree(root: string): Promise<string[]> {
   const entries: { full: string; path: string; isDirectory: boolean; isFile: boolean; stats: BigIntStats }[] = [];
@@ -134,7 +135,8 @@ export async function snapshotTree(root: string): Promise<string[]> {
       lines.push(`dir  ${path} ${metadata[i]}`);
     } else {
       const hash = isFile ? createHash("sha256").update(await readFile(full)).digest("hex") : "-";
-      lines.push(`file ${path} size=${stats.size} ${metadata[i]} sha256=${hash}`);
+      const target = stats.isSymbolicLink() ? ` target=${await readlink(full)}` : "";
+      lines.push(`file ${path} size=${stats.size} ${metadata[i]} sha256=${hash}${target}`);
     }
   }
   return lines.sort();
@@ -156,11 +158,15 @@ async function metadataOfMany(items: { path: string; stats?: BigIntStats | undef
   for (let i = 0; i < items.length; i += BATCH) {
     const batch = items.slice(i, i + BATCH);
     const paths = batch.map(({ path }) => path);
-    const [flags, xattrs, stats] = await Promise.all([
+    const stats = await Promise.all(batch.map(({ path, stats }) => stats ?? lstat(path, { bigint: true })));
+    // `xattr` opens what it reads, and opening a named pipe waits for a writer forever, so special
+    // files are left out of it.
+    const special = stats.map((s) => !s.isFile() && !s.isDirectory() && !s.isSymbolicLink());
+    const [flags, readable] = await Promise.all([
       fileFlagsOf(paths),
-      extendedAttributesOf(paths),
-      Promise.all(batch.map(({ path, stats }) => stats ?? lstat(path, { bigint: true }))),
+      extendedAttributesOf(paths.filter((_, j) => !special[j])),
     ]);
+    const xattrs = special.map((isSpecial) => (isSpecial ? {} : readable.shift()!));
     for (const [j, s] of stats.entries()) {
       const attributes = Object.entries(xattrs[j]!).map(([name, hex]) => `${name}=${hex}`).join(",");
       result.push(
@@ -194,6 +200,7 @@ export async function extendedAttributes(path: string): Promise<Record<string, s
  * path when there is only one), followed by a hex dump of the value.
  */
 async function extendedAttributesOf(paths: string[]): Promise<Record<string, string>[]> {
+  if (paths.length === 0) return [];
   const { stdout } = await run("xattr", ["-s", "-l", "-x", ...paths], { maxBuffer: 64 * 1024 * 1024 });
   const results = paths.map((): Record<string, string> => ({}));
   // Longest first, so a path that begins with another path plus ": " is matched as itself.
