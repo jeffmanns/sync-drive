@@ -24,6 +24,12 @@ async function makePrimary(spec: TreeSpec = {}): Promise<string> {
   return path;
 }
 
+/** Stands in for the owner changing the Primary themselves, such as between a comparison and Apply: what sync-drive must leave untouched is the Primary as it is now. */
+async function ownerChangesPrimary(path: string, change: () => Promise<void>): Promise<void> {
+  await change();
+  primaries.find((primary) => primary.path === path)!.before = await snapshotTree(path);
+}
+
 afterEach(async () => {
   for (const { path, before } of primaries.splice(0)) {
     assert.deepEqual(await snapshotTree(path), before, "the Primary must never be written to");
@@ -783,6 +789,20 @@ describe("app flow: Deletions", () => {
     assert.equal(stateOf(flow).notMoved.length, 1);
     assert.equal(stateOf(flow).notMoved[0].path, "Docs/old.pdf");
     assert.match(stateOf(flow).notMoved[0].reason, /ENOENT/);
+  });
+
+  it("lists a deleted file that is on the Primary again since the comparison as not moved, and why", async () => {
+    const { flow, primary, replica } = await pairedMac(EXAMPLE_PRIMARY, { ...EXAMPLE_REPLICA, "gone.txt": "x" });
+    await flow.compare();
+    toSummaryApprovingDeletions(flow);
+    await ownerChangesPrimary(primary, () => writeFile(join(primary, "gone.txt"), "restored"));
+
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).moved, [{ path: "Docs/old.pdf", size: 3 }]);
+    assert.deepEqual(stateOf(flow).notMoved.map((file: { path: string }) => file.path), ["gone.txt"]);
+    assert.match(stateOf(flow).notMoved[0].reason, /on the Primary again since the comparison/);
+    assert.equal(await readFile(join(replica, "gone.txt"), "utf8"), "x");
   });
 
   it("writes nothing, back on Start, when the Holding area changed after the comparison", async () => {

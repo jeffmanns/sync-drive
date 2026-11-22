@@ -401,6 +401,67 @@ describe("Update: deletions and the Holding area", () => {
   });
 
 
+  it("leaves a deleted file in place when it is on the Primary again since the comparison, and moves the others", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree({ "back.txt": "the Replica's copy", "Folder/back.jpg": "jpg", "gone.txt": "gone" });
+    const report = await compare(primary, replica);
+    // Back on the Primary between the comparison and Apply, one of them different from the Replica's copy.
+    await writeFile(join(primary, "back.txt"), "restored, and edited");
+    await mkdir(join(primary, "Folder"));
+    await writeFile(join(primary, "Folder/back.jpg"), "jpg");
+    const primaryBefore = await snapshotTree(primary);
+
+    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.moved, [{ path: "gone.txt", size: 4 }]);
+    assert.deepEqual(result.notMoved.map((file) => file.path), ["Folder/back.jpg", "back.txt"]);
+    for (const file of result.notMoved) assert.match(file.reason, /on the Primary again since the comparison/);
+    assert.equal(await readFile(join(replica, "back.txt"), "utf8"), "the Replica's copy");
+    assert.equal(await readFile(join(replica, "Folder/back.jpg"), "utf8"), "jpg");
+    const holding = join(replica, "sync-drive Holding Area");
+    assert.deepEqual((await readdir(holding)).sort(), ["READ ME.txt", "gone.txt"]);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("leaves a deleted file in place when a shortcut is at its path on the Primary again, even a broken one", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree({ "now-a-shortcut": "y" });
+    const report = await compare(primary, replica);
+    await symlink("nowhere", join(primary, "now-a-shortcut"));
+    const primaryBefore = await snapshotTree(primary);
+
+    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.moved, []);
+    assert.deepEqual(result.notMoved.map((file) => file.path), ["now-a-shortcut"]);
+    assert.equal(await readFile(join(replica, "now-a-shortcut"), "utf8"), "y");
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("moves a deleted file when a folder of its name is on the Primary since the comparison, as a comparison would still call it deleted", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree({ "now-a-folder": "x" });
+    const report = await compare(primary, replica);
+    await mkdir(join(primary, "now-a-folder"));
+
+    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.moved, [{ path: "now-a-folder", size: 1 }]);
+    assert.deepEqual(result.notMoved, []);
+  });
+
+  it("moves a deleted file whose folder on the Primary is now a file, since nothing is at its path", async () => {
+    const primary = await makeTree();
+    const replica = await makeTree({ "Old/gone.txt": "gone" });
+    const report = await compare(primary, replica);
+    await writeFile(join(primary, "Old"), "a file where the folder was");
+
+    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.moved, [{ path: "Old/gone.txt", size: 4 }]);
+    assert.deepEqual(result.notMoved, []);
+  });
+
   it("refuses, writing nothing, a report path inside sync-drive's own folders", async () => {
     const primary = await makeTree();
     const replica = await makeTree({ "gone.txt": "gone" });

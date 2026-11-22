@@ -91,7 +91,8 @@ const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Upda
 
 /**
  * Brings the Replica up to date with `report`. If `approvals.deletions` is also given and the
- * report has deleted files, empties the previous Holding area and moves them into it. If
+ * report has deleted files, empties the previous Holding area and moves them into it, each only if
+ * the Primary still has no file at its path. If
  * `approvals.moves` is given, renames the report's moved files on the Replica to their new paths,
  * each only if it and its Primary file still match by size and date. Then copies
  * the new and changed files from the Primary, checking each copy against its Primary file by
@@ -167,6 +168,10 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     try {
       // Moved, never destroyed: the rename stays on the Replica, so it is atomic and keeps all metadata.
       const destination = join(holdingArea, file.path);
+      // It was only on the Replica at compare time. If the Primary has anything but a folder at its
+      // path now, a comparison would no longer call it deleted, so the Replica's copy is left for the
+      // next one, whether or not the two match (ADR 0014).
+      if (await onPrimary(setup.primary, file.path)) throw new Error("it is on the Primary again since the comparison");
       await assertNoShortcutAlong(setup.replica, file.path);
       await makeReplicaFolders(setup.replica, join(HOLDING_AREA, dirname(file.path)));
       // rename replaces whatever is at the destination, so make sure nothing is.
@@ -313,6 +318,22 @@ async function exists(path: string): Promise<boolean> {
     () => true,
     (error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return false;
+      throw error;
+    },
+  );
+}
+
+/**
+ * Whether the Primary has a file at `path` (relative to its top) as a comparison sees it: anything
+ * but a folder, even a broken shortcut. A folder there is not one, as a Replica file in its place
+ * is deleted (a file replaced by a folder of the same name). Nor is anything when a folder along
+ * the way is missing or is now a file. Reads only.
+ */
+async function onPrimary(primary: string, path: string): Promise<boolean> {
+  return lstat(join(primary, path)).then(
+    (stats) => !stats.isDirectory(),
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
       throw error;
     },
   );
