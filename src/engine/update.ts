@@ -170,7 +170,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       const destination = join(holdingArea, file.path);
       // It was only on the Replica at compare time. If the Primary has anything but a folder at its
       // path now, a comparison would no longer call it deleted, so the Replica's copy is left for the
-      // next one, whether or not the two match.
+      // next one, whether or not the two match (ADR 0014).
       if (await onPrimary(setup.primary, file.path)) throw new Error("it is on the Primary again since the comparison");
       await assertNoShortcutAlong(setup.replica, file.path);
       await makeReplicaFolders(setup.replica, join(HOLDING_AREA, dirname(file.path)));
