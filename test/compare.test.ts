@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmod, lstat, lutimes, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { compare, Sha256Hasher, type Hasher } from "../src/engine/index.ts";
+import { checkExclusion, compare, Sha256Hasher, type Hasher } from "../src/engine/index.ts";
 import { DEFAULT_MTIME, makeCaseSensitiveTree, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
 after(removeTrees);
@@ -603,5 +603,125 @@ describe("Unreadable files on the Primary", () => {
 
     assert.equal(report.deleted.count, 0);
     assert.equal(report.safetyStop, false);
+  });
+});
+
+describe("Exclusions", () => {
+  it("leaves a file matching an Exclusion's name, in any folder, out of the report on both drives", async () => {
+    const primary = await makeTree({ "notes.tmp": "x", "Work/draft.tmp": "x", "Work/keep.txt": "x" });
+    const replica = await makeTree({ "Old/gone.tmp": "x" });
+
+    const report = await compare(primary, replica, { exclusions: ["*.tmp"] });
+
+    assert.deepEqual(report.new.files, [{ path: "Work/keep.txt", size: 1 }]);
+    assert.deepEqual(report.deleted.files, []);
+  });
+
+  it("reads a pattern with a / as a path from the top level, excluding a folder and everything in it", async () => {
+    const primary = await makeTree({ "Movies/Cache/a.bin": "x", "Movies/Cache/deep/b.bin": "x", "Movies/film.mov": "x", "Work/Movies/Cache/c.bin": "x" });
+    const replica = await makeTree();
+
+    const report = await compare(primary, replica, { exclusions: ["/Movies/Cache"] });
+
+    assert.deepEqual(report.new.files.map((file) => file.path), ["Movies/film.mov", "Work/Movies/Cache/c.bin"]);
+  });
+
+  it("excludes a folder named in any folder by a pattern with no /", async () => {
+    const primary = await makeTree({ "a/node_modules/x/index.js": "x", "b/c/node_modules/y.js": "x", "b/node_modules.txt": "x" });
+    const replica = await makeTree({ "old/node_modules/z.js": "x" });
+
+    const report = await compare(primary, replica, { exclusions: ["node_modules"] });
+
+    assert.deepEqual(report.new.files.map((file) => file.path), ["b/node_modules.txt"]);
+    assert.deepEqual(report.deleted.files, []);
+  });
+
+  it("reads ** as any number of folders, including none, and ? as one character", async () => {
+    const primary = await makeTree({
+      "Projects/build/a": "x",
+      "Projects/app/build/b": "x",
+      "Projects/app/src/build.ts": "x",
+      "Other/build/c": "x",
+      "Logs/day1.log": "x",
+      "Logs/day10.log": "x",
+    });
+    const replica = await makeTree();
+
+    const report = await compare(primary, replica, { exclusions: ["Projects/**/build", "Logs/day?.log"] });
+
+    assert.deepEqual(report.new.files.map((file) => file.path), ["Logs/day10.log", "Other/build/c", "Projects/app/src/build.ts"]);
+  });
+
+  it("ignores letter case and Unicode forms when matching an Exclusion", async () => {
+    const decomposed = "Cafe\u0301";
+    const primary = await makeTree({ "SCRATCH/a": "x", [`${decomposed}/menu.pdf`]: "x", "keep": "x" });
+    const replica = await makeTree();
+
+    const report = await compare(primary, replica, { exclusions: ["scratch", "Café".normalize("NFC")] });
+
+    assert.deepEqual(report.new.files.map((file) => file.path), ["keep"]);
+  });
+
+  it("still skips the macOS system files alongside the Exclusions", async () => {
+    const primary = await makeTree({ ".DS_Store": "x", "Photos/.DS_Store": "x", "a.tmp": "x", "keep": "x" });
+    const replica = await makeTree({ ".Trashes/old": "x" });
+
+    const report = await compare(primary, replica, { exclusions: ["*.tmp"] });
+
+    assert.deepEqual(report.new.files.map((file) => file.path), ["keep"]);
+    assert.deepEqual(report.deleted.files, []);
+  });
+
+  it("does not read an excluded folder, so lists nothing in it as unreadable", async () => {
+    const primary = await makeTree({ "Private/secret": "x", "keep": "x" });
+    const replica = await makeTree();
+    await chmod(join(primary, "Private"), 0o000);
+    try {
+      const report = await compare(primary, replica, { exclusions: ["Private"] });
+
+      assert.deepEqual(report.unreadable, []);
+      assert.deepEqual(report.new.files.map((file) => file.path), ["keep"]);
+    } finally {
+      await chmod(join(primary, "Private"), 0o755);
+    }
+  });
+
+  it("never pairs an excluded file as one end of a move, nor counts excluded Replica files towards the Safety stop", async () => {
+    const primary = await makeTree({ "New/photo.jpg": "same" });
+    const replica = await makeTree({ "Old/photo.jpg": "same", "Scratch/1": "x", "Scratch/2": "x" });
+
+    const report = await compare(primary, replica, { exclusions: ["/Old", "Scratch"] });
+
+    assert.deepEqual(report.moves.moves, []);
+    assert.deepEqual(report.new.files.map((file) => file.path), ["New/photo.jpg"]);
+    assert.deepEqual(report.deleted.files, []);
+    assert.deepEqual(report.replica, { count: 0, totalSize: 0 });
+  });
+
+  it("still refuses to compare when the Primary has an item named like sync-drive's own, even if excluded", async () => {
+    const primary = await makeTree({ "sync-drive Holding Area/a.jpg": "x" });
+    const replica = await makeTree();
+
+    await assert.rejects(compare(primary, replica, { exclusions: ["sync-drive Holding Area"] }), /sync-drive keeps that name/);
+  });
+
+  it("rejects an Exclusion that is not as checked, rather than guess what it leaves out", async () => {
+    const primary = await makeTree({ "a": "x" });
+    const replica = await makeTree();
+
+    await assert.rejects(compare(primary, replica, { exclusions: ["*"] }), /everything on the drive/);
+  });
+});
+
+describe("Checking an Exclusion as typed", () => {
+  it("trims it and takes off a trailing /, keeping a leading / that anchors it", () => {
+    assert.equal(checkExclusion("  Movies/Cache/ "), "Movies/Cache");
+    assert.equal(checkExclusion("/Scratch/"), "/Scratch");
+    assert.equal(checkExclusion("*.tmp"), "*.tmp");
+  });
+
+  it("refuses an empty pattern, an empty, . or .. name, and one that would leave out everything", () => {
+    for (const typed of ["", "   ", "/", "a//b", "./a", "a/../b"]) assert.throws(() => checkExclusion(typed), Error, typed);
+    for (const typed of ["*", "**", "/*", "*/*", "**/*"]) assert.throws(() => checkExclusion(typed), /everything on the drive/, typed);
   });
 });

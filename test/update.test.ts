@@ -914,3 +914,33 @@ describe("Update: safety stops", () => {
 /** A Finder tags list holding the single tag "Red", as Finder stores it (a binary property list). */
 const RED_TAG_HEX =
   "62706C6973743030A101565265640A36080A0000000000000101000000000000000200000000000000000000000000000013";
+
+describe("Update: Exclusions", () => {
+  it("writes nothing when the report holds a path the Exclusions leave out, whether to copy, move or delete", async () => {
+    const primary = await makeTree({ "Scratch/new.txt": "x", "New/photo.jpg": "same" });
+    const replica = await makeTree({ "Scratch/old.txt": "x", "Old/photo.jpg": "same" });
+    // Compared without the Exclusions, so the report holds Scratch: as from a Report made before they were added.
+    const report = await compare(primary, replica);
+    const replicaBefore = await snapshotTree(replica);
+
+    for (const exclusions of [["Scratch"], ["/New"], ["/Old"]]) {
+      await assert.rejects(
+        update(report, { update: true, moves: true, deletions: true }, { primary, replica, copier: new MacFileCopier(), exclusions }),
+        (error: Error) => error instanceof UpdateStoppedError && /left out by the Exclusions; nothing was written/.test(error.message),
+      );
+    }
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("goes ahead with a report made with the same Exclusions", async () => {
+    const primary = await makeTree({ "Scratch/new.txt": "x", "keep.txt": "x" });
+    const replica = await makeTree({ "Scratch/old.txt": "x" });
+    const exclusions = ["Scratch"];
+
+    const report = await compare(primary, replica, { exclusions });
+    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier(), exclusions });
+
+    assert.deepEqual(result.copied, [{ path: "keep.txt", size: 1 }]);
+    assert.deepEqual(await readdir(join(replica, "Scratch")), ["old.txt"]);
+  });
+});

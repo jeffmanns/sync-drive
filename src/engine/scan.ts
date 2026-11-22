@@ -1,6 +1,7 @@
 import { lstat, readdir, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { isAlwaysSkipped } from "./always-skipped.ts";
+import type { ExclusionMatcher } from "./exclusions.ts";
 import { HOLDING_AREA } from "./holding-area.ts";
 import type { Unreadable } from "./report.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
@@ -32,14 +33,14 @@ export interface Scanned {
 }
 
 /**
- * Lists every file under the `role` drive's `root`, skipping macOS system files and, on the Replica,
- * sync-drive's own folders (the Incoming folder and the Holding area), keyed by `matchKey` of its path
+ * Lists every file under the `role` drive's `root`, skipping macOS system files, what `isExcluded`
+ * leaves out (an excluded folder is not read at all), and, on the Replica, sync-drive's own folders (the Incoming folder and the Holding area), keyed by `matchKey` of its path
  * relative to `root`. On the Primary, a folder or entry below the top level that cannot be read is
  * listed in `unreadable` and the scan carries on; on the Replica it rejects. Shortcuts are never
  * followed. Reads only. Rejects if two paths differ only by letter case, or if the Primary holds a
  * top-level item with the name of one of sync-drive's own folders.
  */
-export async function scan(role: "Primary" | "Replica", root: string): Promise<Scanned> {
+export async function scan(role: "Primary" | "Replica", root: string, isExcluded: ExclusionMatcher = () => false): Promise<Scanned> {
   const files = new Map<string, ScannedFile>();
   const unreadable: Unreadable[] = [];
   /** Runs `read`; on the Primary, a failure lists `path` as unreadable and gives `undefined`. */
@@ -59,7 +60,8 @@ export async function scan(role: "Primary" | "Replica", root: string): Promise<S
       entries.map(async (entry) => {
         const path = prefix + entry.name;
         if (isAlwaysSkipped(path)) return;
-        // sync-drive's own folders: the Incoming folder and the Holding area.
+        // sync-drive's own folders: the Incoming folder and the Holding area. Checked before the
+        // Exclusions, so the Primary still cannot hide such an item behind one (ADR 0007).
         if (isSyncDriveFolder(path)) {
           if (role === "Replica") return;
           // An Update would copy it into sync-drive's own folder on the Replica, where a later Update would
@@ -73,6 +75,7 @@ export async function scan(role: "Primary" | "Replica", root: string): Promise<S
               `on the Replica, so it cannot back the item up. ${howToFix}`,
           );
         }
+        if (isExcluded(path)) return;
         const full = join(dir, entry.name);
         if (entry.isDirectory()) {
           await walk(full, path + "/");

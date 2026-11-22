@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { exclusionMatcher } from "./exclusions.ts";
 import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { findMoveCandidates } from "./moves.ts";
 import { makeMovesSection, makeSection, type FileEntry, type Report } from "./report.ts";
@@ -8,17 +9,19 @@ import { sameDate } from "./same-date.ts";
 import { safetyStopApplies } from "./safety-stops.ts";
 import { matchKey, readFailure, scan, type ScannedFile } from "./scan.ts";
 
-/**
- * Options for a comparison. Quick compare is currently the only kind; Deep verify and
- * user Exclusions will be added here.
- */
+/** Options for a comparison. Quick compare is currently the only kind; Deep verify will be added here. */
 export interface CompareOptions {
+  /**
+   * The owner's Exclusions: path patterns left out on both drives, as `exclusions.ts` describes. What
+   * they match is never reported, so never copied, moved or deleted. Each must pass `checkExclusion`.
+   */
+  exclusions?: readonly string[];
   /** Confirms move candidates by checksum. Defaults to SHA-256 (ADR 0010). */
   hasher?: Hasher;
 }
 
 /**
- * Compares the Primary with the Replica by Quick compare. Files moved on the Primary are reported as
+ * Compares the Primary with the Replica by Quick compare, leaving out on both what the Exclusions match. Files moved on the Primary are reported as
  * moves once their contents are confirmed identical by checksum; that reads both copies of each in
  * full. Shortcuts are compared as shortcuts, never followed. What cannot be read on the Primary is
  * listed in `unreadable` and left out, and its Replica copies are never reported as deleted. Reads
@@ -30,10 +33,11 @@ export async function compare(
   replica: string,
   options: CompareOptions = {},
 ): Promise<Report> {
+  const isExcluded = exclusionMatcher(options.exclusions ?? []);
   await Promise.all([assertFolder("Primary", primary), assertFolder("Replica", replica)]);
   const [{ files: primaryFiles, unreadable }, { files: replicaFiles }] = await Promise.all([
-    scan("Primary", primary),
-    scan("Replica", replica),
+    scan("Primary", primary, isExcluded),
+    scan("Replica", replica, isExcluded),
   ]);
   const primaryOnly: ScannedFile[] = [];
   const changed: ScannedFile[] = [];

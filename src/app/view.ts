@@ -41,6 +41,10 @@ export interface PairingState {
 export interface StartState {
   step: "start";
   pairing: Pairing;
+  /** The owner's Exclusions, in the order they were added: left out of every comparison. */
+  exclusions: string[];
+  /** Why the last pattern was not added or removed, or why the saved Exclusions cannot be used. */
+  exclusionProblem?: string;
   /** Why the last comparison did not happen or was discarded. */
   error?: string;
   /** Something worth knowing that is not a problem, such as the drives already matching. */
@@ -97,6 +101,8 @@ export interface Review {
   pairing: Pairing;
   /** Where the paired drives were connected when compared. */
   drives: PairedDrives;
+  /** The Exclusions the comparison left out, which Apply is held to. */
+  exclusions: string[];
   /** Files on the Primary that are not on the Replica. */
   new: Section;
   /** Files on both drives that a Quick compare judges different. */
@@ -251,6 +257,10 @@ export type Action =
   | { type: "confirmReplace"; confirmed: boolean }
   | { type: "cancelRepair" }
   | { type: "compare" }
+  /** On Start: a pattern as the owner typed it, to add to the Exclusions. */
+  | { type: "addExclusion"; typed: string }
+  /** On Start: a saved Exclusion to remove. */
+  | { type: "removeExclusion"; pattern: string }
   /** On the refusal screen: the number of deletions as the owner typed it. */
   | { type: "overrideSafetyStop"; typed: string }
   | { type: "approveCopies"; approved: boolean }

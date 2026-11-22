@@ -20,7 +20,10 @@ const PROJECT = fileURLToPath(new URL("..", import.meta.url));
 describe("the desktop app", () => {
   it("launches and runs an Update with copies and deletions from Start to Result", async (t) => {
     const phase = phaseTimer(t);
-    const primary = await makeDiskImageTree({ "Photos/a.jpg": "new photo", "readme.txt": "changed!" }, { name: "Smoke Primary" });
+    const primary = await makeDiskImageTree(
+      { "Photos/a.jpg": "new photo", "readme.txt": "changed!", "Photos/scratch.tmp": "excluded" },
+      { name: "Smoke Primary" },
+    );
     const replica = await makeDiskImageTree(
       { "readme.txt": "old", "old.txt": "only here", "sync-drive Holding Area/earlier.txt": "held" },
       { name: "Smoke Replica" },
@@ -48,6 +51,9 @@ describe("the desktop app", () => {
       phase("first window");
       await window.getByText('"Smoke Primary"').waitFor();
       phase("Start screen");
+      await window.getByLabel("Exclude:").fill("*.tmp");
+      await window.getByRole("button", { name: "Add" }).click();
+      await window.getByRole("button", { name: "Remove *.tmp" }).waitFor();
       await window.getByRole("button", { name: "Compare" }).click();
       await window.getByRole("heading", { name: "Copies" }).waitFor({ timeout: 30_000 });
       phase("compare");
@@ -83,6 +89,7 @@ describe("the desktop app", () => {
 
     assert.equal(await readFile(join(replica, "Photos", "a.jpg"), "utf8"), "new photo");
     assert.equal(await readFile(join(replica, "readme.txt"), "utf8"), "changed!");
+    assert.equal(await readdir(join(replica, "Photos")).then((names) => names.includes("scratch.tmp")), false, "the Exclusion is never copied");
     assert.equal(await readFile(join(replica, "sync-drive Holding Area", "old.txt"), "utf8"), "only here");
     assert.equal(await readdir(join(replica, "sync-drive Holding Area")).then((names) => names.includes("earlier.txt")), false);
     assert.deepEqual(await primarySnapshot(primary), primaryBefore);

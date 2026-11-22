@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { after, afterEach, describe, it } from "node:test";
 import { Flow } from "../src/app/flow.ts";
@@ -41,12 +41,13 @@ async function testMac(copier: FileCopier = new MacFileCopier()) {
   const volumes = new FakeVolumes();
   const remounter = new FakeRemounter();
   const pairingFile = join(await makeTree(), "sync-drive", "pairing.json");
+  const exclusionsFile = join(dirname(pairingFile), "exclusions.json");
   const open = async () => {
-    const flow = new Flow({ volumes, pairingFile, copier, remounter });
+    const flow = new Flow({ volumes, pairingFile, exclusionsFile, copier, remounter });
     await flow.open();
     return flow;
   };
-  return { volumes, remounter, pairingFile, open };
+  return { volumes, remounter, pairingFile, exclusionsFile, open };
 }
 
 describe("app flow: opening", () => {
@@ -73,8 +74,8 @@ describe("app flow: Pairing", () => {
     await flow.pair();
 
     const expected = { primary: { id: "PRIMARY-ID", name: basename(primary) }, replica: { id: "REPLICA-ID", name: basename(replica) } };
-    assert.deepEqual(flow.state, { step: "start", pairing: expected });
-    assert.deepEqual((await mac.open()).state, { step: "start", pairing: expected }, "remembered when the app opens again");
+    assert.deepEqual(flow.state, { step: "start", pairing: expected, exclusions: [] });
+    assert.deepEqual((await mac.open()).state, { step: "start", pairing: expected, exclusions: [] }, "remembered when the app opens again");
   });
 
   it("stays on Pairing, saying why and saving nothing, when both choices are the same drive", async () => {
@@ -1156,5 +1157,88 @@ describe("app flow: the Primary read-only during the Update", () => {
     await flow.quit();
 
     assert.deepEqual(remounter.log, []);
+  });
+});
+
+describe("app flow: Exclusions", () => {
+  it("adds and removes Exclusions on Start, saving them beside the Pairing for the next time the app opens", async () => {
+    const { flow, open, exclusionsFile } = await pairedMac();
+
+    await flow.addExclusion("  Movies/Cache/ ");
+    await flow.addExclusion("*.tmp");
+    await flow.addExclusion("node_modules");
+    await flow.removeExclusion("*.tmp");
+
+    assert.deepEqual(stateOf(flow).exclusions, ["Movies/Cache", "node_modules"]);
+    assert.deepEqual(stateOf(await open()).exclusions, ["Movies/Cache", "node_modules"], "remembered when the app opens again");
+    assert.deepEqual(JSON.parse(await readFile(exclusionsFile, "utf8")), { exclusions: ["Movies/Cache", "node_modules"] });
+  });
+
+  it("refuses a pattern it cannot use, or one already listed, saying why and saving nothing", async () => {
+    const { flow, open } = await pairedMac();
+    await flow.addExclusion("Scratch");
+
+    await flow.addExclusion("*");
+    assert.match(stateOf(flow).exclusionProblem, /everything on the drive/);
+    await flow.addExclusion("scratch/");
+    assert.match(stateOf(flow).exclusionProblem, /already/);
+
+    assert.deepEqual(stateOf(flow).exclusions, ["Scratch"]);
+    assert.deepEqual(stateOf(await open()).exclusions, ["Scratch"]);
+    await flow.addExclusion("Other");
+    assert.equal(stateOf(flow).exclusionProblem, undefined, "cleared once a pattern is added");
+  });
+
+  it("leaves what the Exclusions match out of the review, and Apply never copies, moves or deletes it", async () => {
+    const { flow, replica } = await pairedMac(
+      { "Scratch/new.txt": "x", "Work/a.tmp": "x", "Work/keep.txt": "x", "New/photo.jpg": "same" },
+      { "Scratch/old.txt": "x", "Old/photo.jpg": "same", "Docs/gone.pdf": "x" },
+    );
+    await flow.addExclusion("Scratch");
+    await flow.addExclusion("*.tmp");
+    await flow.addExclusion("/Old");
+
+    await flow.compare();
+    const { review } = stateOf(flow);
+    assert.deepEqual(review.exclusions, ["Scratch", "*.tmp", "/Old"]);
+    assert.deepEqual(review.new.files.map((file: { path: string }) => file.path), ["New/photo.jpg", "Work/keep.txt"]);
+    assert.deepEqual(review.moves.moves, []);
+    assert.deepEqual(review.deleted.files.map((file: { path: string }) => file.path), ["Docs/gone.pdf"]);
+    flow.approveCopies(true);
+    toSummaryApprovingDeletions(flow);
+    await flow.apply();
+
+    assert.equal(stateOf(flow).step, "result");
+    assert.deepEqual(stateOf(flow).failed, []);
+    const files = (await readdir(replica, { recursive: true, withFileTypes: true })).filter((entry) => !entry.isDirectory());
+    assert.deepEqual(files.map((entry) => join(entry.parentPath, entry.name).slice(replica.length + 1)).sort(), [
+      "New/photo.jpg",
+      "Old/photo.jpg",
+      "Scratch/old.txt",
+      "Work/keep.txt",
+      "sync-drive Holding Area/Docs/gone.pdf",
+      "sync-drive Holding Area/READ ME.txt",
+    ]);  });
+
+  it("refuses to compare, saying why, when the saved Exclusions are damaged", async () => {
+    const mac = await testMac();
+    const primary = await makePrimary({ "a.txt": "x" });
+    const replica = await makeTree();
+    mac.volumes.connect(primary, "PRIMARY-ID");
+    mac.volumes.connect(replica, "REPLICA-ID");
+    const first = await mac.open();
+    first.choose("primary", primary);
+    first.choose("replica", replica);
+    await first.pair();
+    await writeFile(mac.exclusionsFile, "{ not json");
+
+    const flow = await mac.open();
+    assert.match(stateOf(flow).exclusionProblem, /damaged/);
+    await flow.compare();
+    await flow.addExclusion("Scratch");
+
+    assert.equal(stateOf(flow).step, "start");
+    assert.match(stateOf(flow).error, /damaged/);
+    assert.equal(await readFile(mac.exclusionsFile, "utf8"), "{ not json", "not overwritten");
   });
 });

@@ -61,7 +61,7 @@ An opt-in comparison that judges files equal by a checksum of their full content
 _Avoid_: full scan, integrity check, hash compare
 
 **Exclusion**:
-A path pattern the user has chosen to leave out of every comparison, in addition to the macOS system files that are always skipped.
+A path pattern the user has chosen to leave out of every comparison, in addition to the macOS system files that are always skipped. What it matches is left out on both drives, so it is never copied, moved or deleted. Exclusions are edited in a list on the Start screen and saved beside the Pairing (ADR 0016).
 _Avoid_: ignore rule, filter
 
 **Shortcut**:

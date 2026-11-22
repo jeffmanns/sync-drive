@@ -3,6 +3,7 @@ import { constants, type BigIntStats } from "node:fs";
 import { access, lstat, mkdir, readlink, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { FileEntry, Move, Report } from "./report.ts";
+import { exclusionMatcher } from "./exclusions.ts";
 import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
@@ -58,6 +59,11 @@ export interface UpdateSetup {
   hasher?: Hasher;
   /** When the Update runs, for the Holding area's `READ ME.txt`. Defaults to now. */
   now?: Date;
+  /**
+   * The Exclusions the report was made with. The Update writes nothing if the report holds a path
+   * they leave out, as it was then made with other Exclusions. Defaults to none.
+   */
+  exclusions?: readonly string[];
 }
 
 /** A file the Update did not copy or move, and why. */
@@ -100,7 +106,7 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * the new and changed files from the Primary, checking each copy against its Primary file by
  * checksum before renaming it into place; a copy that does not match is discarded and listed as
  * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
- * having written nothing, when the Safety stop applies to the report's deletions (counted again
+ * having written nothing, when the report holds a path `setup.exclusions` leave out, when the Safety stop applies to the report's deletions (counted again
  * here, not read from `report.safetyStop`) without `approvals.overrideSafetyStop`, or
  * when the Replica lacks the free space for the copies (ADR 0008). Every rejection is an
  * `UpdateStoppedError` saying what had been done before it stopped.
@@ -145,6 +151,17 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   for (const move of moves) {
     assertInsideDrive(move.from);
     assertInsideDrive(move.to);
+  }
+  // Every path in the report, approved or not: one the Exclusions leave out means the report was made
+  // with others, so none of it can be trusted to leave alone what the owner excluded.
+  const isExcluded = exclusionMatcher(setup.exclusions ?? []);
+  const reportPaths = [
+    ...[...report.new.files, ...report.changed.files, ...report.deleted.files].map((file) => file.path),
+    ...report.moves.moves.flatMap((move) => [move.from, move.to]),
+  ];
+  const excluded = reportPaths.find(isExcluded);
+  if (excluded !== undefined) {
+    throw new Error(`"${excluded}" is left out by the Exclusions; nothing was written. Compare again.`);
   }
   // Counted again from the deletions it was handed, rather than trusting the Report's flag, so the
   // Safety stop holds whoever built the Report (ADR 0008).

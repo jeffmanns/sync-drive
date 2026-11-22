@@ -2,9 +2,11 @@ import { parseArgs } from "node:util";
 import {
   checkFreeSpace,
   compare,
+  exclusionsFileBeside,
   findPairedDrives,
   pair,
   readHoldingArea,
+  readExclusions,
   readPairing,
   SAFETY_STOP_MIN_FILES,
   SAFETY_STOP_PERCENT,
@@ -126,7 +128,7 @@ async function runCompare(list: boolean, deps: CliDeps): Promise<number> {
 }
 
 async function runUpdate(list: boolean, allowMassDeletion: boolean, deps: CliDeps): Promise<number> {
-  const { drives, report } = await compareAndShow(list, deps);
+  const { drives, report, exclusions } = await compareAndShow(list, deps);
   const copies = report.new.count + report.changed.count;
   const moves = report.moves.count;
   const deletions = report.deleted.count;
@@ -194,6 +196,7 @@ async function runUpdate(list: boolean, allowMassDeletion: boolean, deps: CliDep
     primary: drives.primary.mountPoint,
     replica: drives.replica.mountPoint,
     copier: deps.copier,
+    exclusions,
   });
   if (copies > 0) deps.out(`Copied ${fileCount(result.copied.length)}, ${formatSize(totalSize(result.copied))}.`);
   if (movesApproved) deps.out(`Renamed ${fileCount(result.renamed.length)}, ${formatSize(totalSize(result.renamed))}, to their new paths.`);
@@ -238,17 +241,21 @@ function totalSize(files: { size: number }[]): number {
   return files.reduce((total, file) => total + file.size, 0);
 }
 
-/** Finds the paired drives, compares them, and shows the report. */
-async function compareAndShow(list: boolean, deps: CliDeps): Promise<{ drives: PairedDrives; report: Report }> {
+/**
+ * Finds the paired drives, compares them leaving out the Exclusions saved by the app, and shows the
+ * report. Rejects, comparing nothing, if the saved Exclusions are damaged.
+ */
+async function compareAndShow(list: boolean, deps: CliDeps): Promise<{ drives: PairedDrives; report: Report; exclusions: string[] }> {
   const pairing = await readPairing(deps.pairingFile);
   if (pairing === undefined) {
     throw new Error("The drives have not been paired yet. Pair them first with `sync-drive pair <primary> <replica>`.");
   }
+  const exclusions = await readExclusions(exclusionsFileBeside(deps.pairingFile));
   const drives = await findPairedDrives(pairing, deps.volumes);
-  const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint);
+  const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint, { exclusions });
   deps.out(`Primary: ${describeDrive(drives.primary)}\nReplica: ${describeDrive(drives.replica)}\n`);
   deps.out(renderReport(report, { list }));
-  return { drives, report };
+  return { drives, report, exclusions };
 }
 
 function describeDrive(volume: Volume): string {
