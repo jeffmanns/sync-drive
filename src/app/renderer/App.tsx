@@ -351,18 +351,32 @@ function UpdatingScreen({ state }: { state: UpdatingState }) {
     ...(renaming.count > 0 ? [`renaming ${describe(renaming)} moved on the Primary`] : []),
     ...(copying.count > 0 ? [`copying ${describe(copying)} to the Replica`] : []),
   ].join(", then ");
-  return <Waiting title="Updating…" detail={`${work.charAt(0).toUpperCase()}${work.slice(1)}. Keep both drives connected.`} />;
+  return (
+    <>
+      <Waiting title="Updating…" detail={`${work.charAt(0).toUpperCase()}${work.slice(1)}. Keep both drives connected.`} />
+      <p className="note" role="status">{PRIMARY_MOUNT[state.primary]}</p>
+    </>
+  );
 }
+
+/** What the Updating screen says about the Primary, so the owner knows why it disappears and comes back. */
+const PRIMARY_MOUNT: Record<UpdatingState["primary"], string> = {
+  "remounting read-only":
+    "Remounting the Primary read-only, so that macOS itself keeps it from being written to. It may briefly disappear from the Finder.",
+  "read-only": "The Primary is mounted read-only for this Update: macOS itself keeps it from being written to.",
+  "remounting normally": "Remounting the Primary normally. It may briefly disappear from the Finder.",
+};
 
 function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
   const copied = totalsOfFiles(state.copied);
   const moved = totalsOfFiles(state.moved);
   const renamed = totalsOfMoves(state.renamed);
-  const problems = state.error !== undefined || state.failed.length > 0 || state.notRenamed.length > 0 || state.notMoved.length > 0;
+  const problems = state.error !== undefined || state.primaryStillReadOnly !== undefined || state.failed.length > 0 || state.notRenamed.length > 0 || state.notMoved.length > 0;
   return (
     <>
       <h1>{problems ? "Update finished with problems" : "Update done"}</h1>
       <Problem text={state.error === undefined ? undefined : `The Update stopped: ${state.error}`} />
+      <Problem text={state.primaryStillReadOnly === undefined ? undefined : `The Primary may still be read-only: ${state.primaryStillReadOnly}`} />
       <section>
         <h2>Copied: {copied.count === 0 ? "none" : describe(copied)}</h2>
         {copied.count > 0 && (

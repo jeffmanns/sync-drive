@@ -21,7 +21,7 @@ describe("the desktop app", () => {
     );
     const pairingFile = join(await makeTree(), "pairing.json");
     await writePairing(pairingFile, await pair(primary, replica, new MacVolumes()));
-    const primaryBefore = await snapshotTree(primary);
+    const primaryBefore = await primarySnapshot(primary);
     // Tests run with ELECTRON_RUN_AS_NODE; the app must not, or it would start as plain Node.
     const { ELECTRON_RUN_AS_NODE: _, ...env } = process.env;
 
@@ -69,6 +69,15 @@ describe("the desktop app", () => {
     assert.equal(await readFile(join(replica, "readme.txt"), "utf8"), "changed!");
     assert.equal(await readFile(join(replica, "sync-drive Holding Area", "old.txt"), "utf8"), "only here");
     assert.equal(await readdir(join(replica, "sync-drive Holding Area")).then((names) => names.includes("earlier.txt")), false);
-    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    assert.deepEqual(await primarySnapshot(primary), primaryBefore);
   });
 });
+
+/**
+ * Everything on the Primary but `.fseventsd`: macOS's own log of file changes, which macOS itself
+ * writes on any drive mounted normally, as the Primary is again after the Update. sync-drive never
+ * writes it, and every comparison skips it.
+ */
+async function primarySnapshot(primary: string): Promise<string[]> {
+  return (await snapshotTree(primary)).filter((line) => !/^(dir |file) \.fseventsd(\/| )/.test(line));
+}

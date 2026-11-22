@@ -14,8 +14,10 @@ import {
   type FileCopier,
   type PairedDrives,
   type Pairing,
+  type Remounter,
   type Report,
   type UpdateResult,
+  type Volume,
   type VolumeIdentity,
 } from "../engine/index.ts";
 import { fileCount, formatSize } from "../format.ts";
@@ -40,6 +42,8 @@ export interface FlowDeps {
   pairingFile: string;
   /** Copies files to the Replica with all their metadata. */
   copier: FileCopier;
+  /** Remounts the Primary read-only for each Update, and normally afterwards. */
+  remounter: Remounter;
 }
 
 /**
@@ -55,6 +59,10 @@ export class Flow {
   #comparisonGeneration = 0;
   /** The Report of the comparison under review, exactly as `compare()` returned it, for Apply. */
   #report: Report | undefined;
+  /** The Update being applied, until it has ended and the Primary is remounted normally. */
+  #applying: Promise<void> | undefined;
+  /** Set once the app is quitting: no new copy starts, so the Update ends soon. */
+  #quitting = false;
 
   constructor(deps: FlowDeps) {
     this.#deps = deps;
@@ -304,6 +312,16 @@ export class Flow {
    * moved into it (ADR 0006). The Safety stop is never overridden.
    */
   async apply(): Promise<void> {
+    if (this.#applying !== undefined) return;
+    this.#applying = this.#apply();
+    try {
+      await this.#applying;
+    } finally {
+      this.#applying = undefined;
+    }
+  }
+
+  async #apply(): Promise<void> {
     const state = this.#state;
     const report = this.#report;
     if (state.step !== "summary" || report === undefined) return;
@@ -330,20 +348,38 @@ export class Flow {
       }
     }
     this.#discardComparison();
-    this.#set({ step: "updating", copying: apply.copy, renaming: apply.renameOnReplica, moving: apply.moveToHoldingArea });
+    const updating = { step: "updating", copying: apply.copy, renaming: apply.renameOnReplica, moving: apply.moveToHoldingArea } as const;
+    // Read-only first, so that even a bug cannot write to the Primary: macOS itself refuses.
+    this.#set({ ...updating, primary: "remounting read-only" });
+    let primary: Volume;
+    try {
+      primary = await this.#deps.remounter.readOnly(review.drives.primary);
+    } catch (error) {
+      this.#set({
+        step: "start",
+        pairing: review.pairing,
+        error:
+          `The Update did not start, and nothing was written: the Primary could not be remounted read-only first. ${(error as Error).message} ` +
+          "Close any app using the Primary, then compare again. The comparison and its decisions were discarded.",
+      });
+      return;
+    }
+    this.#set({ ...updating, primary: "read-only" });
     let done: UpdateResult;
     let error: string | undefined;
     try {
       done = await update(approvedPart(report, review), { update: true, moves: review.movesApproved, deletions: review.deletionsApproved }, {
-        primary: review.drives.primary.mountPoint,
+        primary: primary.mountPoint,
         replica: review.drives.replica.mountPoint,
-        copier: this.#deps.copier,
+        copier: this.#copier,
       });
     } catch (stopped) {
       // Stopped partway: still say exactly what it did first.
       done = stopped instanceof UpdateStoppedError ? stopped.result : nothingDone();
       error = (stopped as Error).message;
     }
+    this.#set({ ...updating, primary: "remounting normally" });
+    const primaryStillReadOnly = await this.#remountNormally(primary);
     const handled = totalsOf(totalsOfFiles(done.moved), totalsOfFiles(done.notMoved));
     const leftOnReplica = { count: review.deleted.count - handled.count, totalSize: review.deleted.totalSize - handled.totalSize };
     const renamedOrNot = totalsOf(totalsOfMoves(done.renamed), totalsOfMoves(done.notRenamed));
@@ -360,7 +396,34 @@ export class Flow {
       notMoved: done.notMoved,
       leftOnReplica,
       ...(error === undefined ? {} : { error }),
+      ...(primaryStillReadOnly === undefined ? {} : { primaryStillReadOnly }),
     });
+  }
+
+  /**
+   * Call before the app quits. If an Update is running, starts no further copy, and resolves once
+   * the Update has stopped and the Primary is remounted normally, so that quitting partway does not
+   * leave it read-only. The copy under way is allowed to finish.
+   */
+  async quit(): Promise<void> {
+    this.#quitting = true;
+    await this.#applying;
+  }
+
+  /** The copier for an Update: no new copy starts once the app is quitting. */
+  readonly #copier: FileCopier = {
+    copy: (source, destination) =>
+      this.#quitting ? Promise.reject(new Error("The app is quitting.")) : this.#deps.copier.copy(source, destination),
+  };
+
+  /** Remounts the Primary normally after an Update. Resolves with why it could not, if it could not. */
+  async #remountNormally(primary: Volume): Promise<string | undefined> {
+    try {
+      await this.#deps.remounter.normally(primary);
+      return undefined;
+    } catch (error) {
+      return (error as Error).message;
+    }
   }
 }
 

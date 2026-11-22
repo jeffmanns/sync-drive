@@ -152,7 +152,15 @@ export interface UpdatingState {
   renaming: Totals;
   /** The deleted files being moved into the Holding area: none unless the deletions are approved. */
   moving: Totals;
+  /**
+   * What is happening to the Primary: it is remounted read-only before anything is written, so
+   * that macOS itself keeps it from being written to, then remounted normally once the Update ends.
+   */
+  primary: PrimaryMountState;
 }
+
+/** The Primary's mount during an Update. */
+export type PrimaryMountState = "remounting read-only" | "read-only" | "remounting normally";
 
 /** What the Update did. */
 export interface ResultState {
@@ -181,6 +189,8 @@ export interface ResultState {
   leftOnReplica: Totals;
   /** Why the Update stopped before it finished, if it did. `copied`, `failed`, `moved` and `notMoved` still say what it did first. */
   error?: string;
+  /** Why the Primary could not be remounted normally after the Update, if it could not. It is still read-only. */
+  primaryStillReadOnly?: string;
 }
 
 /** A file that was not copied or moved, and why. The engine's `FailedFile`, restated so the screens need nothing from Node. */

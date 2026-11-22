@@ -39,4 +39,4 @@ export {
   type UpdateResult,
   type UpdateSetup,
 } from "./update.ts";
-export type { Volume, VolumeIdentity } from "./volumes.ts";
+export type { Remounter, Volume, VolumeIdentity } from "./volumes.ts";
