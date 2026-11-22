@@ -3,6 +3,7 @@ import type { BigIntStats } from "node:fs";
 import { lstat, mkdir, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { FileEntry, Report } from "./report.ts";
+import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
 import { checkFreeSpace } from "./safety-stops.ts";
@@ -44,6 +45,8 @@ export interface UpdateSetup {
   /** The top level of the Replica. */
   replica: string;
   copier: FileCopier;
+  /** Checks every copy against its Primary file before it is renamed into place. Defaults to SHA-256. */
+  hasher?: Hasher;
   /** When the Update runs, for the Holding area's `READ ME.txt`. Defaults to now. */
   now?: Date;
 }
@@ -71,7 +74,9 @@ export interface UpdateResult {
 const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Update does not copy yet";
 
 /**
- * Brings the Replica up to date with `report`. If `approvals.deletions` is
+ * Brings the Replica up to date with `report`. Each copy is checked against its Primary file by
+ * checksum before it is renamed into place; one that does not match is discarded and listed as
+ * failed. If `approvals.deletions` is
  * also given and the report has deleted files, empties the previous Holding area and moves them into
  * it. Then copies the new and changed files from the Primary. Writes nothing unless `approvals.update` is given. Never writes to
  * the Primary. Rejects, having written nothing, when the Safety stop applies without
@@ -116,6 +121,7 @@ export async function update(report: Report, approvals: Approvals, setup: Update
     }
   }
   for (const file of result.moved) await removeEmptiedFolders(file.path, setup);
+  const hasher = setup.hasher ?? new Sha256Hasher();
   const incoming = join(setup.replica, INCOMING_FOLDER);
   // Anything already here is a temporary copy left by an interrupted Update.
   await rm(incoming, { recursive: true, force: true });
@@ -129,9 +135,13 @@ export async function update(report: Report, approvals: Approvals, setup: Update
       const before = await lstat(source, { bigint: true });
       if (!before.isFile()) throw new Error(NOT_A_FILE);
       await setup.copier.copy(source, temporary);
+      // Read both back in full, so "copied" means confirmed identical, not just written.
+      const [primarySum, copySum] = await Promise.all([hasher.checksum(source), hasher.checksum(temporary)]);
+      // Looked at after hashing, so an edit during the copy or the read-back is caught as such.
       const [after, copy] = await Promise.all([lstat(source, { bigint: true }), lstat(temporary, { bigint: true })]);
       if (!sameVersion(before, after)) throw new Error("it changed on the Primary while it was being copied");
       if (!sameVersion(before, copy)) throw new Error("the copy's size or dates do not match the Primary");
+      if (primarySum !== copySum) throw new Error("the copy's checksum does not match the Primary's");
       await mkdir(dirname(destination), { recursive: true });
       await rename(temporary, destination);
       result.copied.push(file);

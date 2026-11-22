@@ -134,6 +134,36 @@ describe("Update", () => {
     assert.equal(after.new.count + after.deleted.count, 0);
   });
 
+  it("checks every copy's checksum, and discards a corrupted copy that has the right size and dates", async () => {
+    const mtime = new Date("2026-03-01T09:00:00Z");
+    const primary = await makeTree({
+      "Photos/beach.jpg": { content: "the real photo", mtime },
+      "notes.txt": "fine",
+    });
+    const replica = await makeTree({ "Photos/beach.jpg": { content: "old photo", mtime: new Date("2025-01-01") } });
+    const replicaPhotoBefore = await metadataOf(join(replica, "Photos/beach.jpg"));
+    const corrupting: FileCopier = {
+      async copy(source, destination) {
+        await new MacFileCopier().copy(source, destination);
+        if (!source.endsWith("beach.jpg")) return;
+        // One flipped byte, as a failing drive or cable might cause. Size and dates stay the same,
+        // so only the contents can tell the copy apart from the Primary's file.
+        await writeFile(destination, "the real phota");
+        await utimes(destination, mtime, mtime);
+      },
+    };
+
+    const result = await compareAndUpdate(primary, replica, APPROVED, corrupting);
+
+    assert.deepEqual(result.copied, [{ path: "notes.txt", size: 4 }]);
+    assert.deepEqual(result.failed, [
+      { path: "Photos/beach.jpg", size: 14, reason: "the copy's checksum does not match the Primary's" },
+    ]);
+    assert.equal(await readFile(join(replica, "Photos/beach.jpg"), "utf8"), "old photo");
+    assert.equal(await metadataOf(join(replica, "Photos/beach.jpg")), replicaPhotoBefore);
+    assert.deepEqual((await readdir(replica)).sort(), ["Photos", "notes.txt"], "no copy is left behind");
+  });
+
   it("writes nothing to the Replica without the main approval", async () => {
     const primary = await makeTree({ "new.txt": "new", "notes.txt": "edited" });
     const replica = await makeTree({
