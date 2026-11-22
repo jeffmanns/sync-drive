@@ -69,7 +69,7 @@ A symbolic link. sync-drive never follows one: it compares a shortcut by its tar
 _Avoid_: symlink, link (in what the owner reads)
 
 **Unreadable**:
-Something on the Primary that a comparison could not read: a folder it could not list, or a file it could not look at or open to copy. It is skipped and listed in the Report's errors, and what the Replica holds at or under its path is never treated as deleted (ADR 0015).
+Something on the Primary that a comparison could not read: a folder it could not list, or a file it could not look at or open to copy. It is skipped and listed in the Report as unreadable, and what the Replica holds at or under its path is never treated as deleted (ADR 0015).
 _Avoid_: corrupt, missing, failed
 
 **Anomaly**:

@@ -108,11 +108,14 @@ export async function scan(role: "Primary" | "Replica", root: string): Promise<S
   return { files, unreadable };
 }
 
-/** Why something could not be read, in words, from the error reading it. */
+/**
+ * Why something could not be read, in words, from the error reading it. A cause without words of its
+ * own is still named, so it can be looked up, but never shown bare.
+ */
 export function readFailure(error: NodeJS.ErrnoException): string {
   if (error.code === "EACCES" || error.code === "EPERM") return "permission denied";
   if (error.code === "EIO") return "the drive could not read it (EIO)";
-  return error.code ?? error.message;
+  return `unexpected reason: ${error.code ?? error.message}`;
 }
 
 /**

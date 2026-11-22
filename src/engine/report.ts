@@ -51,7 +51,7 @@ export interface Report {
   /** Files on the Replica that are no longer on the Primary. Sizes are the Replica's. */
   deleted: Section;
   /**
-   * The errors: what could not be read on the Primary, in path order. Each is left out of the other
+   * Unreadable: what could not be read on the Primary, in path order. Each is left out of the other
    * sections, and the Replica files at or under its path are never treated as deleted.
    */
   unreadable: Unreadable[];

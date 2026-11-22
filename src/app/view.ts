@@ -106,7 +106,7 @@ export interface Review {
   /** Files moved or renamed on the Primary, confirmed by checksum, which the moves Approval renames on the Replica. */
   moves: MovesSection;
   /**
-   * The errors: what could not be read on the Primary, in path order. Each is skipped, and what the
+   * Unreadable: what could not be read on the Primary, in path order. Each is skipped, and what the
    * Replica holds at or under its path stays there, whatever is approved.
    */
   unreadable: Unreadable[];

@@ -1,4 +1,4 @@
-import type { MovesSection, Report, Section, Unreadable } from "../engine/index.ts";
+import type { MovesSection, Report, Section } from "../engine/index.ts";
 import { fileCount, formatSize } from "../format.ts";
 
 export interface RenderOptions {
@@ -13,17 +13,8 @@ export function renderReport(report: Report, options: RenderOptions): string {
     renderSection("Changed", report.changed, options),
     renderMoves(report.moves, options),
     renderSection("Deleted", report.deleted, options),
-    ...(report.unreadable.length > 0 ? [renderUnreadable(report.unreadable)] : []),
     renderSafetyStop(report),
   ].join("\n\n");
-}
-
-/** The errors: everything that could not be read on the Primary, always in full, and why. */
-function renderUnreadable(unreadable: Unreadable[]): string {
-  return [
-    `Could not be read on the Primary: ${unreadable.length} (skipped; what the Replica holds there is left as it is)`,
-    ...unreadable.map((item) => `  ${item.folder ? `${item.path}/` : item.path}  ${item.reason}`),
-  ].join("\n");
 }
 
 /** Whether the Safety stop applies, with the deleted files' share of the Replica by count and by size. */

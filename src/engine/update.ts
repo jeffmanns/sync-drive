@@ -352,8 +352,9 @@ async function onPrimary(primary: string, path: string): Promise<boolean> {
     const stats = await look(folder);
     // Missing, or now a file or shortcut: nothing below it is on the Primary.
     if (stats === undefined || !stats.isDirectory()) return false;
-    const listable = await access(join(primary, folder), constants.R_OK | constants.X_OK).then(() => true, () => false);
-    if (!listable) throw new Error(`the Primary folder "${folder}" cannot be read (permission denied)`);
+    await access(join(primary, folder), constants.R_OK | constants.X_OK).catch((error: NodeJS.ErrnoException) => {
+      throw new Error(`the Primary folder "${folder}" cannot be read (${readFailure(error)})`, { cause: error });
+    });
   }
   return false;
 }

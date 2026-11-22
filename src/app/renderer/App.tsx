@@ -479,7 +479,7 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
 }
 
 /**
- * The errors: what could not be read on the Primary, so it was skipped. Shown in full, since each
+ * Unreadable: what could not be read on the Primary, so it was skipped. Shown in full, since each
  * one is something the Replica may not have an up-to-date backup of.
  */
 function UnreadableList({ unreadable }: { unreadable: Unreadable[] }) {

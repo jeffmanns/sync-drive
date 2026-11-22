@@ -88,7 +88,9 @@ export async function compare(
     const unreadableFiles = unreadableByName.get(lookalikeKey(file)) ?? [];
     if (unreadableFiles.some((missing) => sameDate(missing.mtimeNs, file.mtimeNs))) copiesOfUnreadable.add(file);
   }
-  for (const candidate of findMoveCandidates(primaryOnly, replicaOnly)) {
+  // Lookalikes are never one end of a move either: a rename would take the backup from where it was.
+  const movable = replicaOnly.filter((file) => !copiesOfUnreadable.has(file));
+  for (const candidate of findMoveCandidates(primaryOnly, movable)) {
     if (cannotRead.has(candidate.primary)) continue;
     // One at a time: reading many files at once makes a spinning drive seek back and forth.
     const [primarySum, replicaSum] = await Promise.allSettled([
