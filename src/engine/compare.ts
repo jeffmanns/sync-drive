@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { findMoveCandidates } from "./moves.ts";
 import { makeMovesSection, makeSection, type FileEntry, type Report } from "./report.ts";
+import { sameDate } from "./same-date.ts";
 import { safetyStopApplies } from "./safety-stops.ts";
 import { scan, type ScannedFile } from "./scan.ts";
 
@@ -46,14 +47,15 @@ export async function compare(
   }
   const hasher = options.hasher ?? new Sha256Hasher();
   const moves = [];
-  for (const candidate of findMoveCandidates(primaryOnly, replicaOnly, sameDate)) {
+  for (const candidate of findMoveCandidates(primaryOnly, replicaOnly)) {
     // One at a time: reading many files at once makes a spinning drive seek back and forth.
-    const [primarySum, replicaSum] = await Promise.all([
+    const sums = await Promise.all([
       hasher.checksum(join(primary, candidate.primary.path)),
       hasher.checksum(join(replica, candidate.replica.path)),
-    ]);
-    // Contents that differ are not the same file moved: it stays a new file and a deleted file.
-    if (primarySum === replicaSum) moves.push(candidate);
+    ]).catch(() => undefined);
+    // Contents that differ, or that cannot be read to confirm, are not a confirmed move: it stays a
+    // new file and a deleted file, and the Update says why if the copy fails too.
+    if (sums !== undefined && sums[0] === sums[1]) moves.push(candidate);
   }
   const movedPrimary = new Set(moves.map((move) => move.primary));
   const movedReplica = new Set(moves.map((move) => move.replica));
@@ -70,22 +72,11 @@ export async function compare(
 }
 
 /**
- * How far apart two modification dates may be and still count as the same: under a hundredth of
- * a second. Absorbs tiny date differences a copy can introduce, without missing real edits.
- */
-const SAME_DATE_TOLERANCE_NS = 10_000_000n;
-
-/**
  * Quick compare: two files are equal when they are the same kind of entry, their sizes match, and
- * their modification dates are less than `SAME_DATE_TOLERANCE_NS` apart. Contents are not read.
+ * their modification dates count as the same (`sameDate`). Contents are not read.
  */
 function quickEqual(a: ScannedFile, b: ScannedFile): boolean {
   return a.kind === b.kind && a.size === b.size && sameDate(a.mtimeNs, b.mtimeNs);
-}
-
-/** Whether two modification dates, in nanoseconds, count as the same: less than `SAME_DATE_TOLERANCE_NS` apart. */
-export function sameDate(a: bigint, b: bigint): boolean {
-  return (a > b ? a - b : b - a) < SAME_DATE_TOLERANCE_NS;
 }
 
 async function assertFolder(role: "Primary" | "Replica", path: string): Promise<void> {

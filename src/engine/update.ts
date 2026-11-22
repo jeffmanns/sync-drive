@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { lstat, mkdir, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
-import { sameDate } from "./compare.ts";
 import type { FileEntry, Move, Report } from "./report.ts";
 import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
+import { sameDate } from "./same-date.ts";
 import { checkFreeSpace } from "./safety-stops.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
@@ -102,7 +102,7 @@ const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Upda
  * `UpdateStoppedError` saying what had been done before it stopped.
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
-  const result: UpdateResult = { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [] };
+  const result = nothingDone();
   if (!approvals.update) return result;
   try {
     await updateInto(result, report, approvals, setup);
@@ -110,6 +110,11 @@ export async function update(report: Report, approvals: Approvals, setup: Update
     throw new UpdateStoppedError(error, result);
   }
   return result;
+}
+
+/** The result of an Update that has done nothing yet. */
+export function nothingDone(): UpdateResult {
+  return { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [] };
 }
 
 /**

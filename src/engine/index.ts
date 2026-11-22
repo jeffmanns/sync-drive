@@ -29,6 +29,7 @@ export {
   type FreeSpace,
 } from "./safety-stops.ts";
 export {
+  nothingDone,
   update,
   UpdateStoppedError,
   type Approvals,

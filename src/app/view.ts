@@ -226,6 +226,11 @@ export function totalsOf(...parts: Totals[]): Totals {
   return parts.reduce<Totals>((all, part) => ({ count: all.count + part.count, totalSize: all.totalSize + part.totalSize }), NO_FILES);
 }
 
+/** How many `moves` there are, and their total size. */
+export function totalsOfMoves(moves: Move[]): Totals {
+  return { count: moves.length, totalSize: moves.reduce((total, move) => total + move.size, 0) };
+}
+
 /** How many `files` there are, and their total size. */
 export function totalsOfFiles(files: FileEntry[]): Totals {
   return { count: files.length, totalSize: files.reduce((total, file) => total + file.size, 0) };

@@ -120,10 +120,14 @@ export function makeMovesSection(moves: Move[]): MovesSection {
 }
 
 /**
- * The folder a move belongs to, on each drive. The folders the file sits in that are the same on both
- * drives are the moved folder's own contents, so all but the outermost of them are dropped:
- * `Photos/Iceland/Day 1/a.jpg` → `Photos/2026/Iceland/Day 1/a.jpg` is the folder `Photos/Iceland`
- * moved to `Photos/2026/Iceland`. A file moved on its own belongs to the folders it sits directly in.
+ * The folder a move belongs to, on each drive: the folder that was moved or renamed. Folders the file
+ * sits in that are the same at the end of both paths are the moved folder's own contents. Below what
+ * is left of the two paths:
+ * - two folders side by side in one parent were renamed: `Photos/Iceland/Day 1/a.jpg` →
+ *   `Photos/Islande/Day 1/a.jpg` is `Photos/Iceland` renamed to `Photos/Islande`;
+ * - otherwise the outermost shared folder was moved: `Photos/Iceland/Day 1/a.jpg` →
+ *   `Photos/2026/Iceland/Day 1/a.jpg` is `Photos/Iceland` moved to `Photos/2026/Iceland`.
+ * A file moved on its own belongs to the folders it sits directly in.
  */
 function movedFolder(move: Move): { from: string; to: string } {
   const from = move.from.split("/").slice(0, -1);
@@ -132,9 +136,15 @@ function movedFolder(move: Move): { from: string; to: string } {
   while (shared < from.length && shared < to.length && from[from.length - 1 - shared] === to[to.length - 1 - shared]) {
     shared += 1;
   }
-  // Keep the outermost shared folder, the one that moved, and drop the ones inside it.
-  const drop = Math.max(shared - 1, 0);
-  return { from: from.slice(0, from.length - drop).join("/"), to: to.slice(0, to.length - drop).join("/") };
+  const fromRest = from.slice(0, from.length - shared);
+  const toRest = to.slice(0, to.length - shared);
+  const renamedInPlace =
+    fromRest.length > 0 && fromRest.length === toRest.length && fromRest.slice(0, -1).join("/") === toRest.slice(0, -1).join("/");
+  const keep = shared > 0 && !renamedInPlace ? 1 : 0;
+  return {
+    from: from.slice(0, fromRest.length + keep).join("/"),
+    to: to.slice(0, toRest.length + keep).join("/"),
+  };
 }
 
 /** Plain code-unit ordering, so the order never depends on the machine's locale. */

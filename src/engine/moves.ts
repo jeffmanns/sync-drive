@@ -1,3 +1,4 @@
+import { sameDate } from "./same-date.ts";
 import type { ScannedFile } from "./scan.ts";
 
 /**
@@ -8,7 +9,6 @@ import type { ScannedFile } from "./scan.ts";
 export function findMoveCandidates(
   primaryOnly: ScannedFile[],
   replicaOnly: ScannedFile[],
-  sameDate: (a: bigint, b: bigint) => boolean,
 ): Array<{ primary: ScannedFile; replica: ScannedFile }> {
   const byName = (files: ScannedFile[]) => {
     const map = new Map<string, ScannedFile[]>();
@@ -28,8 +28,8 @@ export function findMoveCandidates(
       // Ambiguous unless exactly one file on each side matches: then it falls back to new plus deleted.
       if (matches.length !== 1) continue;
       const replica = matches[0]!;
-      const rivals = primaries.filter((other) => sameDate(other.mtimeNs, replica.mtimeNs));
-      if (rivals.length !== 1) continue;
+      const primaryMatches = primaries.filter((other) => sameDate(other.mtimeNs, replica.mtimeNs));
+      if (primaryMatches.length !== 1) continue;
       candidates.push({ primary, replica });
     }
   }

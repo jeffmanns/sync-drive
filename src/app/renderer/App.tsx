@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { reviewSteps, totalsOf, totalsOfFiles } from "../view.ts";
+import { reviewSteps, totalsOf, totalsOfFiles, totalsOfMoves } from "../view.ts";
 import type {
   Action,
   CopiesState,
@@ -189,7 +189,7 @@ function MovesScreen({ state, send, busy }: ScreenProps<MovesState>) {
         These files were moved or renamed on the Primary. Each was matched by name, size and date, and its contents confirmed
         identical by checksum. Approving renames them on the Replica: nothing is copied, and nothing goes into the Holding area.
       </p>
-      <MovesList title="Moved" moves={review.moves} />
+      <MovesByFolder title="Moved" moves={review.moves} />
       <label className="confirm">
         <input type="checkbox" checked={review.movesApproved} disabled={busy} onChange={(event) => send({ type: "approveMoves", approved: event.target.checked })} />
         Rename all {describe(review.moves)} on the Replica.
@@ -205,7 +205,7 @@ function MovesScreen({ state, send, busy }: ScreenProps<MovesState>) {
 }
 
 /** The Report's moves, grouped by the folder moved. Every folder expands to its full list of moves. */
-function MovesList({ title, moves }: { title: string; moves: MovesSection }) {
+function MovesByFolder({ title, moves }: { title: string; moves: MovesSection }) {
   return (
     <section>
       <h2>{title}: {moves.count === 0 ? "none" : describe(moves)}</h2>
@@ -357,7 +357,7 @@ function UpdatingScreen({ state }: { state: UpdatingState }) {
 function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
   const copied = totalsOfFiles(state.copied);
   const moved = totalsOfFiles(state.moved);
-  const renamed = totalsOf(...state.renamed.map((move) => ({ count: 1, totalSize: move.size })));
+  const renamed = totalsOfMoves(state.renamed);
   const problems = state.error !== undefined || state.failed.length > 0 || state.notRenamed.length > 0 || state.notMoved.length > 0;
   return (
     <>

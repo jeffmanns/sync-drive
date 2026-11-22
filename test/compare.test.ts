@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { lutimes, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { compare } from "../src/engine/index.ts";
+import { compare, Sha256Hasher, type Hasher } from "../src/engine/index.ts";
 import { DEFAULT_MTIME, makeCaseSensitiveTree, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
 after(removeTrees);
@@ -385,5 +385,55 @@ describe("Move detection", () => {
     assert.equal(report.moves.count, 1);
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("groups a folder renamed in place, subfolders and all, as one move", async () => {
+    const primary = await makeTree({ "Photos/Islande/a.jpg": "a", "Photos/Islande/Day 1/b.jpg": "bb", "Photos/Islande/Day 2/c.jpg": "ccc" });
+    const replica = await makeTree({ "Photos/Iceland/a.jpg": "a", "Photos/Iceland/Day 1/b.jpg": "bb", "Photos/Iceland/Day 2/c.jpg": "ccc" });
+
+    const report = await compare(primary, replica);
+
+    assert.deepEqual(
+      report.moves.folders.map(({ from, to, count }) => ({ from, to, count })),
+      [{ from: "Photos/Iceland", to: "Photos/Islande", count: 3 }],
+    );
+  });
+
+  it("groups a folder moved into another, subfolders and all, under its own name, apart from a sibling moved with it", async () => {
+    const primary = await makeTree({
+      "Photos/2026/Iceland/Day 1/a.jpg": "a",
+      "Photos/2026/Iceland/Day 2/b.jpg": "bb",
+      "Photos/2026/Norway/c.jpg": "ccc",
+    });
+    const replica = await makeTree({
+      "Photos/Iceland/Day 1/a.jpg": "a",
+      "Photos/Iceland/Day 2/b.jpg": "bb",
+      "Photos/Norway/c.jpg": "ccc",
+    });
+
+    const report = await compare(primary, replica);
+
+    assert.deepEqual(
+      report.moves.folders.map(({ from, to, count }) => ({ from, to, count })),
+      [
+        { from: "Photos/Iceland", to: "Photos/2026/Iceland", count: 2 },
+        { from: "Photos/Norway", to: "Photos/2026/Norway", count: 1 },
+      ],
+    );
+  });
+
+  it("treats a candidate it cannot read as a new file and a deleted file, and still compares the rest", async () => {
+    const primary = await makeTree({ "New/a.jpg": "aaaa", "New/b.jpg": "bbbb" });
+    const replica = await makeTree({ "Old/a.jpg": "aaaa", "Old/b.jpg": "bbbb" });
+    const sha256 = new Sha256Hasher();
+    const unreadable: Hasher = {
+      checksum: (path) => (path.endsWith("Old/b.jpg") ? Promise.reject(new Error("EIO: i/o error")) : sha256.checksum(path)),
+    };
+
+    const report = await compare(primary, replica, { hasher: unreadable });
+
+    assert.deepEqual(report.moves.moves, [{ from: "Old/a.jpg", to: "New/a.jpg", size: 4 }]);
+    assert.deepEqual(report.new.files, [{ path: "New/b.jpg", size: 4 }]);
+    assert.deepEqual(report.deleted.files, [{ path: "Old/b.jpg", size: 4 }]);
   });
 });

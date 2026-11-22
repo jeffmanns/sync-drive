@@ -3,6 +3,7 @@ import {
   compare,
   findPairedDrives,
   makeSection,
+  nothingDone,
   pair,
   readHoldingArea,
   readPairing,
@@ -11,11 +12,9 @@ import {
   UpdateStoppedError,
   writePairing,
   type FileCopier,
-  type Move,
   type PairedDrives,
   type Pairing,
   type Report,
-  type Totals,
   type UpdateResult,
   type VolumeIdentity,
 } from "../engine/index.ts";
@@ -25,6 +24,7 @@ import {
   reviewSteps,
   totalsOf,
   totalsOfFiles,
+  totalsOfMoves,
   type CopiesState,
   type DeletionsState,
   type FlowState,
@@ -341,13 +341,13 @@ export class Flow {
       });
     } catch (stopped) {
       // Stopped partway: still say exactly what it did first.
-      done = stopped instanceof UpdateStoppedError ? stopped.result : { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [] };
+      done = stopped instanceof UpdateStoppedError ? stopped.result : nothingDone();
       error = (stopped as Error).message;
     }
     const handled = totalsOf(totalsOfFiles(done.moved), totalsOfFiles(done.notMoved));
     const leftOnReplica = { count: review.deleted.count - handled.count, totalSize: review.deleted.totalSize - handled.totalSize };
-    const reached = totalsOf(totalsOfMoves(done.renamed), totalsOfMoves(done.notRenamed));
-    const movesLeftAtOldPaths = { count: review.moves.count - reached.count, totalSize: review.moves.totalSize - reached.totalSize };
+    const renamedOrNot = totalsOf(totalsOfMoves(done.renamed), totalsOfMoves(done.notRenamed));
+    const movesLeftAtOldPaths = { count: review.moves.count - renamedOrNot.count, totalSize: review.moves.totalSize - renamedOrNot.totalSize };
     this.#set({
       step: "result",
       pairing: review.pairing,
@@ -408,11 +408,6 @@ async function refusals(report: Report, drives: PairedDrives): Promise<string[]>
 /** Whether the app is on one of the review steps, where the owner makes the decisions. */
 function isReviewing(state: FlowState): state is CopiesState | MovesState | DeletionsState | SummaryState {
   return state.step === "copies" || state.step === "moves" || state.step === "deletions" || state.step === "summary";
-}
-
-/** How many moves there are, and their total size. */
-function totalsOfMoves(moves: Move[]): Totals {
-  return { count: moves.length, totalSize: moves.reduce((total, move) => total + move.size, 0) };
 }
 
 /** The Summary for the decisions in `review`. */
