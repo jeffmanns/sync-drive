@@ -13,7 +13,7 @@ after(removeTrees);
 const PROJECT = fileURLToPath(new URL("..", import.meta.url));
 
 describe("the desktop app", () => {
-  it("launches and runs a copies-only Update from Start to Result", async () => {
+  it("launches and runs an Update with copies and deletions from Start to Result", async () => {
     const primary = await makeDiskImageTree({ "Photos/a.jpg": "new photo", "readme.txt": "changed!" }, { name: "Smoke Primary" });
     const replica = await makeDiskImageTree({ "readme.txt": "old", "old.txt": "only here" }, { name: "Smoke Replica" });
     const pairingFile = join(await makeTree(), "pairing.json");
@@ -41,17 +41,25 @@ describe("the desktop app", () => {
       await window.getByLabel("Copy all 2 files").click();
       await window.locator("input[type=checkbox]:checked").waitFor();
       await window.getByRole("button", { name: "Next" }).click();
+      await window.getByRole("heading", { name: "Deletions" }).waitFor();
+      await window.getByRole("button", { name: /top level/ }).click();
+      await window.getByText("old.txt").waitFor();
+      await window.getByLabel("Move all 1 file").click();
+      await window.locator("input[type=checkbox]:checked").waitFor();
+      await window.getByRole("button", { name: "Next" }).click();
       await window.getByText("Copy 2 files (17 B) from the Primary to the Replica.").waitFor();
+      await window.getByText("Move 1 file (9 B) no longer on the Primary into the Holding area.").waitFor();
       await window.getByRole("button", { name: "Apply" }).click();
       await window.getByRole("heading", { name: "Update done" }).waitFor({ timeout: 30_000 });
       await window.getByText("Copied: 2 files (17 B)").waitFor();
+      await window.getByText("Moved into the Holding area: 1 file (9 B)").waitFor();
     } finally {
       await app.close();
     }
 
     assert.equal(await readFile(join(replica, "Photos", "a.jpg"), "utf8"), "new photo");
     assert.equal(await readFile(join(replica, "readme.txt"), "utf8"), "changed!");
-    assert.equal(await readFile(join(replica, "old.txt"), "utf8"), "only here", "deleted files are left on the Replica");
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "old.txt"), "utf8"), "only here");
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 });

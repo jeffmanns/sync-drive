@@ -3,12 +3,14 @@ import { fileCount, formatSize } from "../../format.ts";
 import type {
   Action,
   CopiesState,
+  DeletionsState,
   FailedFile,
   FileEntry,
   FlowState,
   PairingState,
   RefusedState,
   ResultState,
+  Review,
   Section,
   StartState,
   SummaryState,
@@ -49,6 +51,8 @@ export function App() {
             return <RefusedScreen state={state} {...props} />;
           case "copies":
             return <CopiesScreen state={state} {...props} />;
+          case "deletions":
+            return <DeletionsScreen state={state} {...props} />;
           case "summary":
             return <SummaryScreen state={state} {...props} />;
           case "updating":
@@ -147,15 +151,10 @@ function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
   const copies = sum(review.new, review.changed);
   return (
     <>
-      <Steps current="copies" />
+      <Steps current="copies" review={review} />
       <h1>Copies</h1>
       <SectionList title="New" section={review.new} />
       <SectionList title="Changed" section={review.changed} />
-      {review.deleted.count > 0 && (
-        <p className="note">
-          Only on the Replica, and left there: {describe(review.deleted)}. This version of the app does not move deleted files.
-        </p>
-      )}
       {copies.count > 0 ? (
         <label className="confirm">
           <input type="checkbox" checked={review.copiesApproved} disabled={busy} onChange={(event) => send({ type: "approveCopies", approved: event.target.checked })} />
@@ -166,6 +165,35 @@ function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
       )}
       <Buttons>
         <button onClick={() => send({ type: "restart" })} disabled={busy}>Start over</button>
+        <button className="primary" onClick={() => send({ type: "next" })} disabled={busy}>Next</button>
+      </Buttons>
+    </>
+  );
+}
+
+function DeletionsScreen({ state, send, busy }: ScreenProps<DeletionsState>) {
+  const { review } = state;
+  const held = review.holdingArea;
+  return (
+    <>
+      <Steps current="deletions" review={review} />
+      <h1>Deletions</h1>
+      <p>These files are on the Replica but no longer on the Primary. Approving moves them into the Holding area on the Replica, keeping their folders.</p>
+      <SectionList title="Deleted" section={review.deleted} />
+      {/* Right before the deletions Approval, as in ADR 0006. */}
+      {held.count > 0 && (
+        <p className="warning">
+          The Holding area on the Replica holds {describe(held)} from an earlier Update. Approving these deletions deletes{" "}
+          {held.count === 1 ? "it" : "them"} permanently. To keep any of {held.count === 1 ? "it" : "them"}, copy {held.count === 1 ? "it" : "them"} back to the Primary first.
+        </p>
+      )}
+      <label className="confirm">
+        <input type="checkbox" checked={review.deletionsApproved} disabled={busy} onChange={(event) => send({ type: "approveDeletions", approved: event.target.checked })} />
+        Move all {describe(review.deleted)} into the Holding area.
+      </label>
+      <Buttons>
+        <button onClick={() => send({ type: "restart" })} disabled={busy}>Start over</button>
+        <button onClick={() => send({ type: "back" })} disabled={busy}>Back</button>
         <button className="primary" onClick={() => send({ type: "next" })} disabled={busy}>Next</button>
       </Buttons>
     </>
@@ -217,36 +245,50 @@ function FileList({ files, inFolder }: { files: (FileEntry | FailedFile)[]; inFo
 }
 
 function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
-  const { copy, leaveOnReplica } = state.apply;
+  const { copy, moveToHoldingArea, deleteFromHoldingArea, leaveOnReplica } = state.apply;
+  const anything = copy.count + moveToHoldingArea.count > 0;
+  const copiesToDo = state.review.new.count + state.review.changed.count > 0;
   return (
     <>
-      <Steps current="summary" />
+      <Steps current="summary" review={state.review} />
       <h1>Summary</h1>
       <p>Apply will:</p>
       <ul className="summary">
-        <li>{copy.count > 0 ? `Copy ${describe(copy)} from the Primary to the Replica.` : "Copy nothing: the copies are not approved."}</li>
-        {leaveOnReplica.count > 0 && <li>Leave the files only on the Replica where they are: {describe(leaveOnReplica)}.</li>}
+        {copy.count > 0
+          ? <li>Copy {describe(copy)} from the Primary to the Replica.</li>
+          : copiesToDo && <li>Copy nothing: the copies are not approved.</li>}
+        {deleteFromHoldingArea.count > 0 && (
+          <li className="warning">Permanently delete the {describe(deleteFromHoldingArea)} in the Holding area from an earlier Update.</li>
+        )}
+        {moveToHoldingArea.count > 0 && <li>Move {describe(moveToHoldingArea)} no longer on the Primary into the Holding area.</li>}
+        {leaveOnReplica.count > 0 && <li>Leave the files only on the Replica where they are: {describe(leaveOnReplica)}. The deletions are not approved.</li>}
         <li>Write nothing to the Primary.</li>
       </ul>
-      {copy.count > 0 && <p className="note">Once Apply starts there is no going back.</p>}
+      {anything ? <p className="note">Once Apply starts there is no going back.</p> : <p>Nothing is approved, so there is nothing to apply.</p>}
       <Buttons>
         <button onClick={() => send({ type: "restart" })} disabled={busy}>Start over</button>
         <button onClick={() => send({ type: "back" })} disabled={busy}>Back</button>
-        <button className="primary" onClick={() => send({ type: "apply" })} disabled={busy || copy.count === 0}>Apply</button>
+        <button className="primary" onClick={() => send({ type: "apply" })} disabled={busy || !anything}>Apply</button>
       </Buttons>
     </>
   );
 }
 
 function UpdatingScreen({ state }: { state: UpdatingState }) {
-  return <Waiting title="Updating…" detail={`Copying ${describe(state.copying)} to the Replica. Keep both drives connected.`} />;
+  const work = [
+    ...(state.moving.count > 0 ? [`moving ${describe(state.moving)} into the Holding area`] : []),
+    ...(state.copying.count > 0 ? [`copying ${describe(state.copying)} to the Replica`] : []),
+  ].join(", then ");
+  return <Waiting title="Updating…" detail={`${work.charAt(0).toUpperCase()}${work.slice(1)}. Keep both drives connected.`} />;
 }
 
 function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
-  const copied = { count: state.copied.length, totalSize: state.copied.reduce((total, file) => total + file.size, 0) };
+  const copied = totalsOf(state.copied);
+  const moved = totalsOf(state.moved);
+  const problems = state.error !== undefined || state.failed.length > 0 || state.notMoved.length > 0;
   return (
     <>
-      <h1>{state.error === undefined && state.failed.length === 0 ? "Update done" : "Update finished with problems"}</h1>
+      <h1>{problems ? "Update finished with problems" : "Update done"}</h1>
       <Problem text={state.error === undefined ? undefined : `The Update stopped: ${state.error}`} />
       <section>
         <h2>Copied: {copied.count === 0 ? "none" : describe(copied)}</h2>
@@ -261,6 +303,22 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
           <h2 className="problem">Not copied: {fileCount(state.failed.length)}</h2>
           <p>The Replica keeps its earlier version of each, if any.</p>
           <FileList files={state.failed} />
+        </section>
+      )}
+      {moved.count > 0 && (
+        <section>
+          <h2>Moved into the Holding area: {describe(moved)}</h2>
+          <Expandable label="Every moved file" totals={moved}>
+            <FileList files={state.moved} />
+          </Expandable>
+          <p className="note">To restore one, copy it from the Holding area back to the Primary, into its original folder.</p>
+        </section>
+      )}
+      {state.notMoved.length > 0 && (
+        <section>
+          <h2 className="problem">Not moved into the Holding area: {fileCount(state.notMoved.length)}</h2>
+          <p>Each is still where it was on the Replica.</p>
+          <FileList files={state.notMoved} />
         </section>
       )}
       {state.leftOnReplica.count > 0 && <p className="note">Left where they were, only on the Replica: {describe(state.leftOnReplica)}.</p>}
@@ -280,12 +338,16 @@ function Waiting({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-/** Where the review is, among the steps up to Apply. */
-function Steps({ current }: { current: "copies" | "summary" }) {
+/** Where the review is, among the steps up to Apply. Deletions is there only when there is something to delete. */
+function Steps({ current, review }: { current: "copies" | "deletions" | "summary"; review: Review }) {
+  const steps = [
+    { step: "copies", label: "Copies" },
+    ...(review.deleted.count > 0 ? [{ step: "deletions", label: "Deletions" }] : []),
+    { step: "summary", label: "Summary" },
+  ];
   return (
     <ol className="steps">
-      <li aria-current={current === "copies" ? "step" : undefined}>Copies</li>
-      <li aria-current={current === "summary" ? "step" : undefined}>Summary</li>
+      {steps.map(({ step, label }) => <li key={step} aria-current={current === step ? "step" : undefined}>{label}</li>)}
       <li>Apply</li>
     </ol>
   );
@@ -302,6 +364,10 @@ function Problem({ text }: { text: string | undefined }) {
 /** "3 files (1.5 MB)". */
 function describe(totals: Totals): string {
   return `${fileCount(totals.count)} (${formatSize(totals.totalSize)})`;
+}
+
+function totalsOf(files: FileEntry[]): Totals {
+  return { count: files.length, totalSize: files.reduce((total, file) => total + file.size, 0) };
 }
 
 function sum(a: Totals, b: Totals): Totals {

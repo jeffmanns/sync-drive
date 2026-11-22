@@ -15,6 +15,7 @@ export type FlowState =
   | ComparingState
   | RefusedState
   | CopiesState
+  | DeletionsState
   | SummaryState
   | UpdatingState
   | ResultState;
@@ -71,15 +72,31 @@ export interface Review {
   new: Section;
   /** Files on both drives that a Quick compare judges different. */
   changed: Section;
-  /** Files only on the Replica. This version never moves them: they stay where they are. */
-  deleted: Totals;
+  /** Files only on the Replica, which the deletions Approval moves into the Holding area. */
+  deleted: Section;
   /** The one all-or-nothing Approval for copying the new and changed files. */
   copiesApproved: boolean;
+  /** What the Holding area on the Replica held when compared, which the deletions Approval deletes permanently. */
+  holdingArea: Totals;
+  /**
+   * The one all-or-nothing Approval for the deletions, separate from the copies Approval: empty the
+   * Holding area, then move the deleted files into it (ADR 0006).
+   */
+  deletionsApproved: boolean;
 }
 
 /** Reviewing the new and changed files, and approving the copies. */
 export interface CopiesState {
   step: "copies";
+  review: Review;
+}
+
+/**
+ * Reviewing the files only on the Replica, and approving the deletions. Comes after Copies, and
+ * only when there is something to delete.
+ */
+export interface DeletionsState {
+  step: "deletions";
   review: Review;
 }
 
@@ -90,7 +107,14 @@ export interface SummaryState {
   apply: {
     /** The files Apply copies to the Replica: none unless the copies are approved. */
     copy: Totals;
-    /** The files only on the Replica, which Apply leaves where they are. */
+    /** The files only on the Replica that Apply moves into the Holding area: none unless the deletions are approved. */
+    moveToHoldingArea: Totals;
+    /**
+     * What the Holding area held when compared, which Apply deletes permanently before moving the
+     * new deletions in: none unless the deletions are approved (ADR 0006).
+     */
+    deleteFromHoldingArea: Totals;
+    /** The files only on the Replica that Apply leaves where they are: all of them unless the deletions are approved. */
     leaveOnReplica: Totals;
   };
 }
@@ -99,6 +123,8 @@ export interface SummaryState {
 export interface UpdatingState {
   step: "updating";
   copying: Totals;
+  /** The deleted files being moved into the Holding area: none unless the deletions are approved. */
+  moving: Totals;
 }
 
 /** What the Update did. */
@@ -108,13 +134,17 @@ export interface ResultState {
   copied: FileEntry[];
   /** Every file that was not copied, and why. The Replica keeps its earlier version of each, if any. */
   failed: FailedFile[];
-  /** The files only on the Replica, left where they were. */
+  /** Deleted files moved into the Holding area. */
+  moved: FileEntry[];
+  /** Every deleted file that was not moved into the Holding area, and why. Each is still where it was on the Replica. */
+  notMoved: FailedFile[];
+  /** The files only on the Replica, left where they were because the deletions were not approved. */
   leftOnReplica: Totals;
   /** Why the Update stopped before copying, if it did. */
   error?: string;
 }
 
-/** A file that was not copied, and why. The engine's `FailedFile`, restated so the screens need nothing from Node. */
+/** A file that was not copied or moved, and why. The engine's `FailedFile`, restated so the screens need nothing from Node. */
 export interface FailedFile extends FileEntry {
   reason: string;
 }
@@ -129,6 +159,7 @@ export type Action =
   | { type: "cancelRepair" }
   | { type: "compare" }
   | { type: "approveCopies"; approved: boolean }
+  | { type: "approveDeletions"; approved: boolean }
   | { type: "next" }
   | { type: "back" }
   | { type: "restart" }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { after, afterEach, describe, it } from "node:test";
 import { Flow } from "../src/app/flow.ts";
@@ -154,6 +154,12 @@ function stateOf(flow: Flow): Record<string, any> {
   return flow.state;
 }
 
+/** Next, through whichever review steps there are, to the Summary. */
+function toSummary(flow: Flow): void {
+  for (let i = 0; i < 3 && flow.state.step !== "summary"; i++) flow.next();
+  assert.equal(flow.state.step, "summary");
+}
+
 /** The CLI's example drives: two new files and one changed, and one file only on the Replica. */
 const EXAMPLE_PRIMARY: TreeSpec = {
   "Photos/2026/a.jpg": "x".repeat(1_500_000),
@@ -186,7 +192,7 @@ describe("app flow: Comparing and Copies", () => {
       },
     ]);
     assert.deepEqual(review.changed.files, [{ path: "readme.txt", size: 8 }]);
-    assert.deepEqual(review.deleted, { count: 1, totalSize: 3 });
+    assert.deepEqual(review.deleted.files, [{ path: "Docs/old.pdf", size: 3 }]);
     assert.equal(review.copiesApproved, false, "nothing is approved until the owner approves it");
   });
 
@@ -217,11 +223,13 @@ describe("app flow: Approval, Summary and Apply", () => {
     await flow.compare();
 
     flow.approveCopies(true);
-    flow.next();
+    toSummary(flow);
 
     assert.equal(stateOf(flow).step, "summary");
     assert.deepEqual(stateOf(flow).apply, {
       copy: { count: 3, totalSize: 1_500_013 },
+      moveToHoldingArea: { count: 0, totalSize: 0 },
+      deleteFromHoldingArea: { count: 0, totalSize: 0 },
       leaveOnReplica: { count: 1, totalSize: 3 },
     });
     const steps: string[] = [];
@@ -249,7 +257,7 @@ describe("app flow: Approval, Summary and Apply", () => {
     const replicaBefore = await snapshotTree(replica);
     await flow.compare();
 
-    flow.next();
+    toSummary(flow);
     assert.equal(stateOf(flow).step, "summary");
     assert.deepEqual(stateOf(flow).apply.copy, { count: 0, totalSize: 0 });
     await flow.apply();
@@ -268,7 +276,7 @@ describe("app flow: Approval, Summary and Apply", () => {
     const { flow, primary, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA, failing);
     await flow.compare();
     flow.approveCopies(true);
-    flow.next();
+    toSummary(flow);
 
     await flow.apply();
 
@@ -281,29 +289,40 @@ describe("app flow: Approval, Summary and Apply", () => {
     assert.equal(after.new.count, 2);
   });
 
-  it("keeps the Approval through Back and Next", async () => {
+  it("keeps the Approvals through Back and Next, across Copies, Deletions and Summary", async () => {
     const { flow } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
     await flow.compare();
 
     flow.approveCopies(true);
     flow.next();
+    assert.equal(stateOf(flow).step, "deletions");
+    flow.approveDeletions(true);
     flow.back();
     assert.equal(stateOf(flow).step, "copies");
     assert.equal(stateOf(flow).review.copiesApproved, true);
     flow.next();
+    assert.equal(stateOf(flow).review.deletionsApproved, true);
+    flow.next();
+    assert.equal(stateOf(flow).step, "summary");
     assert.equal(stateOf(flow).apply.copy.count, 3);
+    assert.equal(stateOf(flow).apply.moveToHoldingArea.count, 1);
 
+    flow.back();
+    assert.equal(stateOf(flow).step, "deletions");
+    flow.approveDeletions(false);
     flow.back();
     flow.approveCopies(false);
     flow.next();
+    flow.next();
     assert.equal(stateOf(flow).apply.copy.count, 0);
+    assert.equal(stateOf(flow).apply.moveToHoldingArea.count, 0);
   });
 
   it("has no going back once Apply starts, and discards the decisions for the next comparison", async () => {
     const { flow, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
     await flow.compare();
     flow.approveCopies(true);
-    flow.next();
+    toSummary(flow);
     await flow.apply();
 
     flow.back();
@@ -383,7 +402,7 @@ describe("app flow: a drive disconnecting", () => {
     const { flow, volumes, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
     await flow.compare();
     flow.approveCopies(true);
-    flow.next();
+    toSummary(flow);
 
     volumes.disconnect(replica);
     await flow.drivesChanged();
@@ -413,7 +432,7 @@ describe("app flow: a drive disconnecting", () => {
     const replicaBefore = await snapshotTree(replica);
     await flow.compare();
     flow.approveCopies(true);
-    flow.next();
+    toSummary(flow);
 
     volumes.disconnect(primary);
     await flow.apply();
@@ -433,5 +452,161 @@ describe("app flow: a drive disconnecting", () => {
 
     assert.equal(stateOf(flow).step, "start");
     assert.match(stateOf(flow).error, /Replica .* is not connected/);
+  });
+});
+
+describe("app flow: Deletions", () => {
+  it("comes after Copies, showing the deleted files grouped by folder, with nothing approved", async () => {
+    const { flow } = await pairedMac(EXAMPLE_PRIMARY, { ...EXAMPLE_REPLICA, "Docs/2019/tax.pdf": "12345", "gone.txt": "x" });
+    await flow.compare();
+
+    flow.next();
+
+    assert.equal(stateOf(flow).step, "deletions");
+    const { review } = stateOf(flow);
+    assert.deepEqual(review.deleted.folders, [
+      { folder: "", count: 1, totalSize: 1, files: [{ path: "gone.txt", size: 1 }] },
+      { folder: "Docs", count: 1, totalSize: 3, files: [{ path: "Docs/old.pdf", size: 3 }] },
+      { folder: "Docs/2019", count: 1, totalSize: 5, files: [{ path: "Docs/2019/tax.pdf", size: 5 }] },
+    ]);
+    assert.equal(review.deletionsApproved, false, "nothing is approved until the owner approves it");
+  });
+
+  it("with only the deletions approved, moves the deleted files into the Holding area and copies nothing", async () => {
+    const { flow, primary, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    await flow.compare();
+    flow.next();
+    flow.approveDeletions(true);
+    flow.next();
+
+    assert.deepEqual(stateOf(flow).apply, {
+      copy: { count: 0, totalSize: 0 },
+      moveToHoldingArea: { count: 1, totalSize: 3 },
+      deleteFromHoldingArea: { count: 0, totalSize: 0 },
+      leaveOnReplica: { count: 0, totalSize: 0 },
+    });
+    const steps: string[] = [];
+    flow.onChange((state) => steps.push(state.step));
+    await flow.apply();
+
+    assert.deepEqual(steps, ["updating", "result"]);
+    assert.deepEqual(stateOf(flow).copied, []);
+    assert.deepEqual(stateOf(flow).moved, [{ path: "Docs/old.pdf", size: 3 }]);
+    assert.deepEqual(stateOf(flow).notMoved, []);
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "Docs", "old.pdf"), "utf8"), "abc");
+    const after = await compare(primary, replica);
+    assert.equal(after.deleted.count, 0);
+    assert.equal(after.new.count, 2, "the copies were not approved, so nothing was copied");
+    assert.equal(after.changed.count, 1);
+  });
+
+  /**
+   * Paired drives whose Replica's Holding area holds `Docs/first.txt` (5 B) from an earlier Update
+   * that approved only the deletions, so `primaryExtra` is still to be copied.
+   */
+  async function pairedWithFilledHoldingArea(primaryExtra: TreeSpec = {}) {
+    const paired = await pairedMac({ "a.txt": "same", ...primaryExtra }, { "a.txt": "same", "Docs/first.txt": "12345" });
+    const { flow } = paired;
+    await flow.compare();
+    flow.next();
+    flow.approveDeletions(true);
+    flow.next();
+    await flow.apply();
+    assert.deepEqual(stateOf(flow).moved, [{ path: "Docs/first.txt", size: 5 }]);
+    flow.restart();
+    return { ...paired, holding: join(paired.replica, "sync-drive Holding Area") };
+  }
+
+  it("warns with the deletions, after Copies, what the Holding area holds, which approving deletes for good", async () => {
+    const { flow, replica } = await pairedWithFilledHoldingArea({ "new.txt": "new" });
+    await writeFile(join(replica, "second.txt"), "x");
+    await flow.compare();
+
+    assert.equal(stateOf(flow).step, "copies");
+    flow.next();
+    assert.equal(stateOf(flow).step, "deletions");
+    assert.deepEqual(stateOf(flow).review.holdingArea, { count: 1, totalSize: 5 });
+    flow.approveDeletions(true);
+    flow.next();
+    assert.deepEqual(stateOf(flow).apply.deleteFromHoldingArea, { count: 1, totalSize: 5 });
+  });
+
+  it("with only the copies approved, leaves the previous Holding area and the deleted files alone", async () => {
+    const { flow, replica, holding } = await pairedWithFilledHoldingArea({ "new.txt": "new" });
+    await writeFile(join(replica, "second.txt"), "x");
+    const holdingBefore = await snapshotTree(holding);
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+
+    assert.deepEqual(stateOf(flow).apply.deleteFromHoldingArea, { count: 0, totalSize: 0 });
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).copied, [{ path: "new.txt", size: 3 }]);
+    assert.deepEqual(stateOf(flow).moved, []);
+    assert.deepEqual(stateOf(flow).leftOnReplica, { count: 1, totalSize: 1 });
+    assert.deepEqual(await snapshotTree(holding), holdingBefore);
+    assert.equal(await readFile(join(replica, "second.txt"), "utf8"), "x");
+  });
+
+  it("with the deletions approved, empties the previous Holding area, then moves the new deletions in", async () => {
+    const { flow, replica, holding } = await pairedWithFilledHoldingArea();
+    await writeFile(join(replica, "second.txt"), "x");
+    await flow.compare();
+    flow.next();
+    flow.approveDeletions(true);
+    flow.next();
+
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).moved, [{ path: "second.txt", size: 1 }]);
+    assert.deepEqual((await readdir(holding)).sort(), ["READ ME.txt", "second.txt"]);
+  });
+
+  it("skips Deletions, and the warning, when there is nothing to delete, leaving the Holding area alone", async () => {
+    const { flow, replica, holding } = await pairedWithFilledHoldingArea();
+    await writeFile(join(replica, "a.txt"), "changed on the Replica");
+    const holdingBefore = await snapshotTree(holding);
+    await flow.compare();
+    flow.approveCopies(true);
+
+    flow.next();
+    assert.equal(stateOf(flow).step, "summary");
+    flow.back();
+    assert.equal(stateOf(flow).step, "copies");
+    flow.next();
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).copied, [{ path: "a.txt", size: 4 }]);
+    assert.deepEqual(await snapshotTree(holding), holdingBefore);
+  });
+
+  it("with neither Approval, writes nothing, even with deletions to approve", async () => {
+    const { flow, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    const replicaBefore = await snapshotTree(replica);
+    await flow.compare();
+    toSummary(flow);
+
+    await flow.apply();
+
+    assert.equal(stateOf(flow).step, "summary", "there is nothing to apply");
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("lists in full every deleted file that was not moved, and why", async () => {
+    const { flow, replica } = await pairedMac(EXAMPLE_PRIMARY, { ...EXAMPLE_REPLICA, "gone.txt": "x" });
+    await flow.compare();
+    flow.next();
+    flow.approveDeletions(true);
+    flow.next();
+    // Gone from the Replica between the comparison and Apply, so it cannot be moved.
+    await rm(join(replica, "Docs", "old.pdf"));
+
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).moved, [{ path: "gone.txt", size: 1 }]);
+    assert.equal(stateOf(flow).notMoved.length, 1);
+    assert.equal(stateOf(flow).notMoved[0].path, "Docs/old.pdf");
+    assert.match(stateOf(flow).notMoved[0].reason, /no such file/);
   });
 });
