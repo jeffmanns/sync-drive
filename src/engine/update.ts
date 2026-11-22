@@ -179,8 +179,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   for (const move of moves) {
     try {
       // A rename stays on the Replica: nothing is copied, and the file keeps all its metadata.
+      // Its new path is checked as its folders are made, below.
       await assertNoShortcutAlong(setup.replica, move.from);
-      await assertNoShortcutAlong(setup.replica, move.to);
       const [onPrimary, onReplica] = await Promise.all([
         lstat(join(setup.primary, move.to), { bigint: true }),
         lstat(join(setup.replica, move.from), { bigint: true }),
@@ -260,12 +260,12 @@ async function removeEmptiedFolders(path: string, setup: UpdateSetup): Promise<v
  * (symbolic link), since a write through it would land wherever it points: elsewhere on the
  * Replica, or even on the Primary. sync-drive never makes shortcuts, but a Replica filled or
  * edited by another tool can have one where the Primary has a real folder. Reads only. Stops at
- * the first folder that does not exist, as nothing below it can be a shortcut.
+ * the first folder that does not exist, as nothing below it can be a shortcut. A shortcut made
+ * between this check and the write is not caught; the owner is not expected to edit the Replica
+ * during an Update.
  */
 async function assertNoShortcutAlong(replica: string, path: string): Promise<void> {
-  const folders = dirname(path) === "." ? [] : dirname(path).split("/");
-  for (let depth = 1; depth <= folders.length; depth++) {
-    const folder = folders.slice(0, depth).join("/");
+  for (const folder of foldersAlong(dirname(path))) {
     const stats = await lstat(join(replica, folder)).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined;
       throw error;
@@ -281,9 +281,7 @@ async function assertNoShortcutAlong(replica: string, path: string): Promise<voi
  * nothing below it, at the first folder along the way that is a shortcut.
  */
 async function makeReplicaFolders(replica: string, folder: string): Promise<void> {
-  const names = folder === "." ? [] : folder.split("/");
-  for (let depth = 1; depth <= names.length; depth++) {
-    const route = names.slice(0, depth).join("/");
+  for (const route of foldersAlong(folder)) {
     const full = join(replica, route);
     try {
       await mkdir(full);
@@ -292,6 +290,13 @@ async function makeReplicaFolders(replica: string, folder: string): Promise<void
       if ((await lstat(full)).isSymbolicLink()) throw new Error(shortcutReason(route));
     }
   }
+}
+
+/** `folder` (relative, using `/`) and each folder above it, top first: `a/b/c` gives `a`, `a/b`, `a/b/c`. `.` gives none. */
+function foldersAlong(folder: string): string[] {
+  if (folder === ".") return [];
+  const names = folder.split("/");
+  return names.map((_, i) => names.slice(0, i + 1).join("/"));
 }
 
 /** Why nothing was written for a file whose Replica path goes through the shortcut `folder`. */

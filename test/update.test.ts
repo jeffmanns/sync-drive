@@ -589,6 +589,7 @@ describe("Update: shortcut folders on the Replica", () => {
     await rm(join(replica, "Old"), { recursive: true });
     await symlink("Archive", join(replica, "Old"));
     const archiveBefore = await snapshotTree(join(replica, "Archive"));
+    const primaryBefore = await snapshotTree(primary);
 
     const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() });
 
@@ -597,36 +598,41 @@ describe("Update: shortcut folders on the Replica", () => {
     assert.match(result.notMoved[0]!.reason, /"Old" is a shortcut/);
     assert.deepEqual(await snapshotTree(join(replica, "Archive")), archiveBefore);
     assert.deepEqual(await readdir(join(replica, "sync-drive Holding Area")), ["READ ME.txt", "lost.txt"]);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 
-  it("never renames a move through a shortcut folder, at its old path or its new one", async () => {
-    // New path: the Replica's "New" is a shortcut to its "Archive", where the move would land.
+  it("never renames a move through a shortcut folder at its new path", async () => {
+    // The Replica's "New" is a shortcut to its "Archive", where the move would land.
     const primary = await makeTree({ "New/a.jpg": "aaaa" });
     const replica = await makeTree({ "Old/a.jpg": "aaaa", "Archive/other.jpg": "other" });
     await symlink("Archive", join(replica, "New"));
     const replicaBefore = await snapshotTree(replica);
 
-    const toResult = await compareAndUpdate(primary, replica, APPROVED_WITH_MOVES);
+    const result = await compareAndUpdate(primary, replica, APPROVED_WITH_MOVES);
 
-    assert.deepEqual(toResult.renamed, []);
-    assert.deepEqual(toResult.notRenamed.map((move) => move.to), ["New/a.jpg"]);
-    assert.match(toResult.notRenamed[0]!.reason, /"New" is a shortcut/);
+    assert.deepEqual(result.renamed, []);
+    assert.deepEqual(result.notRenamed.map((move) => move.to), ["New/a.jpg"]);
+    assert.match(result.notRenamed[0]!.reason, /"New" is a shortcut/);
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
 
-    // Old path: since the comparison, the real folder "Old" has been renamed "Elsewhere" and a
-    // shortcut put in its place.
-    const primary2 = await makeTree({ "New/a.jpg": "aaaa" });
-    const replica2 = await makeTree({ "Old/a.jpg": "aaaa" });
-    const report = await compare(primary2, replica2);
-    await rename(join(replica2, "Old"), join(replica2, "Elsewhere"));
-    await symlink("Elsewhere", join(replica2, "Old"));
-    const replica2Before = await snapshotTree(replica2);
+  it("never renames a move through a shortcut folder at its old path", async () => {
+    const primary = await makeTree({ "New/a.jpg": "aaaa" });
+    const replica = await makeTree({ "Old/a.jpg": "aaaa" });
+    const report = await compare(primary, replica);
+    // Since the comparison, the real folder "Old" has been renamed "Elsewhere" and a shortcut put in its place.
+    await rename(join(replica, "Old"), join(replica, "Elsewhere"));
+    await symlink("Elsewhere", join(replica, "Old"));
+    const replicaBefore = await snapshotTree(replica);
+    const primaryBefore = await snapshotTree(primary);
 
-    const fromResult = await update(report, APPROVED_WITH_MOVES, { primary: primary2, replica: replica2, copier: new MacFileCopier() });
+    const result = await update(report, APPROVED_WITH_MOVES, { primary, replica, copier: new MacFileCopier() });
 
-    assert.deepEqual(fromResult.renamed, []);
-    assert.match(fromResult.notRenamed[0]!.reason, /"Old" is a shortcut/);
-    assert.deepEqual(await snapshotTree(replica2), replica2Before);
+    assert.deepEqual(result.renamed, []);
+    assert.deepEqual(result.notRenamed.map((move) => move.from), ["Old/a.jpg"]);
+    assert.match(result.notRenamed[0]!.reason, /"Old" is a shortcut/);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
   });
 });
 
