@@ -1,6 +1,7 @@
 /**
- * What the app's screens see and send. Plain data only, so it crosses from Electron's main process
- * to the screens unchanged, and imports nothing from Node, so the screens can use it too.
+ * What the app's screens see and send, and the few rules the flow and the screens share. The state
+ * is plain data only, so it crosses from Electron's main process to the screens unchanged. Imports
+ * nothing from Node, so the screens can use it too.
  */
 import type { PairedDrives, Pairing } from "../engine/pairing.ts";
 import type { FileEntry, Section, Totals } from "../engine/report.ts";
@@ -76,7 +77,10 @@ export interface Review {
   deleted: Section;
   /** The one all-or-nothing Approval for copying the new and changed files. */
   copiesApproved: boolean;
-  /** What the Holding area on the Replica held when compared, which the deletions Approval deletes permanently. */
+  /**
+   * What the Holding area on the Replica held when compared, which the deletions Approval deletes
+   * permanently. Read only when there are deletions; otherwise none.
+   */
   holdingArea: Totals;
   /**
    * The one all-or-nothing Approval for the deletions, separate from the copies Approval: empty the
@@ -138,9 +142,12 @@ export interface ResultState {
   moved: FileEntry[];
   /** Every deleted file that was not moved into the Holding area, and why. Each is still where it was on the Replica. */
   notMoved: FailedFile[];
-  /** The files only on the Replica, left where they were because the deletions were not approved. */
+  /**
+   * The files only on the Replica that were left where they were and are not in `notMoved`: all of
+   * them unless the deletions were approved, and any the Update stopped before reaching.
+   */
   leftOnReplica: Totals;
-  /** Why the Update stopped before copying, if it did. */
+  /** Why the Update stopped before it finished, if it did. `copied`, `failed`, `moved` and `notMoved` still say what it did first. */
   error?: string;
 }
 
@@ -171,6 +178,24 @@ export interface SyncDriveBridge {
   send(action: Action): Promise<void>;
   /** Calls `listener` with every new state. Returns a function that stops the calls. */
   onState(listener: (state: FlowState) => void): () => void;
+}
+
+/** No files at all. */
+export const NO_FILES: Totals = { count: 0, totalSize: 0 };
+
+/** How many files there are in all of `parts` together, and their total size, as plain Totals. */
+export function totalsOf(...parts: Totals[]): Totals {
+  return parts.reduce<Totals>((all, part) => ({ count: all.count + part.count, totalSize: all.totalSize + part.totalSize }), NO_FILES);
+}
+
+/** How many `files` there are, and their total size. */
+export function totalsOfFiles(files: FileEntry[]): Totals {
+  return { count: files.length, totalSize: files.reduce((total, file) => total + file.size, 0) };
+}
+
+/** Whether the review has a Deletions step: only when there is something to delete. */
+export function hasDeletionsStep(review: Review): boolean {
+  return review.deleted.count > 0;
 }
 
 /** The IPC channels between the main process and the screens. */

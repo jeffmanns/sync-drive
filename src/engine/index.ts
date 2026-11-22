@@ -19,6 +19,7 @@ export {
 } from "./safety-stops.ts";
 export {
   update,
+  UpdateStoppedError,
   type Approvals,
   type FailedFile,
   type FileCopier,

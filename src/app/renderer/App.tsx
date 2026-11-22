@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
+import { hasDeletionsStep, totalsOf, totalsOfFiles } from "../view.ts";
 import type {
   Action,
   CopiesState,
@@ -148,7 +149,7 @@ function RefusedScreen({ state, send, busy }: ScreenProps<RefusedState>) {
 
 function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
   const { review } = state;
-  const copies = sum(review.new, review.changed);
+  const copies = totalsOf(review.new, review.changed);
   return (
     <>
       <Steps current="copies" review={review} />
@@ -174,6 +175,7 @@ function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
 function DeletionsScreen({ state, send, busy }: ScreenProps<DeletionsState>) {
   const { review } = state;
   const held = review.holdingArea;
+  const them = held.count === 1 ? "it" : "them";
   return (
     <>
       <Steps current="deletions" review={review} />
@@ -184,7 +186,7 @@ function DeletionsScreen({ state, send, busy }: ScreenProps<DeletionsState>) {
       {held.count > 0 && (
         <p className="warning">
           The Holding area on the Replica holds {describe(held)} from an earlier Update. Approving these deletions deletes{" "}
-          {held.count === 1 ? "it" : "them"} permanently. To keep any of {held.count === 1 ? "it" : "them"}, copy {held.count === 1 ? "it" : "them"} back to the Primary first.
+          {them} permanently. To keep any of {them}, copy {them} back to the Primary first.
         </p>
       )}
       <label className="confirm">
@@ -246,8 +248,8 @@ function FileList({ files, inFolder }: { files: (FileEntry | FailedFile)[]; inFo
 
 function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
   const { copy, moveToHoldingArea, deleteFromHoldingArea, leaveOnReplica } = state.apply;
-  const anything = copy.count + moveToHoldingArea.count > 0;
-  const copiesToDo = state.review.new.count + state.review.changed.count > 0;
+  const canApply = copy.count + moveToHoldingArea.count > 0;
+  const hasCopies = totalsOf(state.review.new, state.review.changed).count > 0;
   return (
     <>
       <Steps current="summary" review={state.review} />
@@ -256,7 +258,7 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
       <ul className="summary">
         {copy.count > 0
           ? <li>Copy {describe(copy)} from the Primary to the Replica.</li>
-          : copiesToDo && <li>Copy nothing: the copies are not approved.</li>}
+          : hasCopies && <li>Copy nothing: the copies are not approved.</li>}
         {deleteFromHoldingArea.count > 0 && (
           <li className="warning">Permanently delete the {describe(deleteFromHoldingArea)} in the Holding area from an earlier Update.</li>
         )}
@@ -264,27 +266,33 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
         {leaveOnReplica.count > 0 && <li>Leave the files only on the Replica where they are: {describe(leaveOnReplica)}. The deletions are not approved.</li>}
         <li>Write nothing to the Primary.</li>
       </ul>
-      {anything ? <p className="note">Once Apply starts there is no going back.</p> : <p>Nothing is approved, so there is nothing to apply.</p>}
+      {canApply ? <p className="note">Once Apply starts there is no going back.</p> : <p>Nothing is approved, so there is nothing to apply.</p>}
       <Buttons>
         <button onClick={() => send({ type: "restart" })} disabled={busy}>Start over</button>
         <button onClick={() => send({ type: "back" })} disabled={busy}>Back</button>
-        <button className="primary" onClick={() => send({ type: "apply" })} disabled={busy || !anything}>Apply</button>
+        <button className="primary" onClick={() => send({ type: "apply" })} disabled={busy || !canApply}>Apply</button>
       </Buttons>
     </>
   );
 }
 
 function UpdatingScreen({ state }: { state: UpdatingState }) {
-  const work = [
-    ...(state.moving.count > 0 ? [`moving ${describe(state.moving)} into the Holding area`] : []),
-    ...(state.copying.count > 0 ? [`copying ${describe(state.copying)} to the Replica`] : []),
-  ].join(", then ");
-  return <Waiting title="Updating…" detail={`${work.charAt(0).toUpperCase()}${work.slice(1)}. Keep both drives connected.`} />;
+  const { moving, copying } = state;
+  let work: string;
+  // Apply moves the deletions first, then copies (see update()).
+  if (moving.count > 0 && copying.count > 0) {
+    work = `Moving ${describe(moving)} into the Holding area, then copying ${describe(copying)} to the Replica.`;
+  } else if (moving.count > 0) {
+    work = `Moving ${describe(moving)} into the Holding area.`;
+  } else {
+    work = `Copying ${describe(copying)} to the Replica.`;
+  }
+  return <Waiting title="Updating…" detail={`${work} Keep both drives connected.`} />;
 }
 
 function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
-  const copied = totalsOf(state.copied);
-  const moved = totalsOf(state.moved);
+  const copied = totalsOfFiles(state.copied);
+  const moved = totalsOfFiles(state.moved);
   const problems = state.error !== undefined || state.failed.length > 0 || state.notMoved.length > 0;
   return (
     <>
@@ -342,7 +350,7 @@ function Waiting({ title, detail }: { title: string; detail: string }) {
 function Steps({ current, review }: { current: "copies" | "deletions" | "summary"; review: Review }) {
   const steps = [
     { step: "copies", label: "Copies" },
-    ...(review.deleted.count > 0 ? [{ step: "deletions", label: "Deletions" }] : []),
+    ...(hasDeletionsStep(review) ? [{ step: "deletions", label: "Deletions" }] : []),
     { step: "summary", label: "Summary" },
   ];
   return (
@@ -364,12 +372,4 @@ function Problem({ text }: { text: string | undefined }) {
 /** "3 files (1.5 MB)". */
 function describe(totals: Totals): string {
   return `${fileCount(totals.count)} (${formatSize(totals.totalSize)})`;
-}
-
-function totalsOf(files: FileEntry[]): Totals {
-  return { count: files.length, totalSize: files.reduce((total, file) => total + file.size, 0) };
-}
-
-function sum(a: Totals, b: Totals): Totals {
-  return { count: a.count + b.count, totalSize: a.totalSize + b.totalSize };
 }

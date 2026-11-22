@@ -80,11 +80,36 @@ const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Upda
  * checksum before renaming it into place; a copy that does not match is discarded and listed as
  * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
  * having written nothing, when the Safety stop applies without `approvals.overrideSafetyStop`, or
- * when the Replica lacks the free space for the copies (ADR 0008).
+ * when the Replica lacks the free space for the copies (ADR 0008). Every rejection is an
+ * `UpdateStoppedError` saying what had been done before it stopped.
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
   const result: UpdateResult = { copied: [], failed: [], moved: [], notMoved: [] };
   if (!approvals.update) return result;
+  try {
+    await updateInto(result, report, approvals, setup);
+  } catch (error) {
+    throw new UpdateStoppedError(error, result);
+  }
+  return result;
+}
+
+/**
+ * An Update that stopped partway, or before writing anything. `result` holds exactly what it did
+ * first: every file copied or moved before it stopped is listed there, and nothing else.
+ */
+export class UpdateStoppedError extends Error {
+  readonly result: UpdateResult;
+
+  constructor(cause: unknown, result: UpdateResult) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "UpdateStoppedError";
+    this.result = result;
+  }
+}
+
+/** Does the Update for `update()`, recording each file copied, moved or not as it goes into `result`. */
+async function updateInto(result: UpdateResult, report: Report, approvals: Approvals, setup: UpdateSetup): Promise<void> {
   await assertSeparate(setup.primary, setup.replica);
   const files = [...report.new.files, ...report.changed.files];
   const deletions = approvals.deletions ? report.deleted.files : [];
@@ -151,7 +176,6 @@ export async function update(report: Report, approvals: Approvals, setup: Update
     }
   }
   await rm(incoming, { recursive: true, force: true });
-  return result;
 }
 
 /**
