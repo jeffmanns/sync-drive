@@ -65,10 +65,30 @@ async function writeTree(root: string, spec: TreeSpec): Promise<void> {
 
 /** Removes every tree made by `makeTree` and `makeCaseSensitiveTree`. Call from an `after` hook. */
 export async function removeTrees(): Promise<void> {
+  const failures: unknown[] = [];
   for (const mountPoint of mountedImages.splice(0)) {
-    await promisify(execFile)("hdiutil", ["detach", "-quiet", "-force", mountPoint]);
+    await detach(mountPoint).catch((error: unknown) => failures.push(error));
   }
   await Promise.all(created.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  if (failures.length > 0) throw new AggregateError(failures, "Could not detach every test disk image");
+}
+
+/**
+ * Detaches the disk image mounted at `mountPoint`. macOS (Spotlight, fseventsd) can hold a freshly
+ * mounted volume for a moment, and then even a forced detach fails as busy (exit code 16), so it is
+ * tried again a few times before giving up.
+ */
+async function detach(mountPoint: string): Promise<void> {
+  const attempts = 6;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await promisify(execFile)("hdiutil", ["detach", "-quiet", "-force", mountPoint]);
+      return;
+    } catch (error) {
+      if (attempt === attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+    }
+  }
 }
 
 /**
