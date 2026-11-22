@@ -4,7 +4,7 @@ import { lstat, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from 
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
-import { compare, update, type Approvals, type FileCopier } from "../src/engine/index.ts";
+import { compare, update, UpdateStoppedError, type Approvals, type FileCopier } from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
 import {
   extendedAttributes,
@@ -414,6 +414,30 @@ describe("Update: deletions and the Holding area", () => {
     );
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("says what it had already done when it stops partway", async () => {
+    const primary = await makeTree({ "new.txt": "new" });
+    const replica = await makeTree({ "gone.txt": "gone", ".sync-drive-incoming/stuck": "left over" });
+    const stuck = join(replica, ".sync-drive-incoming", "stuck");
+    // Locked, so emptying the Incoming folder fails after the deletions have moved.
+    await promisify(execFile)("chflags", ["uchg", stuck]);
+    try {
+      const report = await compare(primary, replica);
+
+      const stopped = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier() }).then(
+        () => assert.fail("the Update should have stopped"),
+        (error: unknown) => error,
+      );
+
+      assert.ok(stopped instanceof UpdateStoppedError);
+      assert.match(stopped.message, /EPERM/);
+      assert.deepEqual(stopped.result.moved, [{ path: "gone.txt", size: 4 }]);
+      assert.deepEqual(stopped.result.copied, []);
+      assert.equal(await readFile(join(replica, "sync-drive Holding Area", "gone.txt"), "utf8"), "gone");
+    } finally {
+      await promisify(execFile)("chflags", ["nouchg", stuck]);
+    }
   });
 });
 

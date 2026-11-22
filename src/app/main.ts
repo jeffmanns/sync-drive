@@ -81,6 +81,8 @@ async function perform(action: Action, window: BrowserWindow): Promise<void> {
       return flow.compare();
     case "approveCopies":
       return flow.approveCopies(action.approved === true);
+    case "approveDeletions":
+      return flow.approveDeletions(action.approved === true);
     case "next":
       return flow.next();
     case "back":

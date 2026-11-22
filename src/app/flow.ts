@@ -2,20 +2,33 @@ import {
   checkFreeSpace,
   compare,
   findPairedDrives,
+  makeSection,
   pair,
   readHoldingArea,
   readPairing,
   SAFETY_STOP_PERCENT,
   update,
+  UpdateStoppedError,
   writePairing,
   type FileCopier,
   type PairedDrives,
   type Pairing,
   type Report,
+  type UpdateResult,
   type VolumeIdentity,
 } from "../engine/index.ts";
 import { fileCount, formatSize } from "../format.ts";
-import type { FlowState, Review, SummaryState, Totals } from "./view.ts";
+import {
+  hasDeletionsStep,
+  NO_FILES,
+  totalsOf,
+  totalsOfFiles,
+  type CopiesState,
+  type DeletionsState,
+  type FlowState,
+  type Review,
+  type SummaryState,
+} from "./view.ts";
 
 /** What the flow needs from the Mac it runs on. */
 export interface FlowDeps {
@@ -148,6 +161,9 @@ export class Flow {
         this.#set({ step: "refused", pairing, reasons });
         return;
       }
+      // Read now, for the warning before the deletions Approval: approving them deletes these for good.
+      const held = deleted.count > 0 ? await readHoldingArea(drives.replica.mountPoint) : NO_FILES;
+      if (comparison !== this.#comparisonGeneration) return;
       this.#report = report;
       this.#set({
         step: "copies",
@@ -156,8 +172,10 @@ export class Flow {
           drives,
           new: newFiles,
           changed,
-          deleted: { count: deleted.count, totalSize: deleted.totalSize },
+          deleted,
+          holdingArea: totalsOf(held),
           copiesApproved: false,
+          deletionsApproved: false,
         },
       });
     } catch (error) {
@@ -173,16 +191,27 @@ export class Flow {
     this.#set({ step: "copies", review: { ...state.review, copiesApproved: approved } });
   }
 
-  /** Moves on to the next review step, keeping the decisions made. */
+  /** On Deletions: gives or withdraws the one all-or-nothing Approval for the deletions, separate from the copies. */
+  approveDeletions(approved: boolean): void {
+    const state = this.#state;
+    if (state.step !== "deletions") return;
+    this.#set({ step: "deletions", review: { ...state.review, deletionsApproved: approved } });
+  }
+
+  /** Moves on to the next review step, keeping the decisions made. Deletions is skipped when there is nothing to delete. */
   next(): void {
     const state = this.#state;
-    if (state.step === "copies") this.#set(summaryOf(state.review));
+    if (!isReviewing(state) || state.step === "summary") return;
+    const { review } = state;
+    this.#set(state.step === "copies" && hasDeletionsStep(review) ? { step: "deletions", review } : summaryOf(review));
   }
 
   /** Goes back to the previous review step, keeping the decisions made. */
   back(): void {
     const state = this.#state;
-    if (state.step === "summary") this.#set({ step: "copies", review: state.review });
+    if (!isReviewing(state) || state.step === "copies") return;
+    const { review } = state;
+    this.#set(state.step === "summary" && hasDeletionsStep(review) ? { step: "deletions", review } : { step: "copies", review });
   }
 
   /**
@@ -191,7 +220,7 @@ export class Flow {
    */
   restart(): void {
     const state = this.#state;
-    if (state.step === "copies" || state.step === "summary") {
+    if (isReviewing(state)) {
       this.#discardComparison();
       this.#set({ step: "start", pairing: state.review.pairing });
     } else if (state.step === "result" || state.step === "refused") {
@@ -208,7 +237,7 @@ export class Flow {
     let pairing: Pairing;
     let drives: PairedDrives | undefined;
     if (state.step === "comparing" || state.step === "refused") pairing = state.pairing;
-    else if (state.step === "copies" || state.step === "summary") ({ pairing, drives } = state.review);
+    else if (isReviewing(state)) ({ pairing, drives } = state.review);
     else return;
     const comparison = this.#comparisonGeneration;
     const gone = await this.#whyDrivesGone(pairing, drives);
@@ -251,31 +280,74 @@ export class Flow {
 
   /**
    * On Summary: applies the Update exactly as summarised. Copies are written only with the copies
-   * approved; deleted files are never moved, and the Safety stop is never overridden.
+   * approved. Only with the deletions approved is the Holding area emptied and the deleted files
+   * moved into it (ADR 0006). The Safety stop is never overridden.
    */
   async apply(): Promise<void> {
     const state = this.#state;
     const report = this.#report;
-    if (state.step !== "summary" || state.apply.copy.count === 0 || report === undefined) return;
-    const { review } = state;
+    if (state.step !== "summary" || report === undefined) return;
+    const { review, apply } = state;
+    if (apply.copy.count === 0 && apply.moveToHoldingArea.count === 0) return;
     // Apply writes only to the drives that were compared: check they are still the ones connected.
     const gone = await this.#whyDrivesGone(review.pairing, review.drives);
     if (this.#state !== state) return;
     if (gone !== undefined) return this.#discardForGoneDrives(review.pairing, gone);
+    if (review.deletionsApproved) {
+      // Approving the deletions empties the Holding area for good: only ever what the owner was shown.
+      const held = await readHoldingArea(review.drives.replica.mountPoint);
+      if (this.#state !== state) return;
+      if (held.count !== review.holdingArea.count || held.totalSize !== review.holdingArea.totalSize) {
+        this.#discardComparison();
+        this.#set({
+          step: "start",
+          pairing: review.pairing,
+          error:
+            "The Holding area on the Replica changed since the comparison, so approving the deletions would delete files you were not shown. " +
+            "Nothing was written. The comparison and its decisions were discarded. Compare again.",
+        });
+        return;
+      }
+    }
     this.#discardComparison();
-    this.#set({ step: "updating", copying: state.apply.copy });
-    const base = { step: "result", pairing: review.pairing, leftOnReplica: review.deleted } as const;
+    this.#set({ step: "updating", copying: apply.copy, moving: apply.moveToHoldingArea });
+    let done: UpdateResult;
+    let error: string | undefined;
     try {
-      const result = await update(report, { update: true, deletions: false }, {
+      done = await update(approvedPart(report, review), { update: true, deletions: review.deletionsApproved }, {
         primary: review.drives.primary.mountPoint,
         replica: review.drives.replica.mountPoint,
         copier: this.#deps.copier,
       });
-      this.#set({ ...base, copied: result.copied, failed: result.failed });
-    } catch (error) {
-      this.#set({ ...base, copied: [], failed: [], error: (error as Error).message });
+    } catch (stopped) {
+      // Stopped partway: still say exactly what it did first.
+      done = stopped instanceof UpdateStoppedError ? stopped.result : { copied: [], failed: [], moved: [], notMoved: [] };
+      error = (stopped as Error).message;
     }
+    const handled = totalsOf(totalsOfFiles(done.moved), totalsOfFiles(done.notMoved));
+    const leftOnReplica = { count: review.deleted.count - handled.count, totalSize: review.deleted.totalSize - handled.totalSize };
+    this.#set({
+      step: "result",
+      pairing: review.pairing,
+      copied: done.copied,
+      failed: done.failed,
+      moved: done.moved,
+      notMoved: done.notMoved,
+      leftOnReplica,
+      ...(error === undefined ? {} : { error }),
+    });
   }
+}
+
+/**
+ * `report` cut down to the copies Approval, for `update()`. `update()` copies every new and changed
+ * file in the report it is given, so without the copies approved they are left out here. The
+ * deleted files stay in: `update()` moves them only when given the deletions Approval.
+ */
+function approvedPart(report: Report, review: Review): Report {
+  if (review.copiesApproved) return report;
+  const none = makeSection([]);
+  return { ...report, new: none, changed: none };
 }
 
 /** Why an Update of `report` must be refused, if it must: the Safety stop, and the free-space check. */
@@ -308,10 +380,17 @@ async function refusals(report: Report, drives: PairedDrives): Promise<string[]>
   return reasons;
 }
 
+/** Whether the app is on one of the review steps, where the owner makes the decisions. */
+function isReviewing(state: FlowState): state is CopiesState | DeletionsState | SummaryState {
+  return state.step === "copies" || state.step === "deletions" || state.step === "summary";
+}
+
 /** The Summary for the decisions in `review`. */
 function summaryOf(review: Review): SummaryState {
-  const copy: Totals = review.copiesApproved
-    ? { count: review.new.count + review.changed.count, totalSize: review.new.totalSize + review.changed.totalSize }
-    : { count: 0, totalSize: 0 };
-  return { step: "summary", review, apply: { copy, leaveOnReplica: review.deleted } };
+  const copy = review.copiesApproved ? totalsOf(review.new, review.changed) : NO_FILES;
+  const deleted = totalsOf(review.deleted);
+  const apply = review.deletionsApproved
+    ? { copy, moveToHoldingArea: deleted, deleteFromHoldingArea: review.holdingArea, leaveOnReplica: NO_FILES }
+    : { copy, moveToHoldingArea: NO_FILES, deleteFromHoldingArea: NO_FILES, leaveOnReplica: deleted };
+  return { step: "summary", review, apply };
 }
