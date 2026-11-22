@@ -159,6 +159,7 @@ function stateOf(flow: Flow): Record<string, any> {
 /** From Copies, Next through whichever review steps there are to the Summary, approving nothing more. */
 function toSummary(flow: Flow): void {
   flow.next();
+  if (flow.state.step === "moves") flow.next();
   if (flow.state.step === "deletions") flow.next();
   assert.equal(flow.state.step, "summary");
 }
@@ -240,6 +241,8 @@ describe("app flow: Approval, Summary and Apply", () => {
     assert.equal(stateOf(flow).step, "summary");
     assert.deepEqual(stateOf(flow).apply, {
       copy: { count: 3, totalSize: 1_500_013 },
+      renameOnReplica: { count: 0, totalSize: 0 },
+      leaveAtOldPaths: { count: 0, totalSize: 0 },
       moveToHoldingArea: { count: 0, totalSize: 0 },
       deleteFromHoldingArea: { count: 0, totalSize: 0 },
       leaveOnReplica: { count: 1, totalSize: 3 },
@@ -491,6 +494,8 @@ describe("app flow: Deletions", () => {
 
     assert.deepEqual(stateOf(flow).apply, {
       copy: { count: 0, totalSize: 0 },
+      renameOnReplica: { count: 0, totalSize: 0 },
+      leaveAtOldPaths: { count: 0, totalSize: 0 },
       moveToHoldingArea: { count: 1, totalSize: 3 },
       deleteFromHoldingArea: { count: 0, totalSize: 0 },
       leaveOnReplica: { count: 0, totalSize: 0 },
@@ -649,5 +654,134 @@ describe("app flow: Deletions", () => {
     } finally {
       await promisify(execFile)("chflags", ["nouchg", stuck]);
     }
+  });
+});
+
+describe("app flow: Moves", () => {
+  /** Photos/Iceland moved into Photos/2026 on the Primary, plus one new file and one deleted. */
+  const MOVED_PRIMARY: TreeSpec = { "Photos/2026/Iceland/a.jpg": "aaaa", "Photos/2026/Iceland/b.jpg": "bb", "new.txt": "new" };
+  const MOVED_REPLICA: TreeSpec = { "Photos/Iceland/a.jpg": "aaaa", "Photos/Iceland/b.jpg": "bb", "gone.txt": "gone" };
+
+  it("comes after Copies and before Deletions, showing the moves grouped by folder, with nothing approved", async () => {
+    const { flow } = await pairedMac(MOVED_PRIMARY, MOVED_REPLICA);
+    await flow.compare();
+    assert.deepEqual(stateOf(flow).review.new.files, [{ path: "new.txt", size: 3 }], "moved files are not new");
+
+    flow.next();
+
+    assert.equal(stateOf(flow).step, "moves");
+    const { review } = stateOf(flow);
+    assert.deepEqual(
+      review.moves.folders.map(({ from, to, count, totalSize }: Record<string, unknown>) => ({ from, to, count, totalSize })),
+      [{ from: "Photos/Iceland", to: "Photos/2026/Iceland", count: 2, totalSize: 6 }],
+    );
+    assert.equal(review.movesApproved, false, "nothing is approved until the owner approves it");
+    flow.next();
+    assert.equal(stateOf(flow).step, "deletions");
+  });
+
+  it("with only the moves approved, renames the moved files on the Replica and copies and deletes nothing", async () => {
+    const { flow, primary, replica } = await pairedMac(MOVED_PRIMARY, MOVED_REPLICA);
+    await flow.compare();
+    flow.next();
+    flow.approveMoves(true);
+    flow.next();
+    flow.next();
+
+    assert.equal(stateOf(flow).step, "summary");
+    assert.deepEqual(stateOf(flow).apply, {
+      copy: { count: 0, totalSize: 0 },
+      renameOnReplica: { count: 2, totalSize: 6 },
+      leaveAtOldPaths: { count: 0, totalSize: 0 },
+      moveToHoldingArea: { count: 0, totalSize: 0 },
+      deleteFromHoldingArea: { count: 0, totalSize: 0 },
+      leaveOnReplica: { count: 1, totalSize: 4 },
+    });
+    await flow.apply();
+
+    assert.equal(stateOf(flow).step, "result");
+    assert.deepEqual(stateOf(flow).renamed, [
+      { from: "Photos/Iceland/a.jpg", to: "Photos/2026/Iceland/a.jpg", size: 4 },
+      { from: "Photos/Iceland/b.jpg", to: "Photos/2026/Iceland/b.jpg", size: 2 },
+    ]);
+    assert.deepEqual(stateOf(flow).notRenamed, []);
+    assert.deepEqual(stateOf(flow).copied, []);
+    assert.deepEqual(stateOf(flow).moved, []);
+    assert.deepEqual((await readdir(replica)).sort(), ["Photos", "gone.txt"], "no Holding area");
+    const after = await compare(primary, replica);
+    assert.equal(after.moves.count, 0);
+    assert.deepEqual(after.new.files, [{ path: "new.txt", size: 3 }]);
+  });
+
+  it("without the moves Approval, leaves the moved files at their old paths, even with the copies approved", async () => {
+    const { flow, replica } = await pairedMac(MOVED_PRIMARY, MOVED_REPLICA);
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+
+    assert.deepEqual(stateOf(flow).apply.renameOnReplica, { count: 0, totalSize: 0 });
+    assert.deepEqual(stateOf(flow).apply.leaveAtOldPaths, { count: 2, totalSize: 6 });
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).copied, [{ path: "new.txt", size: 3 }]);
+    assert.deepEqual(stateOf(flow).renamed, []);
+    assert.deepEqual(stateOf(flow).movesLeftAtOldPaths, { count: 2, totalSize: 6 });
+    assert.deepEqual(await readdir(join(replica, "Photos")), ["Iceland"]);
+  });
+
+  it("keeps the moves Approval through Back and Next", async () => {
+    const { flow } = await pairedMac(MOVED_PRIMARY, MOVED_REPLICA);
+    await flow.compare();
+
+    flow.next();
+    flow.approveMoves(true);
+    flow.next();
+    assert.equal(stateOf(flow).step, "deletions");
+    flow.back();
+    assert.equal(stateOf(flow).step, "moves");
+    assert.equal(stateOf(flow).review.movesApproved, true);
+    flow.back();
+    assert.equal(stateOf(flow).step, "copies");
+    flow.next();
+    flow.next();
+    flow.next();
+    assert.equal(stateOf(flow).step, "summary");
+    assert.equal(stateOf(flow).apply.renameOnReplica.count, 2);
+    flow.back();
+    flow.back();
+    assert.equal(stateOf(flow).step, "moves");
+    flow.approveMoves(false);
+    flow.next();
+    flow.next();
+    assert.equal(stateOf(flow).apply.renameOnReplica.count, 0);
+  });
+
+  it("skips Moves when nothing was moved", async () => {
+    const { flow } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    await flow.compare();
+
+    flow.next();
+
+    assert.equal(stateOf(flow).step, "deletions");
+    flow.back();
+    assert.equal(stateOf(flow).step, "copies");
+  });
+
+  it("lists every moved file that was not renamed, and why", async () => {
+    const { flow, replica } = await pairedMac(MOVED_PRIMARY, MOVED_REPLICA);
+    await flow.compare();
+    flow.next();
+    flow.approveMoves(true);
+    flow.next();
+    flow.next();
+    // Edited on the Replica after the comparison, so it may no longer be the same file.
+    await writeFile(join(replica, "Photos/Iceland/b.jpg"), "edited");
+
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).renamed.map((move: { from: string }) => move.from), ["Photos/Iceland/a.jpg"]);
+    assert.equal(stateOf(flow).notRenamed.length, 1);
+    assert.equal(stateOf(flow).notRenamed[0].from, "Photos/Iceland/b.jpg");
+    assert.match(stateOf(flow).notRenamed[0].reason, /changed .* since the comparison/);
   });
 });

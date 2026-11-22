@@ -18,8 +18,9 @@ import {
 
 after(removeTrees);
 
-const APPROVED: Approvals = { update: true, deletions: false };
-const APPROVED_WITH_DELETIONS: Approvals = { update: true, deletions: true };
+const APPROVED: Approvals = { update: true, moves: false, deletions: false };
+const APPROVED_WITH_DELETIONS: Approvals = { update: true, moves: false, deletions: true };
+const APPROVED_WITH_MOVES: Approvals = { update: true, moves: true, deletions: false };
 
 /**
  * Compares, runs an Update with `approvals`, and checks the Primary came through untouched:
@@ -172,9 +173,9 @@ describe("Update", () => {
     });
     const replicaBefore = await snapshotTree(replica);
 
-    const result = await compareAndUpdate(primary, replica, { update: false, deletions: false });
+    const result = await compareAndUpdate(primary, replica, { update: false, moves: false, deletions: false });
 
-    assert.deepEqual(result, { copied: [], failed: [], moved: [], notMoved: [] });
+    assert.deepEqual(result, { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [] });
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 
@@ -291,7 +292,7 @@ describe("Update: deletions and the Holding area", () => {
     const replica = await makeTree({ "gone.txt": "gone" });
     const replicaBefore = await snapshotTree(replica);
 
-    const result = await compareAndUpdate(primary, replica, { update: false, deletions: true });
+    const result = await compareAndUpdate(primary, replica, { update: false, moves: false, deletions: true });
 
     assert.deepEqual(result.moved, []);
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
@@ -326,8 +327,8 @@ describe("Update: deletions and the Holding area", () => {
     const replicaBefore = await snapshotTree(replica);
 
     await compare(primary, replica);
-    await compareAndUpdate(primary, replica, { update: false, deletions: false });
-    await compareAndUpdate(primary, replica, { update: false, deletions: true });
+    await compareAndUpdate(primary, replica, { update: false, moves: false, deletions: false });
+    await compareAndUpdate(primary, replica, { update: false, moves: false, deletions: true });
     assert.deepEqual(await snapshotTree(replica), replicaBefore, "comparing or declining never empties it");
 
     const result = await compareAndUpdate(primary, replica, APPROVED_WITH_DELETIONS);
@@ -438,6 +439,112 @@ describe("Update: deletions and the Holding area", () => {
     } finally {
       await promisify(execFile)("chflags", ["nouchg", stuck]);
     }
+  });
+});
+
+describe("Update: moves", () => {
+  it("renames moved files on the Replica, keeping their metadata, without copying or using the Holding area", async () => {
+    const primary = await makeTree({ "Photos/2026/Iceland/a.jpg": "aaaa", "Photos/2026/Iceland/Day 2/b.jpg": "bb" });
+    const replica = await makeTree({ "Photos/Iceland/a.jpg": "aaaa", "Photos/Iceland/Day 2/b.jpg": "bb" });
+    const aBefore = await metadataOf(join(replica, "Photos/Iceland/a.jpg"));
+    const copier: FileCopier = { copy: () => assert.fail("a move must never copy") };
+
+    const result = await compareAndUpdate(primary, replica, APPROVED_WITH_MOVES, copier);
+
+    assert.deepEqual(result.renamed, [
+      { from: "Photos/Iceland/Day 2/b.jpg", to: "Photos/2026/Iceland/Day 2/b.jpg", size: 2 },
+      { from: "Photos/Iceland/a.jpg", to: "Photos/2026/Iceland/a.jpg", size: 4 },
+    ]);
+    assert.deepEqual(result.notRenamed, []);
+    assert.deepEqual(result.copied, []);
+    assert.equal(await metadataOf(join(replica, "Photos/2026/Iceland/a.jpg")), aBefore);
+    // The emptied old folders are removed, and the Holding area is never made.
+    assert.deepEqual(await readdir(join(replica, "Photos")), ["2026"]);
+    assert.deepEqual((await readdir(replica)).sort(), ["Photos"]);
+    const after = await compare(primary, replica);
+    assert.equal(after.new.count + after.changed.count + after.deleted.count + after.moves.count, 0);
+  });
+
+  it("leaves moved files at their old paths, and copies nothing to the new ones, without the moves Approval", async () => {
+    const primary = await makeTree({ "New/a.jpg": "aaaa", "fresh.txt": "new" });
+    const replica = await makeTree({ "Old/a.jpg": "aaaa" });
+    const replicaBefore = await snapshotTree(replica);
+
+    const result = await compareAndUpdate(primary, replica, APPROVED);
+
+    assert.deepEqual(result.copied, [{ path: "fresh.txt", size: 3 }]);
+    assert.deepEqual(result.renamed, []);
+    const replicaAfter = (await snapshotTree(replica)).filter((line) => !line.includes("fresh.txt"));
+    assert.deepEqual(replicaAfter, replicaBefore);
+  });
+
+  it("renames nothing with the moves Approval but no main approval", async () => {
+    const primary = await makeTree({ "New/a.jpg": "aaaa" });
+    const replica = await makeTree({ "Old/a.jpg": "aaaa" });
+    const replicaBefore = await snapshotTree(replica);
+
+    const result = await compareAndUpdate(primary, replica, { update: false, moves: true, deletions: false });
+
+    assert.deepEqual(result.renamed, []);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("leaves a moved file in place when it changed on either drive since the comparison, and renames the others", async () => {
+    const primary = await makeTree({ "New/a.jpg": "aaaa", "New/b.jpg": "bbbb", "New/c.jpg": "cccc" });
+    const replica = await makeTree({ "Old/a.jpg": "aaaa", "Old/b.jpg": "bbbb", "Old/c.jpg": "cccc" });
+    const report = await compare(primary, replica);
+    const later = new Date("2026-06-01T00:00:00Z");
+    await utimes(join(primary, "New/a.jpg"), later, later);
+    await writeFile(join(replica, "Old/b.jpg"), "edited");
+    const primaryBefore = await snapshotTree(primary);
+
+    const result = await update(report, APPROVED_WITH_MOVES, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.renamed, [{ from: "Old/c.jpg", to: "New/c.jpg", size: 4 }]);
+    assert.deepEqual(result.notRenamed.map((move) => move.from), ["Old/a.jpg", "Old/b.jpg"]);
+    assert.match(result.notRenamed[0]!.reason, /changed .* since the comparison/);
+    assert.equal(await readFile(join(replica, "Old/a.jpg"), "utf8"), "aaaa");
+    assert.equal(await readFile(join(replica, "Old/b.jpg"), "utf8"), "edited");
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("never replaces a file that has appeared at a moved file's new path since the comparison", async () => {
+    const primary = await makeTree({ "New/a.jpg": "aaaa" });
+    const replica = await makeTree({ "Old/a.jpg": "aaaa" });
+    const report = await compare(primary, replica);
+    await mkdir(join(replica, "New"));
+    await writeFile(join(replica, "New/a.jpg"), "someone else's");
+
+    const result = await update(report, APPROVED_WITH_MOVES, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.renamed, []);
+    assert.match(result.notRenamed[0]!.reason, /already has a file at its new path/);
+    assert.equal(await readFile(join(replica, "New/a.jpg"), "utf8"), "someone else's");
+    assert.equal(await readFile(join(replica, "Old/a.jpg"), "utf8"), "aaaa");
+  });
+
+  it("refuses, writing nothing, a move whose path would lead outside the Replica or into sync-drive's own folders", async () => {
+    for (const [side, path] of [["from", "../escape.jpg"], ["to", "sync-drive Holding Area/a.jpg"]] as const) {
+      const primary = await makeTree({ "New/a.jpg": "aaaa" });
+      const replica = await makeTree({ "Old/a.jpg": "aaaa" });
+      const replicaBefore = await snapshotTree(replica);
+      const report = await compare(primary, replica);
+      report.moves.moves[0]![side] = path;
+
+      await assert.rejects(update(report, APPROVED_WITH_MOVES, { primary, replica, copier: new MacFileCopier() }), /nothing was written/);
+      assert.deepEqual(await snapshotTree(replica), replicaBefore);
+    }
+  });
+
+  it("renames moves after the deletions, so a deleted file is out of the way of a moved folder of the same name", async () => {
+    // "Projects" was a file on the Replica; on the Primary it is now a folder, holding a moved file.
+    const primary = await makeTree({ "Projects/a.jpg": "aaaa" });
+    const replica = await makeTree({ "Projects": "old file", "Old/a.jpg": "aaaa" });
+
+    const result = await compareAndUpdate(primary, replica, { update: true, moves: true, deletions: true });
+
+    assert.deepEqual(result.moved, [{ path: "Projects", size: 8 }]);
+    assert.deepEqual(result.renamed, [{ from: "Old/a.jpg", to: "Projects/a.jpg", size: 4 }]);
   });
 });
 

@@ -3,6 +3,7 @@ import {
   compare,
   findPairedDrives,
   makeSection,
+  nothingDone,
   pair,
   readHoldingArea,
   readPairing,
@@ -19,13 +20,15 @@ import {
 } from "../engine/index.ts";
 import { fileCount, formatSize } from "../format.ts";
 import {
-  hasDeletionsStep,
   NO_FILES,
+  reviewSteps,
   totalsOf,
   totalsOfFiles,
+  totalsOfMoves,
   type CopiesState,
   type DeletionsState,
   type FlowState,
+  type MovesState,
   type Review,
   type SummaryState,
 } from "./view.ts";
@@ -149,8 +152,8 @@ export class Flow {
       const drives = await findPairedDrives(pairing, this.#deps.volumes);
       const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint);
       if (comparison !== this.#comparisonGeneration) return;
-      const { new: newFiles, changed, deleted } = report;
-      if (newFiles.count + changed.count + deleted.count === 0) {
+      const { new: newFiles, changed, moves, deleted } = report;
+      if (newFiles.count + changed.count + moves.count + deleted.count === 0) {
         this.#set({ step: "start", pairing, notice: "The Replica matches the Primary. Nothing to update." });
         return;
       }
@@ -172,9 +175,11 @@ export class Flow {
           drives,
           new: newFiles,
           changed,
+          moves,
           deleted,
           holdingArea: totalsOf(held),
           copiesApproved: false,
+          movesApproved: false,
           deletionsApproved: false,
         },
       });
@@ -191,6 +196,13 @@ export class Flow {
     this.#set({ step: "copies", review: { ...state.review, copiesApproved: approved } });
   }
 
+  /** On Moves: gives or withdraws the one all-or-nothing Approval for renaming the moved files on the Replica. */
+  approveMoves(approved: boolean): void {
+    const state = this.#state;
+    if (state.step !== "moves") return;
+    this.#set({ step: "moves", review: { ...state.review, movesApproved: approved } });
+  }
+
   /** On Deletions: gives or withdraws the one all-or-nothing Approval for the deletions, separate from the copies. */
   approveDeletions(approved: boolean): void {
     const state = this.#state;
@@ -198,20 +210,28 @@ export class Flow {
     this.#set({ step: "deletions", review: { ...state.review, deletionsApproved: approved } });
   }
 
-  /** Moves on to the next review step, keeping the decisions made. Deletions is skipped when there is nothing to delete. */
+  /**
+   * Moves on to the next review step, keeping the decisions made. Moves and Deletions are skipped
+   * when there is nothing to move or delete.
+   */
   next(): void {
-    const state = this.#state;
-    if (!isReviewing(state) || state.step === "summary") return;
-    const { review } = state;
-    this.#set(state.step === "copies" && hasDeletionsStep(review) ? { step: "deletions", review } : summaryOf(review));
+    this.#step(+1);
   }
 
   /** Goes back to the previous review step, keeping the decisions made. */
   back(): void {
+    this.#step(-1);
+  }
+
+  /** Goes `by` review steps forward or back, staying put at either end. */
+  #step(by: 1 | -1): void {
     const state = this.#state;
-    if (!isReviewing(state) || state.step === "copies") return;
+    if (!isReviewing(state)) return;
     const { review } = state;
-    this.#set(state.step === "summary" && hasDeletionsStep(review) ? { step: "deletions", review } : { step: "copies", review });
+    const steps = reviewSteps(review);
+    const step = steps[steps.indexOf(state.step) + by];
+    if (step === undefined) return;
+    this.#set(step === "summary" ? summaryOf(review) : { step, review });
   }
 
   /**
@@ -288,7 +308,7 @@ export class Flow {
     const report = this.#report;
     if (state.step !== "summary" || report === undefined) return;
     const { review, apply } = state;
-    if (apply.copy.count === 0 && apply.moveToHoldingArea.count === 0) return;
+    if (apply.copy.count === 0 && apply.renameOnReplica.count === 0 && apply.moveToHoldingArea.count === 0) return;
     // Apply writes only to the drives that were compared: check they are still the ones connected.
     const gone = await this.#whyDrivesGone(review.pairing, review.drives);
     if (this.#state !== state) return;
@@ -310,27 +330,32 @@ export class Flow {
       }
     }
     this.#discardComparison();
-    this.#set({ step: "updating", copying: apply.copy, moving: apply.moveToHoldingArea });
+    this.#set({ step: "updating", copying: apply.copy, renaming: apply.renameOnReplica, moving: apply.moveToHoldingArea });
     let done: UpdateResult;
     let error: string | undefined;
     try {
-      done = await update(approvedPart(report, review), { update: true, deletions: review.deletionsApproved }, {
+      done = await update(approvedPart(report, review), { update: true, moves: review.movesApproved, deletions: review.deletionsApproved }, {
         primary: review.drives.primary.mountPoint,
         replica: review.drives.replica.mountPoint,
         copier: this.#deps.copier,
       });
     } catch (stopped) {
       // Stopped partway: still say exactly what it did first.
-      done = stopped instanceof UpdateStoppedError ? stopped.result : { copied: [], failed: [], moved: [], notMoved: [] };
+      done = stopped instanceof UpdateStoppedError ? stopped.result : nothingDone();
       error = (stopped as Error).message;
     }
     const handled = totalsOf(totalsOfFiles(done.moved), totalsOfFiles(done.notMoved));
     const leftOnReplica = { count: review.deleted.count - handled.count, totalSize: review.deleted.totalSize - handled.totalSize };
+    const renamedOrNot = totalsOf(totalsOfMoves(done.renamed), totalsOfMoves(done.notRenamed));
+    const movesLeftAtOldPaths = { count: review.moves.count - renamedOrNot.count, totalSize: review.moves.totalSize - renamedOrNot.totalSize };
     this.#set({
       step: "result",
       pairing: review.pairing,
       copied: done.copied,
       failed: done.failed,
+      renamed: done.renamed,
+      notRenamed: done.notRenamed,
+      movesLeftAtOldPaths,
       moved: done.moved,
       notMoved: done.notMoved,
       leftOnReplica,
@@ -381,16 +406,20 @@ async function refusals(report: Report, drives: PairedDrives): Promise<string[]>
 }
 
 /** Whether the app is on one of the review steps, where the owner makes the decisions. */
-function isReviewing(state: FlowState): state is CopiesState | DeletionsState | SummaryState {
-  return state.step === "copies" || state.step === "deletions" || state.step === "summary";
+function isReviewing(state: FlowState): state is CopiesState | MovesState | DeletionsState | SummaryState {
+  return state.step === "copies" || state.step === "moves" || state.step === "deletions" || state.step === "summary";
 }
 
 /** The Summary for the decisions in `review`. */
 function summaryOf(review: Review): SummaryState {
   const copy = review.copiesApproved ? totalsOf(review.new, review.changed) : NO_FILES;
+  const moves = totalsOf(review.moves);
+  const renames = review.movesApproved
+    ? { renameOnReplica: moves, leaveAtOldPaths: NO_FILES }
+    : { renameOnReplica: NO_FILES, leaveAtOldPaths: moves };
   const deleted = totalsOf(review.deleted);
   const apply = review.deletionsApproved
-    ? { copy, moveToHoldingArea: deleted, deleteFromHoldingArea: review.holdingArea, leaveOnReplica: NO_FILES }
-    : { copy, moveToHoldingArea: NO_FILES, deleteFromHoldingArea: NO_FILES, leaveOnReplica: deleted };
+    ? { copy, ...renames, moveToHoldingArea: deleted, deleteFromHoldingArea: review.holdingArea, leaveOnReplica: NO_FILES }
+    : { copy, ...renames, moveToHoldingArea: NO_FILES, deleteFromHoldingArea: NO_FILES, leaveOnReplica: deleted };
   return { step: "summary", review, apply };
 }

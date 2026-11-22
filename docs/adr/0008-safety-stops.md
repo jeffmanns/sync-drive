@@ -27,5 +27,5 @@ An Update can go badly wrong if something is wrong with the Primary, for example
 ## Consequences
 
 - A Primary that was only partly read is not caught by the Safety stop when the missing part is small. The scan guards against that separately: a folder it cannot read stops the comparison rather than looking empty.
-- Until move detection (#8), a moved folder counts as deleted at its old path. Reorganising many folders between Updates can trip the Safety stop; the override is the way through.
+- Until move detection (#8), a moved folder counts as deleted at its old path. Reorganising many folders between Updates can trip the Safety stop; the override is the way through. Since #8, confirmed Moves are not counted (ADR 0011). Only ambiguous ones, which fall back to new plus deleted, still are.
 - With `--only` (#15), the Safety stop is measured against that folder's contents, and the 100-file minimum still applies.

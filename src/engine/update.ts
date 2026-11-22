@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { BigIntStats } from "node:fs";
 import { lstat, mkdir, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative } from "node:path";
-import type { FileEntry, Report } from "./report.ts";
+import type { FileEntry, Move, Report } from "./report.ts";
 import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
+import { sameDate } from "./same-date.ts";
 import { checkFreeSpace } from "./safety-stops.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
@@ -13,6 +14,12 @@ import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 export interface Approvals {
   /** The main approval: copy the report's new and changed files to the Replica. */
   update: boolean;
+  /**
+   * The separate Approval for moves: rename the report's moved files on the Replica to their new
+   * paths. Has no effect without the main approval. Without it, moved files stay at their old
+   * paths and nothing is copied to the new ones.
+   */
+  moves: boolean;
   /**
    * The separate confirmation for deletions: empty the previous Holding area, then move the
    * report's deleted files into it. Has no effect without the main approval.
@@ -56,14 +63,23 @@ export interface FailedFile extends FileEntry {
   reason: string;
 }
 
+/** A moved file the Update did not rename, and why. It is still at its old path on the Replica. */
+export interface FailedMove extends Move {
+  reason: string;
+}
+
 /**
  * What an Update did. Every new and changed file in the report ends up in exactly one of `copied`
  * and `failed`; with deletions confirmed, every deleted file ends up in exactly one of `moved` and
- * `notMoved`.
+ * `notMoved`; with moves approved, every move ends up in exactly one of `renamed` and `notRenamed`.
  */
 export interface UpdateResult {
   copied: FileEntry[];
   failed: FailedFile[];
+  /** Moved files renamed to their new paths on the Replica. */
+  renamed: Move[];
+  /** Moved files left at their old paths on the Replica. */
+  notRenamed: FailedMove[];
   /** Deleted files moved into the Holding area. */
   moved: FileEntry[];
   /** Deleted files left where they were on the Replica. */
@@ -75,7 +91,9 @@ const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Upda
 
 /**
  * Brings the Replica up to date with `report`. If `approvals.deletions` is also given and the
- * report has deleted files, empties the previous Holding area and moves them into it. Then copies
+ * report has deleted files, empties the previous Holding area and moves them into it. If
+ * `approvals.moves` is given, renames the report's moved files on the Replica to their new paths,
+ * each only if it and its Primary file still match by size and date. Then copies
  * the new and changed files from the Primary, checking each copy against its Primary file by
  * checksum before renaming it into place; a copy that does not match is discarded and listed as
  * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
@@ -84,7 +102,7 @@ const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Upda
  * `UpdateStoppedError` saying what had been done before it stopped.
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
-  const result: UpdateResult = { copied: [], failed: [], moved: [], notMoved: [] };
+  const result = nothingDone();
   if (!approvals.update) return result;
   try {
     await updateInto(result, report, approvals, setup);
@@ -92,6 +110,11 @@ export async function update(report: Report, approvals: Approvals, setup: Update
     throw new UpdateStoppedError(error, result);
   }
   return result;
+}
+
+/** The result of an Update that has done nothing yet. */
+export function nothingDone(): UpdateResult {
+  return { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [] };
 }
 
 /**
@@ -113,7 +136,12 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   await assertSeparate(setup.primary, setup.replica);
   const files = [...report.new.files, ...report.changed.files];
   const deletions = approvals.deletions ? report.deleted.files : [];
+  const moves = approvals.moves ? report.moves.moves : [];
   for (const file of [...files, ...deletions]) assertInsideDrive(file.path);
+  for (const move of moves) {
+    assertInsideDrive(move.from);
+    assertInsideDrive(move.to);
+  }
   if (report.safetyStop && !approvals.overrideSafetyStop) {
     throw new Error("The Safety stop applies and was not overridden; nothing was written");
   }
@@ -146,6 +174,30 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     }
   }
   for (const file of result.moved) await removeEmptiedFolders(file.path, setup);
+  // After the deletions, so a deleted file is out of the way of a move to a folder of its name.
+  for (const move of moves) {
+    try {
+      // A rename stays on the Replica: nothing is copied, and the file keeps all its metadata.
+      const [onPrimary, onReplica] = await Promise.all([
+        lstat(join(setup.primary, move.to), { bigint: true }),
+        lstat(join(setup.replica, move.from), { bigint: true }),
+      ]);
+      // The checksums matched at compare time. If either file has changed since, it may no longer be
+      // the same file, so it is left for the next comparison.
+      if (!onPrimary.isFile() || !onReplica.isFile() || onPrimary.size !== onReplica.size || !sameDate(onPrimary.mtimeNs, onReplica.mtimeNs)) {
+        throw new Error("it changed on the Primary or the Replica since the comparison");
+      }
+      const destination = join(setup.replica, move.to);
+      await mkdir(dirname(destination), { recursive: true });
+      // rename replaces whatever is at the destination, so make sure nothing is.
+      if (await exists(destination)) throw new Error("the Replica already has a file at its new path");
+      await rename(join(setup.replica, move.from), destination);
+      result.renamed.push(move);
+    } catch (error) {
+      result.notRenamed.push({ ...move, reason: (error as Error).message });
+    }
+  }
+  for (const move of result.renamed) await removeEmptiedFolders(move.from, setup);
   const hasher = setup.hasher ?? new Sha256Hasher();
   const incoming = join(setup.replica, INCOMING_FOLDER);
   // Anything already here is a temporary copy left by an interrupted Update.
