@@ -18,6 +18,7 @@ Single-context: one root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain
 - Open a pull request that links its ticket (`Closes #N`). Never commit ticket work straight to main.
 - CI (GitHub Actions, macOS runner) must be green before merging.
 - The owner reviews and approves every PR before it is merged. Never merge without the owner's go-ahead.
+- The last step before merging, once the work, review, comments and docs are done: run `node scripts/context-usage.ts` and post its two lines as a comment on the ticket and on its PR.
 - PRs that write, rename, or delete on the Replica need the closest review. Call out those code paths in the PR body.
 - When the owner settles a decision during a ticket that later tickets must respect, record it in that ticket's PR: a new term in `GLOSSARY.md`, a rule or trade-off in an ADR (`docs/adr/`). Then comment on each open ticket the decision changes, pointing to the ADR (e.g. "See ADR 0003: compare takes no drive paths").
 - Priorities, in order: data accuracy, then performance. The Primary is never written to.
