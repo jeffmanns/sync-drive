@@ -8,6 +8,7 @@ An Update moves files no longer on the Primary into the Holding area, after a co
 - **Confirming deletions first empties the previous Holding area, then moves the new deletions in.** Its `READ ME.txt` is rewritten with the date of that Update.
 - **The warning comes right before the deletions question.** It says how many files the Holding area holds and that confirming deletes them permanently. It is not shown when there are no deletions to confirm, since nothing will be emptied.
 - **Comparing, declining, or an Update with nothing deleted never empties it.**
+- **Approving deletes only what the warning showed.** The warning and the Summary use the Holding area as read at compare time. Before an Update whose deletions are approved writes anything, it reads the Holding area again. If the count or size has changed, the Update writes nothing and the owner compares again. Settled by the owner during #27.
 
 ## Considered Options
 
