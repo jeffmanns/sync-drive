@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { open, readFile, realpath, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
 import { MacRemounter } from "../src/macos/remounter.ts";
 import { MacVolumes } from "../src/macos/volume-identity.ts";
@@ -65,5 +67,16 @@ describe("Remounting on macOS", () => {
     }
 
     await writeFile(join(volume.mountPoint, "b.txt"), "written");
+  });
+
+  it("leaves a drive that was already read-only read-only afterwards", async () => {
+    const volume = await drive();
+    const run = promisify(execFile);
+    await run("diskutil", ["unmount", volume.mountPoint]);
+    await run("diskutil", ["mount", "readOnly", "-mountPoint", volume.mountPoint, volume.id]);
+
+    await remounter.normally(await remounter.readOnly(volume));
+
+    await assert.rejects(writeFile(join(volume.mountPoint, "b.txt"), "x"), { code: "EROFS" });
   });
 });

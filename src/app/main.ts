@@ -34,11 +34,11 @@ app.on("web-contents-created", (_event, contents) => {
 
 app.on("window-all-closed", () => app.quit());
 
-let remountedBeforeQuitting = false;
+let quitHeldForUpdate = false;
 app.on("before-quit", (event) => {
-  // Quitting during an Update must not leave the Primary read-only: remount it normally first.
-  if (remountedBeforeQuitting) return;
-  remountedBeforeQuitting = true;
+  // Quitting during an Update must not leave the Primary read-only: stop the Update, and remount it normally, first.
+  if (quitHeldForUpdate) return;
+  quitHeldForUpdate = true;
   event.preventDefault();
   void flow.quit().finally(() => app.quit());
 });

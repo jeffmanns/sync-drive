@@ -12,8 +12,8 @@ const UNMOUNT_ATTEMPTS = 5;
 /** A mounted drive as diskutil reports it. */
 interface Mounted {
   volume: Volume;
-  /** The disk identifier, e.g. `disk4s1`. Used only between unmounting and mounting again. */
-  device: string;
+  /** The drive's disk identifier, e.g. `disk4s1`. Used only between unmounting and mounting again. */
+  diskIdentifier: string;
   /** macOS's own word on whether the drive can be written to: `undefined` when it does not say. */
   writable: boolean | undefined;
 }
@@ -25,6 +25,8 @@ interface Mounted {
  */
 export class MacRemounter implements Remounter {
   readonly #retryDelayMs: number;
+  /** The Volume IDs of the drives this made read-only. A drive that was read-only already is left so. */
+  readonly #madeReadOnly = new Set<string>();
 
   constructor({ retryDelayMs = 500 }: { retryDelayMs?: number } = {}) {
     this.#retryDelayMs = retryDelayMs;
@@ -32,29 +34,36 @@ export class MacRemounter implements Remounter {
 
   async readOnly(volume: Volume): Promise<Volume> {
     const before = await mountedAt(volume);
-    // Already read-only, as macOS confirms: nothing to do.
     if (before.writable === false) return before.volume;
     await this.#unmount(before, { force: false });
     try {
       const after = await mount(before, { readOnly: true });
       // `diskutil mount readOnly` can succeed and still leave a drive writable: only macOS's own word counts.
       if (after.writable !== false) throw new Error("macOS mounted it again but does not confirm it is read-only.");
+      this.#madeReadOnly.add(volume.id);
       return after.volume;
     } catch (error) {
-      await this.#putBack(before).catch(() => {});
-      throw new Error(`${volume.name} could not be remounted read-only: ${messageOf(error)}`, { cause: error });
+      const putBack = await this.#putBack(before).then(
+        () => "",
+        () => " It could not be mounted normally again either: eject it and connect it again.",
+      );
+      throw new Error(`${volume.name} could not be remounted read-only: ${messageOf(error)}${putBack}`, { cause: error });
     }
   }
 
   async normally(volume: Volume): Promise<Volume> {
-    const before = await mountedAt(volume);
-    if (before.writable === true) return before.volume;
+    if (!this.#madeReadOnly.has(volume.id)) return volume;
     try {
-      // Forced only when confirmed read-only: then nothing written to it can be lost.
-      await this.#unmount(before, { force: before.writable === false });
-      const after = await mount(before, { readOnly: false });
-      if (after.writable !== true) throw new Error("macOS mounted it again but does not confirm it can be written to.");
-      return after.volume;
+      const before = await mountedAt(volume);
+      if (before.writable !== true) {
+        // Forced only when confirmed read-only: then nothing written to it can be lost.
+        await this.#unmount(before, { force: before.writable === false });
+        const after = await mount(before, { readOnly: false });
+        if (after.writable !== true) throw new Error("macOS mounted it again but does not confirm it can be written to.");
+        volume = after.volume;
+      }
+      this.#madeReadOnly.delete(volume.id);
+      return volume;
     } catch (error) {
       throw new Error(
         `${volume.name} could not be remounted normally, so it may still be read-only: ${messageOf(error)} Eject it and connect it again.`,
@@ -65,10 +74,10 @@ export class MacRemounter implements Remounter {
 
   /** Mounts `drive` normally again after a failed attempt to make it read-only, wherever it is now. */
   async #putBack(drive: Mounted): Promise<void> {
-    const now = await diskutilPlist(["info", "-plist", drive.device]);
-    if (typeof now.MountPoint === "string" && now.MountPoint !== "") {
-      if (now.WritableVolume === true) return;
-      await this.#unmount(drive, { force: now.WritableVolume === false });
+    const now = await infoOf(drive.diskIdentifier, drive.volume);
+    if (now !== undefined) {
+      if (now.writable === true) return;
+      await this.#unmount(now, { force: now.writable === false });
     }
     await mount(drive, { readOnly: false });
   }
@@ -77,7 +86,7 @@ export class MacRemounter implements Remounter {
   async #unmount(drive: Mounted, { force }: { force: boolean }): Promise<void> {
     for (let attempt = 1; ; attempt++) {
       try {
-        await run("diskutil", ["unmount", ...(force ? ["force"] : []), drive.device]);
+        await run("diskutil", ["unmount", ...(force ? ["force"] : []), drive.diskIdentifier]);
         return;
       } catch (error) {
         if (attempt === UNMOUNT_ATTEMPTS) {
@@ -91,13 +100,13 @@ export class MacRemounter implements Remounter {
 
 /** `volume` as mounted now. Rejects if a different drive, or none, is mounted at its mount point. */
 async function mountedAt(volume: Volume): Promise<Mounted> {
-  const info = await diskutilPlist(["info", "-plist", volume.mountPoint]).catch((error: unknown) => {
+  const mounted = await infoOf(volume.mountPoint, volume).catch((error: unknown) => {
     throw new Error(`${volume.name} is not mounted at ${volume.mountPoint}.`, { cause: error });
   });
-  if (info.VolumeUUID !== volume.id || info.MountPoint !== volume.mountPoint || typeof info.DeviceIdentifier !== "string") {
+  if (mounted === undefined || mounted.volume.mountPoint !== volume.mountPoint) {
     throw new Error(`The drive mounted at ${volume.mountPoint} is not the drive ${volume.name}.`);
   }
-  return { volume, device: info.DeviceIdentifier, writable: writableOf(info) };
+  return mounted;
 }
 
 /**
@@ -106,27 +115,32 @@ async function mountedAt(volume: Volume): Promise<Mounted> {
  * the drive as macOS now reports it, after checking it is still the same drive.
  */
 async function mount(drive: Mounted, { readOnly }: { readOnly: boolean }): Promise<Mounted> {
-  const { volume, device } = drive;
+  const { volume, diskIdentifier } = drive;
   const keepMountPoint = await access(volume.mountPoint).then(
     () => true,
     () => false,
   );
   try {
-    await run("diskutil", ["mount", ...(readOnly ? ["readOnly"] : []), ...(keepMountPoint ? ["-mountPoint", volume.mountPoint] : []), device]);
+    await run("diskutil", ["mount", ...(readOnly ? ["readOnly"] : []), ...(keepMountPoint ? ["-mountPoint", volume.mountPoint] : []), diskIdentifier]);
   } catch (error) {
     throw new Error(`macOS could not mount it again. ${outputOf(error)}`, { cause: error });
   }
-  const info = await diskutilPlist(["info", "-plist", device]);
-  const { VolumeUUID: id, MountPoint: mountPoint } = info;
-  if (id !== volume.id || typeof mountPoint !== "string" || mountPoint === "") {
-    throw new Error(`macOS does not report ${volume.name} mounted again.`);
-  }
-  return { volume: { ...volume, mountPoint }, device, writable: writableOf(info) };
+  const mounted = await infoOf(diskIdentifier, volume);
+  if (mounted === undefined) throw new Error(`macOS does not report ${volume.name} mounted again.`);
+  return mounted;
 }
 
-/** Whether diskutil reports the volume writable: `undefined` when it does not say. */
-function writableOf(info: Record<string, unknown>): boolean | undefined {
-  return typeof info.WritableVolume === "boolean" ? info.WritableVolume : undefined;
+/**
+ * What diskutil reports for `target` (a mount point or disk identifier): the drive `volume` as it is
+ * mounted now, or `undefined` if what is there is not mounted or is a different drive.
+ */
+async function infoOf(target: string, volume: Volume): Promise<Mounted | undefined> {
+  const info = await diskutilPlist(["info", "-plist", target]);
+  const { VolumeUUID: id, MountPoint: mountPoint, DeviceIdentifier: diskIdentifier, WritableVolume: writable } = info;
+  if (id !== volume.id || typeof mountPoint !== "string" || mountPoint === "" || typeof diskIdentifier !== "string") {
+    return undefined;
+  }
+  return { volume: { ...volume, mountPoint }, diskIdentifier, writable: typeof writable === "boolean" ? writable : undefined };
 }
 
 /** What a failed command said, for messages. */
@@ -135,6 +149,7 @@ function outputOf(error: unknown): string {
   return (failed.stderr?.trim() || failed.stdout?.trim() || failed.message || String(error)).replace(/\s+/g, " ");
 }
 
+/** An error's message, for messages. */
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

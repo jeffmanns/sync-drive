@@ -253,7 +253,7 @@ describe("app flow: Approval, Summary and Apply", () => {
     flow.onChange((state) => steps.push(state.step));
     await flow.apply();
 
-    assert.deepEqual([...new Set(steps)], ["updating", "result"]);
+    assert.deepEqual(steps, ["updating", "updating", "updating", "result"]);
     assert.deepEqual(stateOf(flow).copied, [
       { path: "Photos/2026/a.jpg", size: 1_500_000 },
       { path: "Photos/2026/b.jpg", size: 5 },
@@ -506,7 +506,7 @@ describe("app flow: Deletions", () => {
     flow.onChange((state) => steps.push(state.step));
     await flow.apply();
 
-    assert.deepEqual([...new Set(steps)], ["updating", "result"]);
+    assert.deepEqual(steps, ["updating", "updating", "updating", "result"]);
     assert.deepEqual(stateOf(flow).copied, []);
     assert.deepEqual(stateOf(flow).moved, [{ path: "Docs/old.pdf", size: 3 }]);
     assert.deepEqual(stateOf(flow).notMoved, []);
@@ -885,7 +885,7 @@ describe("app flow: the Primary read-only during the Update", () => {
     assert.equal(await readFile(join(replica, "readme.txt"), "utf8"), "changed!");
   });
 
-  it("remounts the Primary normally, once, when the app quits during the Update", async () => {
+  it("on quitting during the Update, stops it first, then remounts the Primary normally", async () => {
     const real = new MacFileCopier();
     let release!: () => void;
     const released = new Promise<void>((resolve) => (release = resolve));
@@ -898,20 +898,26 @@ describe("app flow: the Primary read-only during the Update", () => {
         return real.copy(source, destination);
       },
     };
-    const { flow, remounter, primary } = await pairedMac({ "new.txt": "new" }, {}, blocking);
+    const { flow, remounter, primary } = await pairedMac({ "a.txt": "first", "b.txt": "second" }, {}, blocking);
     await flow.compare();
     flow.approveCopies(true);
     toSummary(flow);
 
     const applying = flow.apply();
     await copyStarted;
-    // Quitting can overlap the Update remounting the Primary itself: still only one remount.
-    await Promise.all([flow.quit(), flow.quit()]);
+    const quitting = Promise.all([flow.quit(), flow.quit()]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    assert.equal(remounter.isReadOnly(primary), false, "remounted normally before the app quits");
+    assert.equal(remounter.isReadOnly(primary), true, "still read-only while the Update is running");
     release();
-    await applying;
+    await quitting;
+
+    assert.equal(stateOf(flow).step, "result", "the Update had stopped before quitting finished");
+    assert.deepEqual(stateOf(flow).copied, [{ path: "a.txt", size: 5 }], "the copy under way finishes");
+    assert.deepEqual(stateOf(flow).failed, [{ path: "b.txt", size: 6, reason: "The app is quitting." }]);
     assert.deepEqual(remounter.log, [`read-only ${primary}`, `normally ${primary}`]);
+    assert.equal(remounter.isReadOnly(primary), false);
+    await applying;
   });
 
   it("quits without remounting anything when no Update is running", async () => {
