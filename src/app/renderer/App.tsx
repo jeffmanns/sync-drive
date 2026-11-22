@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { freeSpaceExplanation, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves } from "../view.ts";
+import { canOverrideSafetyStop, freeSpaceExplanation, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves } from "../view.ts";
 import type {
   Action,
   CopiesState,
@@ -144,15 +144,14 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
 
 function RefusedScreen({ state, send, busy }: ScreenProps<RefusedState>) {
   const { safetyStop, freeSpace } = state;
-  // The Safety stop alone can be overridden, for this one comparison; the free-space check never (ADR 0009).
-  const overridable = safetyStop !== undefined && freeSpace === undefined;
+  const overridable = canOverrideSafetyStop(state);
   return (
     <>
       <h1>The Update is refused</h1>
       {safetyStop !== undefined && <p className="problem">{safetyStopExplanation(safetyStop)}</p>}
       {freeSpace !== undefined && <p className="problem">{freeSpaceExplanation(freeSpace)}</p>}
       <p>Nothing was written to the Replica.</p>
-      {overridable && <SafetyStopOverride stop={safetyStop} send={send} busy={busy} />}
+      {overridable && <SafetyStopOverride stop={state.safetyStop} send={send} busy={busy} />}
       <Buttons>
         <button className={overridable ? undefined : "primary"} onClick={() => send({ type: "restart" })} disabled={busy}>Back to Start</button>
       </Buttons>

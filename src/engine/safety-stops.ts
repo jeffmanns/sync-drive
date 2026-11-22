@@ -1,9 +1,6 @@
 import { statfs } from "node:fs/promises";
 import type { Report, Totals } from "./report.ts";
-
 import { SAFETY_STOP_MIN_FILES, SAFETY_STOP_PERCENT } from "./safety-stop-limits.ts";
-
-export { SAFETY_STOP_MIN_FILES, SAFETY_STOP_PERCENT };
 
 /**
  * Whether the Safety stop applies: the `deleted` files are more than `SAFETY_STOP_PERCENT` of the

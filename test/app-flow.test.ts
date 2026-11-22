@@ -457,14 +457,14 @@ describe("app flow: refusals", () => {
     assert.equal(stateOf(flow).step, "copies");
   });
 
-  it("does not unlock with a wrong number, saying so, and writes nothing", async () => {
+  it("does not override with a wrong number, saying so, and writes nothing", async () => {
     const { flow, replica } = await pairedPastTheSafetyStop();
     const replicaBefore = await snapshotTree(replica);
     await flow.compare();
 
     for (const typed of ["100", "102", "", "1O1", "101.0", "+101", "yes", "200"]) {
       flow.overrideSafetyStop(typed);
-      assert.equal(stateOf(flow).step, "refused", `"${typed}" must not unlock it`);
+      assert.equal(stateOf(flow).step, "refused", `"${typed}" must not override it`);
     }
 
     assert.match(stateOf(flow).safetyStop.error, /not the number of deletions/);
@@ -494,6 +494,31 @@ describe("app flow: refusals", () => {
     await relaunched.compare();
 
     assert.equal(stateOf(relaunched).step, "refused");
+  });
+
+  it("forgets the override, back on Start, when a drive disconnects after it", async () => {
+    const { flow, volumes, replica } = await pairedPastTheSafetyStop();
+    await flow.compare();
+    flow.overrideSafetyStop("101");
+
+    volumes.disconnect(replica);
+    await flow.drivesChanged();
+    volumes.connect(replica, "REPLICA-ID");
+    assert.equal(stateOf(flow).step, "start");
+    await flow.compare();
+
+    assert.equal(stateOf(flow).step, "refused");
+  });
+
+  it("discards the refusal, back on Start, when a drive disconnects on the refusal screen", async () => {
+    const { flow, volumes, replica } = await pairedPastTheSafetyStop();
+    await flow.compare();
+
+    volumes.disconnect(replica);
+    await flow.drivesChanged();
+
+    assert.equal(stateOf(flow).step, "start");
+    assert.match(stateOf(flow).error, /Replica .* is not connected/);
   });
 
   it("stops on the refusal screen when the Replica lacks the free space, naming the space needed and free and the Holding area's size", async () => {

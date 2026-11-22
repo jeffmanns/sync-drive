@@ -20,6 +20,7 @@ import {
   type VolumeIdentity,
 } from "../engine/index.ts";
 import {
+  canOverrideSafetyStop,
   NO_FILES,
   reviewSteps,
   totalsOf,
@@ -167,7 +168,8 @@ export class Flow {
       const space = newFiles.count + changed.count > 0 ? await checkFreeSpace(report, drives.replica.mountPoint) : undefined;
       // Read now, for the warning before the deletions Approval: approving them deletes these for good.
       // Also named when the Replica lacks room, as the space that deleting it would free.
-      const held = deleted.count > 0 || space?.enough === false ? totalsOf(await readHoldingArea(drives.replica.mountPoint)) : NO_FILES;
+      const noRoom = space?.enough === false;
+      const held = deleted.count > 0 || noRoom ? totalsOf(await readHoldingArea(drives.replica.mountPoint)) : NO_FILES;
       if (comparison !== this.#comparisonGeneration) return;
       this.#report = report;
       const review: Review = {
@@ -183,12 +185,12 @@ export class Flow {
         deletionsApproved: false,
         safetyStopOverridden: false,
       };
-      if (report.safetyStop || space?.enough === false) {
+      if (report.safetyStop || noRoom) {
         this.#set({
           step: "refused",
           review,
           ...(report.safetyStop ? { safetyStop: { deleted: totalsOf(deleted), replica: report.replica } } : {}),
-          ...(space?.enough === false ? { freeSpace: { needed: space.needed, free: space.free, holdingArea: held } } : {}),
+          ...(noRoom ? { freeSpace: { needed: space.needed, free: space.free, holdingArea: held } } : {}),
         });
         return;
       }
@@ -206,8 +208,8 @@ export class Flow {
    */
   overrideSafetyStop(typed: string): void {
     const state = this.#state;
-    if (state.step !== "refused" || state.safetyStop === undefined || state.freeSpace !== undefined) return;
-    if (!isCount(typed, state.safetyStop.deleted.count)) {
+    if (state.step !== "refused" || !canOverrideSafetyStop(state)) return;
+    if (!isNumberOfDeletions(typed, state.safetyStop.deleted.count)) {
       this.#set({
         ...state,
         safetyStop: { ...state.safetyStop, error: "That is not the number of deletions. Nothing is overridden." },
@@ -469,7 +471,7 @@ function approvedPart(report: Report, review: Review): Report {
  * Whether the owner typed exactly `count`: digits only, with or without thousands separators
  * ("1234" or "1,234"), and spaces around them.
  */
-function isCount(typed: string, count: number): boolean {
+function isNumberOfDeletions(typed: string, count: number): boolean {
   const text = typed.trim();
   return text === String(count) || text === count.toLocaleString("en-US");
 }

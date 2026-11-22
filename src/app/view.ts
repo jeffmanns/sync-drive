@@ -293,6 +293,14 @@ export function reviewSteps(review: Review): ReviewStep[] {
 /** The steps on which the owner reviews the comparison and makes the decisions. */
 export type ReviewStep = "copies" | "moves" | "deletions" | "summary";
 
+/**
+ * Whether the refusal can be overridden: only when the Safety stop is the sole refusal. The
+ * free-space check never can be (ADR 0009).
+ */
+export function canOverrideSafetyStop(state: RefusedState): state is RefusedState & { safetyStop: SafetyStopRefusal } {
+  return state.safetyStop !== undefined && state.freeSpace === undefined;
+}
+
 /** What the refusal screen says about the Safety stop: the deleted files' share of the Replica, by count and by size. */
 export function safetyStopExplanation({ deleted, replica }: SafetyStopRefusal): string {
   return (
