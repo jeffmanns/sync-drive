@@ -76,7 +76,7 @@ function PairingScreen({ state, send, busy }: ScreenProps<PairingState>) {
       <p>Choose the top level of each drive, for example /Volumes/Photos. sync-drive recognises them by volume ID, so renaming a drive later does not matter.</p>
       <dl className="drives">
         <DriveChoice role="Primary" note="The everyday drive. sync-drive only ever reads it." path={state.primary} onChoose={() => send({ type: "choose", role: "primary" })} busy={busy} />
-        <DriveChoice role="Replica" note="The backup drive that Updates bring up to date." path={state.replica} onChoose={() => send({ type: "choose", role: "replica" })} busy={busy} />
+        <DriveChoice role="Replica" note="The drive that Updates make an exact copy of the Primary." path={state.replica} onChoose={() => send({ type: "choose", role: "replica" })} busy={busy} />
       </dl>
       {replacing !== undefined && (
         <label className="confirm">

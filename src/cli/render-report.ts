@@ -1,8 +1,6 @@
 import type { Report, Section } from "../engine/index.ts";
 import { fileCount, formatSize } from "../format.ts";
 
-export { fileCount, formatSize };
-
 export interface RenderOptions {
   /** Show every file under its folder, not just the folder totals. */
   list: boolean;

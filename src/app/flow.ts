@@ -36,7 +36,7 @@ export class Flow {
   #state: FlowState = { step: "pairing" };
   readonly #listeners = new Set<(state: FlowState) => void>();
   /** Counts comparisons, so the result of one that has since been discarded is ignored. */
-  #comparison = 0;
+  #comparisonGeneration = 0;
   /** The Report of the comparison under review, exactly as `compare()` returned it, for Apply. */
   #report: Report | undefined;
 
@@ -44,6 +44,7 @@ export class Flow {
     this.#deps = deps;
   }
 
+  /** What the screens show now. */
   get state(): FlowState {
     return this.#state;
   }
@@ -129,12 +130,12 @@ export class Flow {
     if (state.step !== "start") return;
     const { pairing } = state;
     this.#discardComparison();
-    const comparison = this.#comparison;
+    const comparison = this.#comparisonGeneration;
     this.#set({ step: "comparing", pairing });
     try {
       const drives = await findPairedDrives(pairing, this.#deps.volumes);
       const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint);
-      if (comparison !== this.#comparison) return;
+      if (comparison !== this.#comparisonGeneration) return;
       const { new: newFiles, changed, deleted } = report;
       if (newFiles.count + changed.count + deleted.count === 0) {
         this.#set({ step: "start", pairing, notice: "The Replica matches the Primary. Nothing to update." });
@@ -142,7 +143,7 @@ export class Flow {
       }
       // Both stops are checked before any Approval, so a refused Update asks nothing (ADR 0008).
       const reasons = await refusals(report, drives);
-      if (comparison !== this.#comparison) return;
+      if (comparison !== this.#comparisonGeneration) return;
       if (reasons.length > 0) {
         this.#set({ step: "refused", pairing, reasons });
         return;
@@ -160,7 +161,7 @@ export class Flow {
         },
       });
     } catch (error) {
-      if (comparison !== this.#comparison) return;
+      if (comparison !== this.#comparisonGeneration) return;
       this.#set({ step: "start", pairing, error: (error as Error).message });
     }
   }
@@ -209,11 +210,20 @@ export class Flow {
     if (state.step === "comparing" || state.step === "refused") pairing = state.pairing;
     else if (state.step === "copies" || state.step === "summary") ({ pairing, drives } = state.review);
     else return;
-    const comparison = this.#comparison;
+    const comparison = this.#comparisonGeneration;
     const gone = await this.#whyDrivesGone(pairing, drives);
-    if (gone === undefined || comparison !== this.#comparison) return;
+    if (gone === undefined || comparison !== this.#comparisonGeneration) return;
+    this.#discardForGoneDrives(pairing, gone);
+  }
+
+  /** Discards the comparison and its decisions because of `gone`, back on Start. */
+  #discardForGoneDrives(pairing: Pairing, gone: string): void {
     this.#discardComparison();
-    this.#set({ step: "start", pairing, error: `${gone} ${DISCARDED}` });
+    this.#set({
+      step: "start",
+      pairing,
+      error: `${gone} The comparison and its decisions were discarded. Compare again once both drives are connected.`,
+    });
   }
 
   /**
@@ -235,7 +245,7 @@ export class Flow {
 
   /** Forgets the current comparison and its decisions, and ignores any comparison still running. */
   #discardComparison(): void {
-    this.#comparison += 1;
+    this.#comparisonGeneration += 1;
     this.#report = undefined;
   }
 
@@ -251,11 +261,8 @@ export class Flow {
     // Apply writes only to the drives that were compared: check they are still the ones connected.
     const gone = await this.#whyDrivesGone(review.pairing, review.drives);
     if (this.#state !== state) return;
+    if (gone !== undefined) return this.#discardForGoneDrives(review.pairing, gone);
     this.#discardComparison();
-    if (gone !== undefined) {
-      this.#set({ step: "start", pairing: review.pairing, error: `${gone} ${DISCARDED}` });
-      return;
-    }
     this.#set({ step: "updating", copying: state.apply.copy });
     const base = { step: "result", pairing: review.pairing, leftOnReplica: review.deleted } as const;
     try {
@@ -271,8 +278,6 @@ export class Flow {
   }
 }
 
-const DISCARDED = "The comparison and its decisions were discarded. Compare again once both drives are connected.";
-
 /** Why an Update of `report` must be refused, if it must: the Safety stop, and the free-space check. */
 async function refusals(report: Report, drives: PairedDrives): Promise<string[]> {
   const reasons: string[] = [];
@@ -282,8 +287,7 @@ async function refusals(report: Report, drives: PairedDrives): Promise<string[]>
       `The Safety stop applies: ${fileCount(deleted.count)} (${formatSize(deleted.totalSize)}) would go into the Holding area, ` +
         `more than ${SAFETY_STOP_PERCENT}% of the Replica. That often means something is wrong with the Primary: ` +
         `it is failing, was only partly read, or was erased. Check the Primary first. ` +
-        `This version of the app cannot go past the Safety stop. If you really did delete or move these files, ` +
-        `\`sync-drive update --allow-mass-deletion\` in Terminal can, for that one Update.`,
+        `This version of the app cannot go past the Safety stop.`,
     );
   }
   if (report.new.count + report.changed.count > 0) {
@@ -296,7 +300,7 @@ async function refusals(report: Report, drives: PairedDrives): Promise<string[]>
           (held.count > 0
             ? `The Holding area on the Replica holds ${formatSize(held.totalSize)} from the previous Update. Deleting it frees that space, ` +
               `but its files are then gone for good, so first copy back to the Primary any you want to keep. `
-            : `The Replica needs a larger drive, or files other than the backup removed from it. `) +
+            : `The Replica needs a larger drive, or files other than those copied from the Primary removed from it. `) +
           `Then compare again.`,
       );
     }

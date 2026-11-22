@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { after, describe, it } from "node:test";
+import { after, afterEach, describe, it } from "node:test";
 import { Flow } from "../src/app/flow.ts";
 import { compare, type FileCopier } from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
@@ -9,6 +9,22 @@ import { FakeVolumes } from "./helpers/fake-volumes.ts";
 import { makeDiskImageTree, makeTree, removeTrees, snapshotTree, type TreeSpec } from "./helpers/trees.ts";
 
 after(removeTrees);
+
+/** Every Primary a test made, with its snapshot from before the flow saw it. */
+const primaries: { path: string; before: string[] }[] = [];
+
+/** Makes a Primary with `spec`, which every test then checks was never written to. */
+async function makePrimary(spec: TreeSpec = {}): Promise<string> {
+  const path = await makeTree(spec);
+  primaries.push({ path, before: await snapshotTree(path) });
+  return path;
+}
+
+afterEach(async () => {
+  for (const { path, before } of primaries.splice(0)) {
+    assert.deepEqual(await snapshotTree(path), before, "the Primary must never be written to");
+  }
+});
 
 /** A Mac with its own place for the Pairing and its own connected drives, and the app's flow on it. */
 async function testMac(copier: FileCopier = new MacFileCopier()) {
@@ -35,7 +51,7 @@ describe("app flow: opening", () => {
 describe("app flow: Pairing", () => {
   it("pairs the chosen drives, saves the Pairing, and moves on to Start", async () => {
     const mac = await testMac();
-    const primary = await makeTree();
+    const primary = await makePrimary();
     const replica = await makeTree();
     mac.volumes.connect(primary, "PRIMARY-ID");
     mac.volumes.connect(replica, "REPLICA-ID");
@@ -52,7 +68,7 @@ describe("app flow: Pairing", () => {
 
   it("stays on Pairing, saying why and saving nothing, when both choices are the same drive", async () => {
     const mac = await testMac();
-    const drive = await makeTree();
+    const drive = await makePrimary();
     mac.volumes.connect(drive, "SAME-ID");
     const flow = await mac.open();
 
@@ -69,7 +85,7 @@ describe("app flow: Pairing", () => {
 /** A Mac with two drives holding these trees, connected and paired, and the flow opened on Start. */
 async function pairedMac(primarySpec: TreeSpec = {}, replicaSpec: TreeSpec = {}, copier?: FileCopier) {
   const mac = await testMac(copier);
-  const primary = await makeTree(primarySpec);
+  const primary = await makePrimary(primarySpec);
   const replica = await makeTree(replicaSpec);
   mac.volumes.connect(primary, "PRIMARY-ID");
   mac.volumes.connect(replica, "REPLICA-ID");
@@ -284,7 +300,7 @@ describe("app flow: Approval, Summary and Apply", () => {
   });
 
   it("has no going back once Apply starts, and discards the decisions for the next comparison", async () => {
-    const { flow, primary } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    const { flow, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
     await flow.compare();
     flow.approveCopies(true);
     flow.next();
@@ -295,7 +311,7 @@ describe("app flow: Approval, Summary and Apply", () => {
 
     flow.restart();
     assert.equal(stateOf(flow).step, "start");
-    await writeFile(join(primary, "another.txt"), "more");
+    await writeFile(join(replica, "readme.txt"), "changed on the Replica");
     await flow.compare();
     assert.equal(stateOf(flow).step, "copies");
     assert.equal(stateOf(flow).review.copiesApproved, false);
@@ -344,7 +360,7 @@ describe("app flow: refusals", () => {
 
   it("stops with the refusal when the Replica lacks the free space for the copies, and writes nothing", async () => {
     const mac = await testMac();
-    const primary = await makeTree({ "film.mov": "x".repeat(20_000_000) });
+    const primary = await makePrimary({ "film.mov": "x".repeat(20_000_000) });
     const replica = await makeDiskImageTree({}, { name: "Replica" });
     mac.volumes.connect(primary, "PRIMARY-ID");
     mac.volumes.connect(replica, "REPLICA-ID");
