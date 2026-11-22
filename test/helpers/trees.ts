@@ -117,49 +117,107 @@ async function withRetries<T>(action: () => Promise<T>): Promise<T> {
  * extended attributes (including Finder tags) and a checksum of each file's contents.
  */
 export async function snapshotTree(root: string): Promise<string[]> {
-  const lines: string[] = [];
+  const entries: { full: string; path: string; isDirectory: boolean; isFile: boolean; stats: BigIntStats }[] = [];
   async function walk(dir: string): Promise<void> {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
       const stats = await lstat(full, { bigint: true });
-      const path = relative(root, full);
-      if (entry.isDirectory()) {
-        lines.push(`dir  ${path} ${await metadataOf(full, stats)}`);
-        await walk(full);
-      } else {
-        const hash = entry.isFile()
-          ? createHash("sha256").update(await readFile(full)).digest("hex")
-          : "-";
-        lines.push(`file ${path} size=${stats.size} ${await metadataOf(full, stats)} sha256=${hash}`);
-      }
+      entries.push({ full, path: relative(root, full), isDirectory: entry.isDirectory(), isFile: entry.isFile(), stats });
+      if (entry.isDirectory()) await walk(full);
     }
   }
   await walk(root);
+  const metadata = await metadataOfMany(entries.map(({ full, stats }) => ({ path: full, stats })));
+  const lines: string[] = [];
+  for (const [i, { full, path, isDirectory, isFile, stats }] of entries.entries()) {
+    if (isDirectory) {
+      lines.push(`dir  ${path} ${metadata[i]}`);
+    } else {
+      const hash = isFile ? createHash("sha256").update(await readFile(full)).digest("hex") : "-";
+      lines.push(`file ${path} size=${stats.size} ${metadata[i]} sha256=${hash}`);
+    }
+  }
   return lines.sort();
 }
 
 /** Everything but the contents that a copy must keep: dates, permissions, flags and extended attributes. */
 export async function metadataOf(path: string, stats?: BigIntStats): Promise<string> {
-  const s = stats ?? (await lstat(path, { bigint: true }));
-  const [flags, xattrs] = await Promise.all([fileFlags(path), extendedAttributes(path)]);
-  const attributes = Object.entries(xattrs).map(([name, hex]) => `${name}=${hex}`).join(",");
-  return `mtime=${s.mtimeNs} birthtime=${s.birthtimeNs} mode=${s.mode.toString(8)} flags=${flags} xattrs=[${attributes}]`;
+  const [metadata] = await metadataOfMany([{ path, stats }]);
+  return metadata!;
 }
 
-/** The file's BSD flags (e.g. hidden, locked) in hex, via `stat`. Shortcuts are not followed. */
-async function fileFlags(path: string): Promise<string> {
-  const { stdout } = await run("stat", ["-f", "%Xf", path]);
-  return stdout.trim();
+/**
+ * `metadataOf` for many paths at once. Flags and extended attributes come from one `stat` and one
+ * `xattr` call per batch of paths, not per path: starting processes per file made snapshots slow
+ * enough to overload the CI runner (#43).
+ */
+async function metadataOfMany(items: { path: string; stats?: BigIntStats | undefined }[]): Promise<string[]> {
+  const result: string[] = [];
+  for (let i = 0; i < items.length; i += BATCH) {
+    const batch = items.slice(i, i + BATCH);
+    const paths = batch.map(({ path }) => path);
+    const [flags, xattrs, stats] = await Promise.all([
+      fileFlagsOf(paths),
+      extendedAttributesOf(paths),
+      Promise.all(batch.map(({ path, stats }) => stats ?? lstat(path, { bigint: true }))),
+    ]);
+    for (const [j, s] of stats.entries()) {
+      const attributes = Object.entries(xattrs[j]!).map(([name, hex]) => `${name}=${hex}`).join(",");
+      result.push(
+        `mtime=${s.mtimeNs} birthtime=${s.birthtimeNs} mode=${s.mode.toString(8)} flags=${flags[j]} xattrs=[${attributes}]`,
+      );
+    }
+  }
+  return result;
+}
+
+/** How many paths go to one `stat` or `xattr` call, well within the command-line length limit. */
+const BATCH = 200;
+
+/** Each path's BSD flags (e.g. hidden, locked) in hex, via one `stat` call. Shortcuts are not followed. */
+async function fileFlagsOf(paths: string[]): Promise<string[]> {
+  const { stdout } = await run("stat", ["-f", "%Xf", "--", ...paths]);
+  const flags = stdout.split("\n").slice(0, -1);
+  if (flags.length !== paths.length) throw new Error(`stat gave ${flags.length} results for ${paths.length} paths`);
+  return flags;
 }
 
 /** Every extended attribute of `path` (not following shortcuts), name → value in hex, via `xattr`. */
 export async function extendedAttributes(path: string): Promise<Record<string, string>> {
-  const { stdout } = await run("xattr", ["-s", path]);
-  const names = stdout.split("\n").filter((name) => name !== "").sort();
-  const result: Record<string, string> = {};
-  for (const name of names) {
-    const { stdout: hex } = await run("xattr", ["-s", "-px", name, path]);
-    result[name] = hex.replace(/\s+/g, "");
+  const [xattrs] = await extendedAttributesOf([path]);
+  return xattrs!;
+}
+
+/**
+ * Every extended attribute of each path (not following shortcuts), name → value in hex, via one
+ * `xattr -l -x` call. Its output is a header line per attribute, `<path>: <name>:` (without the
+ * path when there is only one), followed by a hex dump of the value.
+ */
+async function extendedAttributesOf(paths: string[]): Promise<Record<string, string>[]> {
+  const { stdout } = await run("xattr", ["-s", "-l", "-x", ...paths], { maxBuffer: 64 * 1024 * 1024 });
+  const results = paths.map((): Record<string, string> => ({}));
+  // Longest first, so a path that begins with another path plus ": " is matched as itself.
+  const byLength = paths.map((path, index) => ({ path, index })).sort((a, b) => b.path.length - a.path.length);
+  let current: { index: number; name: string } | undefined;
+  for (const line of stdout.split("\n")) {
+    if (line === "") continue;
+    const dump = line.match(/^[0-9A-F]{8}(?: {2}((?:[0-9A-F]{2} ?)+))?/);
+    if (dump !== null) {
+      if (current === undefined) throw new Error(`Unexpected xattr output: ${line}`);
+      results[current.index]![current.name] += (dump[1] ?? "").replace(/ /g, "");
+      continue;
+    }
+    if (!line.endsWith(":")) throw new Error(`Unexpected xattr output: ${line}`);
+    const header = line.slice(0, -1);
+    if (paths.length === 1) {
+      current = { index: 0, name: header };
+    } else {
+      const owner = byLength.find(({ path }) => header.startsWith(`${path}: `));
+      if (owner === undefined) throw new Error(`Unexpected xattr output: ${line}`);
+      current = { index: owner.index, name: header.slice(owner.path.length + 2) };
+    }
+    results[current.index]![current.name] = "";
   }
-  return result;
+  // Names in a fixed order, as before, so equal metadata always prints the same.
+  return results.map((xattrs) => Object.fromEntries(Object.entries(xattrs).sort(([a], [b]) => (a < b ? -1 : 1))));
 }
