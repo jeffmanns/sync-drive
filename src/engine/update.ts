@@ -74,13 +74,13 @@ export interface UpdateResult {
 const NOT_A_FILE = "it is a shortcut (symbolic link) or special file, which Update does not copy yet";
 
 /**
- * Brings the Replica up to date with `report`. Each copy is checked against its Primary file by
- * checksum before it is renamed into place; one that does not match is discarded and listed as
- * failed. If `approvals.deletions` is
- * also given and the report has deleted files, empties the previous Holding area and moves them into
- * it. Then copies the new and changed files from the Primary. Writes nothing unless `approvals.update` is given. Never writes to
- * the Primary. Rejects, having written nothing, when the Safety stop applies without
- * `approvals.overrideSafetyStop`, or when the Replica lacks the free space for the copies (ADR 0008).
+ * Brings the Replica up to date with `report`. If `approvals.deletions` is also given and the
+ * report has deleted files, empties the previous Holding area and moves them into it. Then copies
+ * the new and changed files from the Primary, checking each copy against its Primary file by
+ * checksum before renaming it into place; a copy that does not match is discarded and listed as
+ * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
+ * having written nothing, when the Safety stop applies without `approvals.overrideSafetyStop`, or
+ * when the Replica lacks the free space for the copies (ADR 0008).
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
   const result: UpdateResult = { copied: [], failed: [], moved: [], notMoved: [] };

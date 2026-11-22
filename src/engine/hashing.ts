@@ -9,8 +9,8 @@ import { createReadStream } from "node:fs";
 export interface Hasher {
   /**
    * Reads the regular file at `path` from start to end and resolves to a checksum of its
-   * contents. Two files have the same checksum only if their contents are identical. Never
-   * writes to `path`.
+   * contents. Files with different contents have different checksums, barring a collision
+   * too unlikely to matter. Never writes to `path`.
    */
   checksum(path: string): Promise<string>;
 }

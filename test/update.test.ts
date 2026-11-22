@@ -146,8 +146,8 @@ describe("Update", () => {
       async copy(source, destination) {
         await new MacFileCopier().copy(source, destination);
         if (!source.endsWith("beach.jpg")) return;
-        // One flipped byte, as a failing drive or cable might cause. Size and dates stay the same,
-        // so only the contents can tell the copy apart from the Primary's file.
+        // One wrong byte in the copy. Size and dates stay the same, so only the contents can tell
+        // the copy apart from the Primary's file.
         await writeFile(destination, "the real phota");
         await utimes(destination, mtime, mtime);
       },
