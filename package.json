@@ -8,16 +8,26 @@
     "sync-drive": "dist/cli.js"
   },
   "engines": {
-    "node": ">=26.13.1"
+    "node": ">=24.22.1"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json && npm run build:native",
-    "test": "npm run typecheck && npm run build && node --test \"test/**/*.test.ts\"",
-    "build:native": "mkdir -p dist/libexec && clang -std=c17 -O2 -Wall -Wextra -Werror -o dist/libexec/copy-with-metadata native/copy-with-metadata.c"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/app/renderer",
+    "build": "tsc -p tsconfig.build.json && npm run build:app && npm run build:native",
+    "build:app": "esbuild src/app/renderer/main.tsx --bundle --format=esm --jsx=automatic --define:process.env.NODE_ENV=\\\"production\\\" --outfile=dist/app/renderer/main.js && esbuild src/app/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/app/preload.cjs && cp src/app/renderer/index.html src/app/renderer/styles.css dist/app/renderer/",
+    "build:native": "mkdir -p dist/libexec && clang -std=c17 -O2 -Wall -Wextra -Werror -o dist/libexec/copy-with-metadata native/copy-with-metadata.c",
+    "start": "npm run build && electron .",
+    "test": "npm run typecheck && npm run build && ELECTRON_RUN_AS_NODE=1 electron --test \"test/**/*.test.ts\""
   },
   "devDependencies": {
-    "@types/node": "^26.6.6",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "electron": "^45.4.1",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.65.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "typescript": "^7.0.2"
-  }
+  },
+  "main": "dist/app/main.js"
 }
