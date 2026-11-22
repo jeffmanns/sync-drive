@@ -2,19 +2,19 @@
 
 v1 was specced as a CLI, with a React UI planned for v2 (ADR 0001, spec #1). Halfway through the tickets, the owner moved the UI into v1 and dropped the CLI. The deciding problem is the Report's file lists. In compare, the copies, the deletions and the Holding area there can be hundreds of files, and in a terminal they scroll past. Finding a file again, or going back to an earlier decision, means scrolling back through cluttered output. Data accuracy comes first, and the riskiest moment is an Approval that writes to the Replica. A list you can expand and go back to makes a wrong Approval less likely than scrolled terminal output does.
 
-The remaining tickets with real interaction (#7 per-file Anomaly choices, #11 progress, #20 guided Pairing) would otherwise be built twice, once as terminal prompts and again as screens. The engine already has no terminal I/O: `compare()` returns a Report and `update()` takes Approvals. So the change is limited to the front end. The owner settled this in a grilling session on 2026-11-21, recorded in #26.
+The remaining tickets with real interaction (per-file Anomaly choices, now #31; progress, now #29; guided Pairing, #20) would otherwise be built twice, once as terminal prompts and again as screens. The engine already has no terminal I/O: `compare()` returns a Report and `update()` takes Approvals. So the change is limited to the front end. The owner settled this in a grilling session on 2026-11-21, recorded in #26.
 
 ## The decision
 
 - **The app is an Electron app with React screens.** The engine runs in Electron's main process, unchanged apart from gaining progress reporting. There is no server and no open port.
 - **The app runs on Electron's bundled Node (24.22.1 or later), not the system's Node 26.** The project's Node pin follows it, and the test suite runs on Electron's runtime, so what is tested is what runs. The owner accepted that Electron's Node may trail the latest Node security release. Most of those fixes are in network code that an offline app never calls.
-- **The CLI is deleted** in the PR that brings in the app matching it, so `main` always has a working front end. One front end means each ticket builds its UI once.
-- **The flow is a sequence of steps with Back and Next:** Pairing (only when none is saved), Start, Comparing, a refusal screen (only when a Safety stop or the free-space check refuses), Copies, Anomalies (#7), Deletions, Summary, Apply, Updating, Result.
+- **The CLI is deleted** once the app does everything it does: #26 is the tracer bullet (a copies-only Update), #27 adds Deletions, #28 the refusal screen, and #30 removes the CLI. So `main` always has a full working front end. One front end means each ticket builds its UI once.
+- **The flow is a sequence of steps with Back and Next:** Pairing (only when none is saved), Start, Comparing, a refusal screen (only when a Safety stop or the free-space check refuses), Copies, Anomalies (#31), Deletions, Summary, Apply, Updating, Result.
   - Back and Next work on the review steps, and decisions are remembered when moving between them.
   - Nothing is written until Apply, which follows a summary of exactly what will happen.
   - Once Apply starts, there is no going back.
 - **Decisions live in memory only and belong to the current comparison.** Quitting, a drive disconnecting or a new compare discards them. Decisions kept for a Primary that may have changed since would put accuracy at risk.
-- **Approvals stay all-or-nothing per section.** One Approval covers the copies and another covers the deletions. Unticking single files would make the Replica no longer an exact copy. Leaving something out for good is what an Exclusion is for. Only content-mismatch Anomalies get per-file choices (#7).
+- **Approvals stay all-or-nothing per section.** One Approval covers the copies and another covers the deletions. Unticking single files would make the Replica no longer an exact copy. Leaving something out for good is what an Exclusion is for. Only content-mismatch Anomalies get per-file choices (#31).
 - **No control approves copies and deletions together.** There is no "sync all". The deletions keep their own Approval, with the Holding area warning right before it (ADR 0006).
 - **The Safety stop override is a count the owner types**, offered only on the refusal screen and valid for that one run. This replaces ADR 0008's `--allow-mass-deletion` flag. Everything else in ADR 0008 stands: no questions before the refusal, never remembered, and the engine re-checks before writing.
 - **Progress bars:**
