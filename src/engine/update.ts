@@ -182,11 +182,11 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       `The Replica has ${space.free} bytes free but the copies need ${space.needed}; nothing was written`,
     );
   }
-  const tell = reporter(setup.onProgress);
+  const tellProgress = reporter(setup.onProgress);
   const copies = { copiedBytes: 0, notCopiedBytes: 0, totalBytes: files.reduce((total, file) => total + file.size, 0) };
   /** Reports how far the Update has got, from what `result` says it has done and the bytes in `copies`. */
   const progress = () =>
-    tell({
+    tellProgress({
       deletions: { done: result.moved.length + result.notMoved.length, total: deletions.length },
       moves: { done: result.renamed.length + result.notRenamed.length, total: moves.length },
       copies: { ...copies },

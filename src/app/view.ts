@@ -4,7 +4,7 @@
  * nothing from Node, so the screens can use it too.
  */
 import type { PairedDrives, Pairing } from "../engine/pairing.ts";
-import type { CompareProgress, UpdateProgress } from "../engine/progress.ts";
+import type { CompareProgress, FilesDone, UpdateProgress } from "../engine/progress.ts";
 import type { FileEntry, Move, MoveGroup, MovesSection, Section, Totals, Unreadable } from "../engine/report.ts";
 import { SAFETY_STOP_PERCENT } from "../engine/safety-stop-limits.ts";
 import { fileCount, formatSize } from "../format.ts";
@@ -379,8 +379,19 @@ export function comparingBar(progress: CompareProgress | undefined): ProgressBar
   return { ...capped(progress.scanned, progress.total), label: `Read ${scanned} of about ${progress.total.toLocaleString("en-US")} items` };
 }
 
+/**
+ * What the Updating screen says above its bar, in the order the Update does them: deleted files
+ * moved into the Holding area, then moves renamed. Only for what was approved.
+ */
+export function updatingLines(progress: UpdateProgress | undefined): string[] {
+  if (progress === undefined) return [];
+  const line = (what: string, { done, total }: FilesDone) =>
+    total > 0 ? [`${what}: ${done.toLocaleString("en-US")} of ${fileCount(total)}`] : [];
+  return [...line("Moved into the Holding area", progress.deletions), ...line("Renamed on the Replica", progress.moves)];
+}
+
 /** The Updating bar: bytes copied out of the approved total. None when nothing is copied, or before the Update starts. */
-export function copiesBar(progress: UpdateProgress | undefined): ProgressBar | undefined {
+export function updatingBar(progress: UpdateProgress | undefined): ProgressBar | undefined {
   if (progress === undefined || progress.copies.totalBytes === 0) return undefined;
   const { copiedBytes, notCopiedBytes, totalBytes } = progress.copies;
   return {

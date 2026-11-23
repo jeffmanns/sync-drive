@@ -45,14 +45,14 @@ export async function compare(
   options: CompareOptions = {},
 ): Promise<Report> {
   const isExcluded = exclusionMatcher(options.exclusions ?? []);
-  const report = reporter(options.onProgress);
+  const tellProgress = reporter(options.onProgress);
   const [, , total] = await Promise.all([
     assertFolder("Primary", primary),
     assertFolder("Replica", replica),
     itemTotal(options.itemCounter, primary, replica),
   ]);
   let scanned = 0;
-  const scanning = () => report({ phase: "scanning", scanned, ...(total === undefined ? {} : { total }) });
+  const scanning = () => tellProgress({ phase: "scanning", scanned, ...(total === undefined ? {} : { total }) });
   scanning();
   const onListed = (items: number) => {
     scanned += items;
@@ -122,21 +122,23 @@ export async function compare(
   const totalBytes = candidates.reduce((total, candidate) => total + 2 * candidate.primary.size, 0);
   /** Bytes of the candidates already checked, whether or not they could be read in full. */
   let checkedBefore = 0;
-  if (candidates.length > 0) report({ phase: "checking moves", checkedBytes: 0, totalBytes });
+  if (candidates.length > 0) tellProgress({ phase: "checking moves", checkedBytes: 0, totalBytes });
   for (const candidate of candidates) {
+    const bytes = 2 * candidate.primary.size;
     let read = 0;
-    const onRead = (bytes: number) => {
-      read += bytes;
+    const onRead = (chunk: number) => {
+      read += chunk;
       // A file that grew since it was scanned must not take the bar past this candidate.
-      report({ phase: "checking moves", checkedBytes: checkedBefore + Math.min(read, 2 * candidate.primary.size), totalBytes });
+      tellProgress({ phase: "checking moves", checkedBytes: checkedBefore + Math.min(read, bytes), totalBytes });
     };
     // One at a time: reading many files at once makes a spinning drive seek back and forth.
     const [primarySum, replicaSum] = await Promise.allSettled([
       hasher.checksum(join(primary, candidate.primary.path), onRead),
       hasher.checksum(join(replica, candidate.replica.path), onRead),
     ]);
-    checkedBefore += 2 * candidate.primary.size;
-    if (read !== 2 * candidate.primary.size) report({ phase: "checking moves", checkedBytes: checkedBefore, totalBytes });
+    checkedBefore += bytes;
+    // Not read in full (unreadable, or changed since the scan): the bar still moves past it.
+    if (read !== bytes) tellProgress({ phase: "checking moves", checkedBytes: checkedBefore, totalBytes });
     if (primarySum.status === "rejected") {
       // The Primary file cannot be read (damage, say): skipped like any other, and its copy kept.
       cannotRead.add(candidate.primary);
@@ -184,8 +186,8 @@ function nameOf(path: string): string {
 async function itemTotal(counter: ItemCounter | undefined, primary: string, replica: string): Promise<number | undefined> {
   if (counter === undefined) return undefined;
   const count = (root: string) => counter.itemCount(root).catch(() => undefined);
-  const [p, r] = await Promise.all([count(primary), count(replica)]);
-  return p === undefined || r === undefined ? undefined : p + r;
+  const [onPrimary, onReplica] = await Promise.all([count(primary), count(replica)]);
+  return onPrimary === undefined || onReplica === undefined ? undefined : onPrimary + onReplica;
 }
 
 async function assertFolder(role: "Primary" | "Replica", path: string): Promise<void> {

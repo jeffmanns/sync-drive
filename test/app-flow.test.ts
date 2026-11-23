@@ -307,6 +307,41 @@ describe("app flow: progress", () => {
     assert.deepEqual(comparing.at(-1)!.progress, { phase: "scanning", scanned: 8 });
   });
 
+  it("ignores progress from a comparison discarded because a drive disconnected", async () => {
+    const mac = await testMac();
+    const primary = await makePrimary(EXAMPLE_PRIMARY);
+    const replica = await makeTree(EXAMPLE_REPLICA);
+    mac.volumes.connect(primary, "PRIMARY-ID");
+    mac.volumes.connect(replica, "REPLICA-ID");
+    let countsAsked!: () => void;
+    const asked = new Promise<void>((resolve) => (countsAsked = resolve));
+    let giveCounts!: () => void;
+    const held = new Promise<void>((resolve) => (giveCounts = resolve));
+    // Holds the comparison at reading the item counts until the drive has gone.
+    mac.itemCounter.itemCount = async () => {
+      countsAsked();
+      await held;
+      return 10;
+    };
+    const flow = await mac.open();
+    flow.choose("primary", primary);
+    flow.choose("replica", replica);
+    await flow.pair();
+
+    const comparing = flow.compare();
+    await asked;
+    mac.volumes.disconnect(replica);
+    await flow.drivesChanged();
+    assert.equal(stateOf(flow).step, "start");
+    const after: string[] = [];
+    flow.onChange((state) => after.push(state.step));
+    giveCounts();
+    await comparing;
+
+    assert.deepEqual(after, [], "the discarded comparison's progress never brings Comparing back");
+    assert.equal(stateOf(flow).step, "start");
+  });
+
   it("shows Updating's progress, by bytes copied out of the approved total, while the Primary is read-only", async () => {
     const { flow } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
     await flow.compare();

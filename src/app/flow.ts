@@ -491,7 +491,10 @@ export class Flow {
         replica: review.drives.replica.mountPoint,
         copier: this.#copier,
         exclusions: review.exclusions,
-        onProgress: (progress) => this.#set({ ...updating, primary: "read-only", progress }),
+        // The Update reports only while it runs, which is all while the Primary is read-only (ADR 0013).
+        onProgress: (progress) => {
+          if (this.#state.step === "updating") this.#set({ ...updating, primary: "read-only", progress });
+        },
       });
     } catch (stopped) {
       // Stopped partway: still say exactly what it did first.

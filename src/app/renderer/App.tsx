@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { canOverrideSafetyStop, comparingBar, copiesBar, freeSpaceExplanation, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves } from "../view.ts";
+import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines } from "../view.ts";
 import type {
   Action,
   CopiesState,
@@ -454,17 +454,11 @@ function UpdatingScreen({ state }: { state: UpdatingState }) {
     ...(renaming.count > 0 ? [`renaming ${describe(renaming)} moved on the Primary`] : []),
     ...(copying.count > 0 ? [`copying ${describe(copying)} to the Replica`] : []),
   ].join(", then ");
-  const { progress } = state;
-  const bar = copiesBar(progress);
+  const bar = updatingBar(state.progress);
   return (
     <>
       <Waiting title="Updating…" detail={`${work.charAt(0).toUpperCase()}${work.slice(1)}. Keep both drives connected.`} />
-      {progress !== undefined && progress.deletions.total > 0 && (
-        <p className="note progress-line">Moved into the Holding area: {progress.deletions.done.toLocaleString("en-US")} of {fileCount(progress.deletions.total)}</p>
-      )}
-      {progress !== undefined && progress.moves.total > 0 && (
-        <p className="note progress-line">Renamed on the Replica: {progress.moves.done.toLocaleString("en-US")} of {fileCount(progress.moves.total)}</p>
-      )}
+      {updatingLines(state.progress).map((line) => <p key={line.slice(0, line.indexOf(":"))} className="note progress-line">{line}</p>)}
       {bar !== undefined && <Bar bar={bar} />}
       <p className="note" role="status">{PRIMARY_MOUNT[state.primary]}</p>
     </>

@@ -32,9 +32,9 @@ export interface CheckingMovesProgress {
 /** How far an Update has got, in the order it does things: deletions, moves, then copies. */
 export interface UpdateProgress {
   /** Deleted files dealt with (moved into the Holding area or left where they were), out of those approved. */
-  deletions: { done: number; total: number };
+  deletions: FilesDone;
   /** Moves dealt with (renamed or left at their old paths), out of those approved. */
-  moves: { done: number; total: number };
+  moves: FilesDone;
   /** Bytes of the new and changed files, out of the approved total. */
   copies: {
     /** Bytes of the files copied and confirmed so far. */
@@ -43,6 +43,12 @@ export interface UpdateProgress {
     notCopiedBytes: number;
     totalBytes: number;
   };
+}
+
+/** How many files have been dealt with, out of how many. */
+export interface FilesDone {
+  done: number;
+  total: number;
 }
 
 /**

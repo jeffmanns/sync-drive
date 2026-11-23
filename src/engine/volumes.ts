@@ -27,7 +27,8 @@ export interface VolumeIdentity {
 export interface ItemCounter {
   /**
    * How many items the drive whose top level is `mountPoint` holds, or `undefined` when its file
-   * system gives no usable count. Never rejects: an unreadable count is no usable count.
+   * system gives no usable count, as when the count cannot be read. Should not reject; the
+   * comparison treats a rejection as no usable count all the same.
    */
   itemCount(mountPoint: string): Promise<number | undefined>;
 }
