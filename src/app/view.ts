@@ -363,20 +363,22 @@ const COMPARING_MOST = 0.99;
 
 /**
  * The Comparing bar: items scanned out of the drives' item counts, then bytes read to confirm
- * moves. A moving bar when a drive has no usable count, or before the counts are read.
+ * moves. A moving bar when a drive has no usable count, or before the counts are read. Its label
+ * names the stage, so the bar starting again for the moves does not look like going backwards.
  */
 export function comparingBar(progress: CompareProgress | undefined): ProgressBar {
   const capped = (part: number, whole: number) => (whole > 0 ? { fraction: Math.min(part / whole, COMPARING_MOST) } : {});
-  if (progress === undefined) return { label: "Counting the items on both drives" };
+  const reading = "Step 1 of 2, reading both drives";
+  if (progress === undefined) return { label: `${reading}: counting their items` };
   if (progress.phase === "checking moves") {
     return {
       ...capped(progress.checkedBytes, progress.totalBytes),
-      label: `Confirming moved files by checksum: read ${formatSize(progress.checkedBytes)} of ${formatSize(progress.totalBytes)}`,
+      label: `Step 2 of 2, confirming moved files by checksum: ${formatSize(progress.checkedBytes)} of ${formatSize(progress.totalBytes)}`,
     };
   }
   const scanned = progress.scanned.toLocaleString("en-US");
-  if (progress.total === undefined || progress.total === 0) return { label: `Read ${scanned} items` };
-  return { ...capped(progress.scanned, progress.total), label: `Read ${scanned} of about ${progress.total.toLocaleString("en-US")} items` };
+  if (progress.total === undefined || progress.total === 0) return { label: `${reading}: ${scanned} items` };
+  return { ...capped(progress.scanned, progress.total), label: `${reading}: ${scanned} of about ${progress.total.toLocaleString("en-US")} items` };
 }
 
 /**

@@ -6,7 +6,7 @@ describe("The Comparing bar", () => {
   it("shows items scanned out of the drives' item counts", () => {
     assert.deepEqual(comparingBar({ phase: "scanning", scanned: 250, total: 1000 }), {
       fraction: 0.25,
-      label: "Read 250 of about 1,000 items",
+      label: "Step 1 of 2, reading both drives: 250 of about 1,000 items",
     });
   });
 
@@ -17,15 +17,15 @@ describe("The Comparing bar", () => {
   });
 
   it("is a moving bar with no percentage when a drive has no usable count, or before the counts are read", () => {
-    assert.deepEqual(comparingBar({ phase: "scanning", scanned: 1234 }), { label: "Read 1,234 items" });
+    assert.deepEqual(comparingBar({ phase: "scanning", scanned: 1234 }), { label: "Step 1 of 2, reading both drives: 1,234 items" });
     assert.equal(comparingBar({ phase: "scanning", scanned: 0, total: 0 }).fraction, undefined);
-    assert.deepEqual(comparingBar(undefined), { label: "Counting the items on both drives" });
+    assert.deepEqual(comparingBar(undefined), { label: "Step 1 of 2, reading both drives: counting their items" });
   });
 
-  it("shows bytes read to confirm moves, out of the bytes to read", () => {
+  it("shows bytes read to confirm moves, out of the bytes to read, as the second of two labelled stages", () => {
     assert.deepEqual(comparingBar({ phase: "checking moves", checkedBytes: 500_000, totalBytes: 2_000_000 }), {
       fraction: 0.25,
-      label: "Confirming moved files by checksum: read 500.0 KB of 2.0 MB",
+      label: "Step 2 of 2, confirming moved files by checksum: 500.0 KB of 2.0 MB",
     });
   });
 });
