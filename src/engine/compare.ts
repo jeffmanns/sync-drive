@@ -8,6 +8,7 @@ import { reporter, type CompareProgress } from "./progress.ts";
 import { makeMovesSection, makeSection, type FileEntry, type Report } from "./report.ts";
 import { sameDate } from "./same-date.ts";
 import { safetyStopApplies } from "./safety-stops.ts";
+import { checkOnlyFolder, findOnlyFolder } from "./only-folder.ts";
 import { matchKey, readFailure, scan, type ScannedFile } from "./scan.ts";
 import type { ItemCounter } from "./volumes.ts";
 
@@ -18,6 +19,13 @@ export interface CompareOptions {
    * they match is never reported, so never copied, moved or deleted. Each must pass `checkExclusion`.
    */
   exclusions?: readonly string[];
+  /**
+   * Limits the comparison to this folder (relative to the top of the drives, using `/`): nothing
+   * outside it is scanned or reported, and the Replica's totals for the Safety stop are the folder's.
+   * Found on each drive regardless of letter case; a folder not yet on the Replica is empty there.
+   * Must pass `checkOnlyFolder`. Without it, the whole drives are compared.
+   */
+  only?: string;
   /** Confirms move candidates by checksum. Defaults to SHA-256 (ADR 0010). */
   hasher?: Hasher;
   /**
@@ -34,9 +42,11 @@ export interface CompareOptions {
  * match. Files moved on the Primary are reported as moves once their contents are confirmed
  * identical by checksum; that reads both copies of each in full. Shortcuts are compared as
  * shortcuts, never followed. What cannot be read on the Primary is listed in `unreadable` and left
- * out, and its Replica copies are never reported as deleted. Reads both drives; writes nothing to
- * either. Rejects if either folder is missing or is not a folder, or
- * if anything on the Replica cannot be read. Reports its progress to `options.onProgress`: items
+ * out, and its Replica copies are never reported as deleted. With `options.only`, compares that
+ * folder alone (ADR 0017). Reads both drives; writes nothing to
+ * either. Rejects if either folder is missing or is not a folder, if
+ * anything on the Replica cannot be read, or if `options.only` cannot be compared on its own (see
+ * `findOnlyFolder`). Reports its progress to `options.onProgress`: items
  * scanned out of both drives' item counts, then bytes read to confirm moves.
  */
 export async function compare(
@@ -45,12 +55,18 @@ export async function compare(
   options: CompareOptions = {},
 ): Promise<Report> {
   const isExcluded = exclusionMatcher(options.exclusions ?? []);
+  const { only } = options;
+  if (only !== undefined) checkOnlyFolder(only, isExcluded);
   const tellProgress = reporter(options.onProgress);
   const [, , total] = await Promise.all([
     assertFolder("Primary", primary),
     assertFolder("Replica", replica),
-    itemTotal(options.itemCounter, primary, replica),
+    // The item counts are for whole drives, so a comparison of one folder has no total.
+    only === undefined ? itemTotal(options.itemCounter, primary, replica) : undefined,
   ]);
+  // The folder as stored on each drive. Not yet on the Replica: nothing there to compare with.
+  const primaryFolder = only === undefined ? "" : await findOnlyFolder("Primary", primary, only);
+  const replicaFolder = only === undefined ? "" : await findOnlyFolder("Replica", replica, only);
   let scanned = 0;
   const scanning = () => tellProgress({ phase: "scanning", scanned, ...(total === undefined ? {} : { total }) });
   scanning();
@@ -59,8 +75,8 @@ export async function compare(
     scanning();
   };
   const [{ files: primaryFiles, unreadable }, { files: replicaFiles }] = await Promise.all([
-    scan("Primary", primary, isExcluded, onListed),
-    scan("Replica", replica, isExcluded, onListed),
+    scan("Primary", primary, isExcluded, onListed, primaryFolder),
+    replicaFolder === undefined ? { files: new Map<string, ScannedFile>() } : scan("Replica", replica, isExcluded, onListed, replicaFolder),
   ]);
   const primaryOnly: ScannedFile[] = [];
   const changed: ScannedFile[] = [];

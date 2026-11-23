@@ -111,6 +111,10 @@ async function perform(action: Action, window: BrowserWindow): Promise<void> {
       return flow.addExclusion(String(action.typed));
     case "removeExclusion":
       return flow.removeExclusion(String(action.pattern));
+    case "chooseOnlyFolder":
+      return chooseOnlyFolder(window);
+    case "wholeDrive":
+      return flow.wholeDrive();
     case "overrideSafetyStop":
       return flow.overrideSafetyStop(String(action.typed));
     case "approveCopies":
@@ -141,6 +145,19 @@ async function chooseDrive(role: "primary" | "replica", window: BrowserWindow): 
   });
   const path = chosen.filePaths[0];
   if (!chosen.canceled && path !== undefined) flow.choose(role, path);
+}
+
+/** Asks for the folder on the Primary to limit the run to, starting at the top of the Primary. */
+async function chooseOnlyFolder(window: BrowserWindow): Promise<void> {
+  const top = await flow.primaryTop();
+  const chosen = await dialog.showOpenDialog(window, {
+    title: "Choose a folder on the Primary",
+    message: "Choose the folder on the Primary to compare and update. Nothing outside it is touched.",
+    defaultPath: top ?? VOLUMES,
+    properties: ["openDirectory"],
+  });
+  const path = chosen.filePaths[0];
+  if (!chosen.canceled && path !== undefined) await flow.limitTo(path);
 }
 
 /** Tells the flow whenever a drive connects or disconnects, so a stale comparison is discarded. */

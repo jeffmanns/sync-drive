@@ -64,6 +64,10 @@ _Avoid_: full scan, integrity check, hash compare
 A path pattern the user has chosen to leave out of every comparison, in addition to the macOS system files that are always skipped. What it matches is left out on both drives, so it is never copied, moved or deleted. Exclusions are edited in a list on the Start screen and saved beside the Pairing (ADR 0016).
 _Avoid_: ignore rule, filter
 
+**Folder limit**:
+The one folder on the Primary that a comparison and its Update can be limited to, chosen on the Start screen. Nothing outside it is compared, copied, moved or deleted, and the Safety stop is measured against its contents. Files moved across its edge show as new or deleted rather than as Moves. It is kept in memory only, until changed or the app quits (ADR 0017). Not an Exclusion, which leaves a path out of every comparison.
+_Avoid_: scope, partial sync, subset
+
 **Shortcut**:
 A symbolic link. sync-drive never follows one: it compares a shortcut by its target, size and date, and an Update copies it as a shortcut with the same target (ADR 0015). Not a Finder alias, which is an ordinary file to sync-drive and is copied byte for byte, never resolved.
 _Avoid_: symlink, link (in what the owner reads)

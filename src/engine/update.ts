@@ -10,7 +10,7 @@ import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-
 import { INCOMING_FOLDER } from "./incoming.ts";
 import { sameDate } from "./same-date.ts";
 import { checkFreeSpace, safetyStopApplies } from "./safety-stops.ts";
-import { readFailure } from "./scan.ts";
+import { matchKey, readFailure } from "./scan.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
 /** What the user has approved for an Update. Nothing is written without `update`. */
@@ -66,6 +66,12 @@ export interface UpdateSetup {
    */
   exclusions?: readonly string[];
   /**
+   * The folder the report's comparison was limited to, if any (relative to the top of the drives,
+   * using `/`). The Update writes nothing if the report holds a path outside it, and never removes
+   * an emptied Replica folder at or above it. Letter case is ignored, as when pairing files.
+   */
+  only?: string;
+  /**
    * Called as the Update goes on, once it has passed its checks and before it writes, with how far it
    * has got. What it throws is ignored.
    */
@@ -106,7 +112,8 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
 /**
  * Brings the Replica up to date with `report`. If `approvals.deletions` is also given and the
  * report has deleted files, empties the previous Holding area and moves them into it, each only if
- * the Primary still has no file at its path. If
+ * the Primary still has no file at its path; limited to `setup.only`, only if the Primary still has
+ * that folder. If
  * `approvals.moves` is given, renames the report's moved files on the Replica to their new paths,
  * each only if it and its Primary file still match by size and date. Then copies
  * the new and changed files from the Primary, checking each copy against its Primary file by
@@ -114,8 +121,8 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
  * having written nothing, when the report holds a path `setup.exclusions` leave out, when the
  * Safety stop applies to the report's deletions (counted again here, not read from
- * `report.safetyStop`) without `approvals.overrideSafetyStop`, or when the Replica lacks the free
- * space for the copies (ADR 0008). Every rejection is an
+ * `report.safetyStop`) without `approvals.overrideSafetyStop`, when it holds a path outside
+ * `setup.only`, or when the Replica lacks the free space for the copies (ADR 0008). Every rejection is an
  * `UpdateStoppedError` saying what had been done before it stopped. Reports its progress to
  * `setup.onProgress`: deleted files and moves dealt with, then bytes copied out of the total.
  */
@@ -171,6 +178,12 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   if (excluded !== undefined) {
     throw new Error(`"${excluded}" is left out by the Exclusions; nothing was written. Compare again.`);
   }
+  // Every path in the report too: one outside the folder means the report was made for more than it.
+  const { only } = setup;
+  const outside = only === undefined ? undefined : reportPaths.find((path) => !isInsideFolder(only, path));
+  if (outside !== undefined) {
+    throw new Error(`"${outside}" is outside the folder "${only}" the Update is limited to; nothing was written. Compare again.`);
+  }
   // Counted again from the deletions it was handed, rather than trusting the Report's flag, so the
   // Safety stop holds whoever built the Report (ADR 0008).
   if (safetyStopApplies(report.deleted, report.replica) && !approvals.overrideSafetyStop) {
@@ -193,15 +206,24 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     });
   progress();
   const holdingArea = join(setup.replica, HOLDING_AREA);
+  // Limited to one folder: a comparison now would refuse, rather than call anything deleted, unless
+  // the Primary still has it as a real folder. Then every deletion is left in place, and the Holding
+  // area is left as it was (ADR 0017).
+  const folderGone = only !== undefined && deletions.length > 0 ? await whyFolderGone(setup.primary, only) : undefined;
+  if (folderGone !== undefined) {
+    for (const file of deletions) result.notMoved.push({ ...file, reason: folderGone });
+    progress();
+  }
+  const toMove = folderGone === undefined ? deletions : [];
   // Deletions first, so a path that changed between a file and a folder is free before copying.
-  if (deletions.length > 0) {
+  if (toMove.length > 0) {
     // New deletions are confirmed, so the files kept from the previous Update are now deleted for
     // good. Without that confirmation the Holding area is left untouched (ADR 0006).
     await rm(holdingArea, { recursive: true, force: true });
     await mkdir(holdingArea);
     await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
   }
-  for (const file of deletions) {
+  for (const file of toMove) {
     try {
       // Moved, never destroyed: the rename stays on the Replica, so it is atomic and keeps all metadata.
       const destination = join(holdingArea, file.path);
@@ -292,7 +314,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
 /**
  * Removes the Replica folders that held `path` (relative to the drive root) if moving it left them
  * empty and the Primary has no folder there, deepest first. `rmdir` only ever removes an empty
- * folder, so no file can be lost.
+ * folder, so no file can be lost. In an Update limited to one folder it stops inside that folder,
+ * as the Primary is checked to still have it before any deletion.
  */
 async function removeEmptiedFolders(path: string, setup: UpdateSetup): Promise<void> {
   for (let folder = dirname(path); folder !== "."; folder = dirname(folder)) {
@@ -400,6 +423,26 @@ async function onPrimary(primary: string, path: string): Promise<boolean> {
 }
 
 /**
+ * Why the Primary no longer has `only` (relative to its top) as a real folder, as it did when
+ * compared, or `undefined` if it still does. A folder along the way that is missing, or is now a file
+ * or a shortcut, counts; so does one that cannot be looked at. Reads only.
+ */
+async function whyFolderGone(primary: string, only: string): Promise<string | undefined> {
+  for (const folder of foldersAlong(only)) {
+    let stats;
+    try {
+      stats = await lstat(join(primary, folder));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return `the folder "${only}" is no longer on the Primary since the comparison`;
+      return `the Primary cannot be read at the folder "${folder}" (${readFailure(error as NodeJS.ErrnoException)})`;
+    }
+    if (!stats.isDirectory()) return `the folder "${only}" is no longer a folder on the Primary since the comparison`;
+  }
+  return undefined;
+}
+
+/**
  * Whether two looks at a file see the same version of it: the same kind (file or shortcut), the
  * same size, and the same dates to the nanosecond.
  */
@@ -418,6 +461,14 @@ async function assertSeparate(primary: string, replica: string): Promise<void> {
   if (isWithin(p, r) || isWithin(r, p)) {
     throw new Error(`The Primary ${primary} and the Replica ${replica} overlap; nothing was written`);
   }
+}
+
+/**
+ * Whether `path` (relative to the top of the drive) is below `folder`, not `folder` itself, ignoring
+ * letter case as files are paired (`matchKey`).
+ */
+function isInsideFolder(folder: string, path: string): boolean {
+  return matchKey(path).startsWith(`${matchKey(folder)}/`);
 }
 
 /** Whether `path` is `folder` itself or somewhere inside it. */

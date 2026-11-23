@@ -44,6 +44,11 @@ export interface StartState {
   pairing: Pairing;
   /** The owner's Exclusions, in the order they were added: left out of every comparison. */
   exclusions: string[];
+  /**
+   * The folder the next comparison and Update are limited to (relative to the top of the Primary,
+   * using `/`), or none for the whole drive. Kept in memory only, until changed or the app quits.
+   */
+  only?: string;
   /** Why the last pattern was not added or removed, or why the saved Exclusions cannot be used. */
   exclusionProblem?: string;
   /** Why the last comparison did not happen or was discarded. */
@@ -80,8 +85,13 @@ export interface RefusedState {
 export interface SafetyStopRefusal {
   /** The files only on the Replica, which approving the deletions would move into the Holding area. */
   deleted: Totals;
-  /** The Replica's contents for comparison: the Holding area and the Incoming folder are not counted. */
+  /**
+   * The Replica's contents for comparison: the Holding area and the Incoming folder are not counted.
+   * Only the folder's contents when the run is limited to one.
+   */
   replica: Totals;
+  /** The folder the run is limited to, if any: the share is of its contents. */
+  only?: string;
   /** Why the last number typed did not override it. */
   error?: string;
 }
@@ -106,6 +116,8 @@ export interface Review {
   drives: PairedDrives;
   /** The Exclusions the comparison left out, which Apply is held to. */
   exclusions: string[];
+  /** The folder the comparison was limited to, if any, which Apply is held to. */
+  only?: string;
   /** Files on the Primary that are not on the Replica. */
   new: Section;
   /** Files on both drives that a Quick compare judges different. */
@@ -214,6 +226,8 @@ export type PrimaryMountState = "remounting read-only" | "read-only" | "remounti
 export interface ResultState {
   step: "result";
   pairing: Pairing;
+  /** The folder the Update was limited to, if any. */
+  only?: string;
   /** What could not be read on the Primary when compared, and so was skipped. What the Replica holds there was left alone. */
   unreadable: Unreadable[];
   copied: FileEntry[];
@@ -266,6 +280,10 @@ export type Action =
   | { type: "addExclusion"; typed: string }
   /** On Start: a saved Exclusion to remove. */
   | { type: "removeExclusion"; pattern: string }
+  /** On Start: opens the folder chooser on the Primary, to limit the run to one folder. */
+  | { type: "chooseOnlyFolder" }
+  /** On Start: compares the whole drive again. */
+  | { type: "wholeDrive" }
   /** On the refusal screen: the number of deletions as the owner typed it. */
   | { type: "overrideSafetyStop"; typed: string }
   | { type: "approveCopies"; approved: boolean }
@@ -323,14 +341,46 @@ export function canOverrideSafetyStop(state: RefusedState): state is RefusedStat
   return state.safetyStop !== undefined && state.freeSpace === undefined;
 }
 
-/** What the refusal screen says about the Safety stop: the deleted files' share of the Replica, by count and by size. */
-export function safetyStopExplanation({ deleted, replica }: SafetyStopRefusal): string {
+/**
+ * What the refusal screen says about the Safety stop: the deleted files' share of the Replica, or of
+ * the folder the run is limited to, by count and by size.
+ */
+export function safetyStopExplanation({ deleted, replica, only }: SafetyStopRefusal): string {
+  const share =
+    only === undefined
+      ? `That is ${deleted.count.toLocaleString("en-US")} of the Replica's ${fileCount(replica.count)} (${percent(deleted.count, replica.count)}) ` +
+        `and ${formatSize(deleted.totalSize)} of its ${formatSize(replica.totalSize)} (${percent(deleted.totalSize, replica.totalSize)}), ` +
+        `more than ${SAFETY_STOP_PERCENT}% of the Replica.`
+      : `That is ${deleted.count.toLocaleString("en-US")} of the ${fileCount(replica.count)} in "${only}" on the Replica (${percent(deleted.count, replica.count)}) ` +
+        `and ${formatSize(deleted.totalSize)} of their ${formatSize(replica.totalSize)} (${percent(deleted.totalSize, replica.totalSize)}), ` +
+        `more than ${SAFETY_STOP_PERCENT}% of the folder.`;
   return (
     `The Safety stop applies: ${fileCount(deleted.count)} (${formatSize(deleted.totalSize)}) are no longer on the Primary. ` +
-    `That is ${deleted.count.toLocaleString("en-US")} of the Replica's ${fileCount(replica.count)} (${percent(deleted.count, replica.count)}) ` +
-    `and ${formatSize(deleted.totalSize)} of its ${formatSize(replica.totalSize)} (${percent(deleted.totalSize, replica.totalSize)}), ` +
-    `more than ${SAFETY_STOP_PERCENT}% of the Replica. That often means something is wrong with the Primary: ` +
+    `${share} That often means something is wrong with the Primary: ` +
     `it is failing, was only partly read, or was erased. Check the Primary first.`
+  );
+}
+
+/**
+ * What the review steps, the Summary and the Result say about a run limited to the folder `only`:
+ * what it leaves alone, and that a file moved across its edge cannot be recognised as a move.
+ */
+export function onlyFolderNote(only: string): string {
+  return (
+    `Limited to the folder "${only}": nothing outside it is compared, copied, moved or deleted. ` +
+    `Files moved into or out of it since the last Update cannot be recognised as moves, so they appear as new or deleted.`
+  );
+}
+
+/**
+ * The warning on Deletions in a run limited to the folder `only`: a file moved out of it shows as
+ * deleted, and if it cannot be read where it now is on the Primary, the Replica's copy may be its only
+ * backup. A whole-drive comparison would keep that copy; this one cannot see it (ADR 0017).
+ */
+export function onlyFolderDeletionsWarning(only: string): string {
+  return (
+    `Files moved out of "${only}" on the Primary show here as deleted. If any of them cannot be read on the Primary where they are now, ` +
+    `the copy here may be their only backup. If you are unsure, leave the deletions unapproved until an Update of the whole drive.`
   );
 }
 

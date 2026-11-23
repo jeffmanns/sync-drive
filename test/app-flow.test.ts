@@ -6,7 +6,7 @@ import { isDeepStrictEqual, promisify } from "node:util";
 import { after, afterEach, describe, it } from "node:test";
 import { Flow } from "../src/app/flow.ts";
 import type { FlowState } from "../src/app/view.ts";
-import { freeSpaceExplanation, safetyStopExplanation } from "../src/app/view.ts";
+import { freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, safetyStopExplanation } from "../src/app/view.ts";
 import { compare, type FileCopier } from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
 import { FakeItemCounter } from "./helpers/fake-item-counter.ts";
@@ -1362,5 +1362,124 @@ describe("app flow: Exclusions", () => {
     assert.equal(stateOf(flow).step, "start");
     assert.match(stateOf(flow).error, /damaged/);
     assert.equal(await readFile(mac.exclusionsFile, "utf8"), "{ not json", "not overwritten");
+  });
+});
+
+describe("app flow: limiting a run to one folder", () => {
+  it("compares and updates only the folder chosen on Start, leaving everything outside it alone", async () => {
+    const { flow, primary, replica } = await pairedMac(
+      { "Photos/2019/new.jpg": "n", "Photos/2019/Iceland/moved.jpg": "m", "Photos/2020/new.jpg": "n", "Elsewhere/arrived.jpg": "a" },
+      { "Photos/2019/moved.jpg": "m", "Photos/2019/arrived.jpg": "a", "Photos/2020/gone.jpg": "g", "old.txt": "o" },
+    );
+
+    await flow.limitTo(join(primary, "Photos", "2019"));
+    assert.equal(stateOf(flow).only, "Photos/2019");
+    await flow.compare();
+
+    const { review } = stateOf(flow);
+    assert.equal(review.only, "Photos/2019");
+    assert.deepEqual(review.new.files.map((file: { path: string }) => file.path), ["Photos/2019/new.jpg"]);
+    assert.deepEqual(review.moves.moves.map((move: { to: string }) => move.to), ["Photos/2019/Iceland/moved.jpg"]);
+    assert.deepEqual(review.deleted.files.map((file: { path: string }) => file.path), ["Photos/2019/arrived.jpg"]);
+    flow.approveCopies(true);
+    flow.next();
+    flow.approveMoves(true);
+    flow.next();
+    flow.approveDeletions(true);
+    flow.next();
+    await flow.apply();
+
+    assert.equal(stateOf(flow).step, "result");
+    assert.equal(stateOf(flow).only, "Photos/2019");
+    const files = (await readdir(replica, { recursive: true, withFileTypes: true })).filter((entry) => !entry.isDirectory());
+    assert.deepEqual(files.map((entry) => join(entry.parentPath, entry.name).slice(replica.length + 1)).sort(), [
+      "Photos/2019/Iceland/moved.jpg",
+      "Photos/2019/new.jpg",
+      "Photos/2020/gone.jpg",
+      "old.txt",
+      "sync-drive Holding Area/Photos/2019/arrived.jpg",
+      "sync-drive Holding Area/READ ME.txt",
+    ]);
+    flow.restart();
+    assert.equal(stateOf(flow).only, "Photos/2019", "kept on Start until changed");
+  });
+
+  it("goes back to the whole drive when asked, or when the top of the Primary is chosen", async () => {
+    const { flow, primary } = await pairedMac({ "Photos/2019/a.jpg": "a", "top.txt": "t" });
+
+    await flow.limitTo(join(primary, "Photos", "2019"));
+    flow.wholeDrive();
+    assert.equal(stateOf(flow).only, undefined);
+    await flow.limitTo(join(primary, "Photos"));
+    await flow.limitTo(primary);
+    assert.equal(stateOf(flow).only, undefined);
+
+    await flow.compare();
+    assert.equal(stateOf(flow).review.only, undefined);
+    assert.equal(stateOf(flow).review.new.count, 2);
+  });
+
+  it("refuses a folder that is not on the Primary, keeping the choice as it was", async () => {
+    const { flow, primary, replica } = await pairedMac({ "Photos/2019/a.jpg": "a" });
+    await flow.limitTo(join(primary, "Photos"));
+
+    await flow.limitTo(join(replica, "Photos"));
+
+    assert.equal(stateOf(flow).only, "Photos");
+    assert.match(stateOf(flow).error, /not on the Primary/);
+  });
+
+  it("stays on Start, saying why, when the folder is no longer on the Primary", async () => {
+    const { flow, primary } = await pairedMac({ "Photos/2019/a.jpg": "a" });
+    await flow.limitTo(join(primary, "Photos", "2019"));
+    await ownerChangesPrimary(primary, () => rm(join(primary, "Photos"), { recursive: true }));
+
+    await flow.compare();
+
+    assert.equal(stateOf(flow).step, "start");
+    assert.match(stateOf(flow).error, /The Primary has no folder "Photos\/2019"/);
+  });
+
+  it("says the folder matches when nothing in it differs, even when other folders do", async () => {
+    const { flow, primary } = await pairedMac({ "Photos/2019/a.jpg": "a", "other.txt": "o" }, { "Photos/2019/a.jpg": "a" });
+    await flow.limitTo(join(primary, "Photos", "2019"));
+
+    await flow.compare();
+
+    assert.equal(stateOf(flow).step, "start");
+    assert.match(stateOf(flow).notice, /The folder "Photos\/2019" on the Replica matches the Primary/);
+  });
+
+  it("measures the Safety stop against the folder, and says so", async () => {
+    const { flow, primary } = await pairedMac(
+      { ...files("Other/", 2000), ...files("Photos/kept/", 99) },
+      { ...files("Other/", 2000), ...files("Photos/kept/", 99), ...files("Photos/gone/", 101) },
+    );
+    await flow.limitTo(join(primary, "Photos"));
+
+    await flow.compare();
+
+    const { safetyStop } = stateOf(flow);
+    assert.deepEqual(safetyStop, { deleted: { count: 101, totalSize: 101 }, replica: { count: 200, totalSize: 200 }, only: "Photos" });
+    assert.match(
+      safetyStopExplanation(safetyStop),
+      /^The Safety stop applies: 101 files \(101 B\) are no longer on the Primary\. That is 101 of the 200 files in "Photos" on the Replica \(50\.5%\) and 101 B of their 200 B \(50\.5%\), more than 10% of the folder\./,
+    );
+  });
+
+  it("notes on the review steps and the Summary that the run is limited, and that moves across its edge show as new or deleted", () => {
+    const note = onlyFolderNote("Photos/2019");
+
+    assert.match(note, /Limited to the folder "Photos\/2019"/);
+    assert.match(note, /nothing outside it is compared, copied, moved or deleted/);
+    assert.match(note, /moved into or out of it .* appear as new or deleted/);
+  });
+
+  it("warns on Deletions that a file moved out of the folder may be the only backup of one that cannot be read on the Primary", () => {
+    const warning = onlyFolderDeletionsWarning("Photos/2019");
+
+    assert.match(warning, /moved out of "Photos\/2019" on the Primary show here as deleted/);
+    assert.match(warning, /cannot be read on the Primary/);
+    assert.match(warning, /leave the deletions unapproved until an Update of the whole drive/);
   });
 });
