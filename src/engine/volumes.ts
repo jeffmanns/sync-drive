@@ -20,6 +20,20 @@ export interface VolumeIdentity {
 }
 
 /**
+ * Reads how many items (files plus folders) a drive holds, as macOS counts them, without reading
+ * its folders: for the comparison's progress bar only, never to decide anything. Tests substitute
+ * a fake.
+ */
+export interface ItemCounter {
+  /**
+   * How many items the drive whose top level is `mountPoint` holds, or `undefined` when its file
+   * system gives no usable count, as when the count cannot be read. Should not reject; the
+   * comparison treats a rejection as no usable count all the same.
+   */
+  itemCount(mountPoint: string): Promise<number | undefined>;
+}
+
+/**
  * Remounts the Primary read-only for an Update, so that macOS itself, and not only sync-drive's
  * code, keeps it from being written to; and remounts it normally afterwards. Tests substitute a fake.
  */

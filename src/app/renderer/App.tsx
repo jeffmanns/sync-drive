@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { canOverrideSafetyStop, freeSpaceExplanation, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves } from "../view.ts";
+import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines } from "../view.ts";
 import type {
   Action,
   CopiesState,
@@ -13,6 +13,7 @@ import type {
   MovesSection,
   MovesState,
   PairingState,
+  ProgressBar,
   RefusedState,
   ResultState,
   Review,
@@ -54,7 +55,12 @@ export function App() {
           case "start":
             return <StartScreen state={state} {...props} />;
           case "comparing":
-            return <Waiting title="Comparing…" detail="Reading both drives. Nothing is written to either." />;
+            return (
+              <>
+                <Waiting title="Comparing…" detail="Reading both drives. Nothing is written to either." />
+                <Bar bar={comparingBar(state.progress)} />
+              </>
+            );
           case "refused":
             return <RefusedScreen state={state} {...props} />;
           case "copies":
@@ -448,9 +454,12 @@ function UpdatingScreen({ state }: { state: UpdatingState }) {
     ...(renaming.count > 0 ? [`renaming ${describe(renaming)} moved on the Primary`] : []),
     ...(copying.count > 0 ? [`copying ${describe(copying)} to the Replica`] : []),
   ].join(", then ");
+  const bar = updatingBar(state.progress);
   return (
     <>
       <Waiting title="Updating…" detail={`${work.charAt(0).toUpperCase()}${work.slice(1)}. Keep both drives connected.`} />
+      {updatingLines(state.progress).map((line) => <p key={line.slice(0, line.indexOf(":"))} className="note progress-line">{line}</p>)}
+      {bar !== undefined && <Bar bar={bar} />}
       <p className="note" role="status">{PRIMARY_MOUNT[state.primary]}</p>
     </>
   );
@@ -565,6 +574,21 @@ function Waiting({ title, detail }: { title: string; detail: string }) {
     <div className="waiting">
       <h1>{title}</h1>
       <p>{detail}</p>
+    </div>
+  );
+}
+
+/** A progress bar with what it says beneath. Without a fraction, a moving bar with no percentage. */
+function Bar({ bar }: { bar: ProgressBar }) {
+  // Rounded down, so a bar short of full never reads 100%.
+  const percent = bar.fraction === undefined ? undefined : Math.floor(bar.fraction * 100);
+  return (
+    <div className="bar">
+      {percent === undefined ? <progress aria-label={bar.label} /> : <progress aria-label={bar.label} max={100} value={percent} />}
+      <p className="note">
+        {bar.label}
+        {percent === undefined ? "" : ` · ${percent}%`}
+      </p>
     </div>
   );
 }

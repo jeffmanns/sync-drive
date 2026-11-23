@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmod, lstat, lutimes, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { checkExclusion, compare, Sha256Hasher, type Hasher } from "../src/engine/index.ts";
+import { checkExclusion, compare, Sha256Hasher, type CompareProgress, type Hasher, type ItemCounter } from "../src/engine/index.ts";
 import { DEFAULT_MTIME, makeCaseSensitiveTree, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
 after(removeTrees);
@@ -710,6 +710,90 @@ describe("Exclusions", () => {
     const replica = await makeTree();
 
     await assert.rejects(compare(primary, replica, { exclusions: ["*"] }), /everything on the drive/);
+  });
+});
+
+describe("Compare progress", () => {
+  /** An item counter that gives each drive's count as listed, and no usable count for any other. */
+  function itemCounts(counts: Record<string, number>): ItemCounter {
+    return { itemCount: async (mountPoint) => counts[mountPoint] };
+  }
+
+  it("reports items scanned (files plus folders) out of both drives' item counts, read before scanning", async () => {
+    const primary = await makeTree({ "Photos/a.jpg": "a", "Photos/b.jpg": "b", "notes.txt": "n" });
+    const replica = await makeTree({ "Docs/old.pdf": "abc" });
+    const seen: CompareProgress[] = [];
+
+    await compare(primary, replica, { itemCounter: itemCounts({ [primary]: 10, [replica]: 20 }), onProgress: (p) => seen.push(p) });
+
+    assert.deepEqual(seen[0], { phase: "scanning", scanned: 0, total: 30 });
+    // Photos, a.jpg, b.jpg, notes.txt on the Primary; Docs, old.pdf on the Replica.
+    assert.deepEqual(seen.at(-1), { phase: "scanning", scanned: 6, total: 30 });
+    const scanned = seen.map((p) => (p.phase === "scanning" ? p.scanned : -1));
+    assert.deepEqual(scanned, [...scanned].sort((a, b) => a - b), "never goes backwards");
+  });
+
+  it("reports no total when either drive has no usable item count", async () => {
+    const primary = await makeTree({ "notes.txt": "n" });
+    const replica = await makeTree();
+    const seen: CompareProgress[] = [];
+
+    await compare(primary, replica, { itemCounter: itemCounts({ [primary]: 10 }), onProgress: (p) => seen.push(p) });
+
+    assert.deepEqual(seen[0], { phase: "scanning", scanned: 0 });
+    assert.deepEqual(seen.at(-1), { phase: "scanning", scanned: 1 });
+  });
+
+  it("reports no total when an item count cannot be read, and compares all the same", async () => {
+    const primary = await makeTree({ "notes.txt": "n" });
+    const replica = await makeTree();
+    const seen: CompareProgress[] = [];
+    const failing: ItemCounter = { itemCount: () => Promise.reject(new Error("statfs failed")) };
+
+    const report = await compare(primary, replica, { itemCounter: failing, onProgress: (p) => seen.push(p) });
+
+    assert.deepEqual(seen.at(-1), { phase: "scanning", scanned: 1 });
+    assert.deepEqual(report.new.files, [{ path: "notes.txt", size: 1 }]);
+  });
+
+  it("then reports bytes read to confirm moves, out of each candidate's size on both drives", async () => {
+    const primary = await makeTree({ "New/x.jpg": "12345", "New/y.jpg": "123" });
+    const replica = await makeTree({ "Old/x.jpg": "12345", "Old/y.jpg": "123" });
+    const seen: CompareProgress[] = [];
+
+    const report = await compare(primary, replica, { onProgress: (p) => seen.push(p) });
+
+    assert.equal(report.moves.count, 2);
+    const checking = seen.filter((p) => p.phase === "checking moves");
+    assert.deepEqual(checking[0], { phase: "checking moves", checkedBytes: 0, totalBytes: 16 });
+    assert.deepEqual(checking.at(-1), { phase: "checking moves", checkedBytes: 16, totalBytes: 16 });
+    assert.equal(seen.findIndex((p) => p.phase === "checking moves"), seen.length - checking.length, "after all the scanning");
+  });
+
+  it("reports no move checking when there are no candidates", async () => {
+    const primary = await makeTree({ "New/x.jpg": "12345" });
+    const replica = await makeTree();
+    const seen: CompareProgress[] = [];
+
+    await compare(primary, replica, { onProgress: (p) => seen.push(p) });
+
+    assert.ok(seen.every((p) => p.phase === "scanning"));
+  });
+
+  it("makes the same Report with progress reported, even to a listener that throws", async () => {
+    const spec = { "New/x.jpg": "12345", "notes.txt": "edited", "only-primary.txt": "p" };
+    const primary = await makeTree(spec);
+    const replica = await makeTree({ "Old/x.jpg": "12345", "notes.txt": "old", "only-replica.txt": "r" });
+    const without = await compare(primary, replica);
+
+    const withProgress = await compare(primary, replica, {
+      itemCounter: itemCounts({ [primary]: 5, [replica]: 5 }),
+      onProgress: () => {
+        throw new Error("the screens went away");
+      },
+    });
+
+    assert.deepEqual(withProgress, without);
   });
 });
 

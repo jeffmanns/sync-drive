@@ -45,6 +45,10 @@ button.primary { font-weight: 600; }
 .steps [aria-current] { color: inherit; font-weight: 600; }
 .summary li { margin: 4px 0; }
 .waiting { margin-top: 30vh; text-align: center; }
+.bar { max-width: 480px; margin: 16px auto; text-align: center; }
+.bar progress { width: 100%; }
+.bar p { margin: 4px 0; font-variant-numeric: tabular-nums; }
+.progress-line { text-align: center; font-variant-numeric: tabular-nums; }
 .override { margin: 24px 0; }
 .override input { width: 8em; font: inherit; }
 .exclusions ul { list-style: none; padding: 0; margin: 8px 0; }

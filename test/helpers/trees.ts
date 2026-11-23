@@ -38,16 +38,17 @@ export async function makeCaseSensitiveTree(spec: TreeSpec): Promise<string> {
 
 /**
  * Builds a tree on a freshly mounted disk image (via `hdiutil`): a real drive with its own
- * volume ID and name. Returns the volume's path.
+ * volume ID and name. Returns the volume's path. Some file systems (exFAT) need more than the
+ * default size.
  */
 export async function makeDiskImageTree(
   spec: TreeSpec = {},
-  { fileSystem = "APFS", name = "sync-drive-test" }: { fileSystem?: string; name?: string } = {},
+  { fileSystem = "APFS", name = "sync-drive-test", size = "8m" }: { fileSystem?: string; name?: string; size?: string } = {},
 ): Promise<string> {
   const dir = await makeTree();
   const image = join(dir, "drive.dmg");
   const mountPoint = join(dir, "volume");
-  await withRetries(() => run("hdiutil", ["create", "-quiet", "-size", "8m", "-fs", fileSystem, "-volname", name, image]));
+  await withRetries(() => run("hdiutil", ["create", "-quiet", "-size", size, "-fs", fileSystem, "-volname", name, image]));
   await mkdir(mountPoint);
   const { stdout } = await withRetries(() =>
     run("hdiutil", ["attach", "-nobrowse", "-mountpoint", mountPoint, image]),
