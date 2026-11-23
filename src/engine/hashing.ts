@@ -10,9 +10,10 @@ export interface Hasher {
   /**
    * Reads the regular file at `path` from start to end and resolves to a checksum of its
    * contents. Files with different contents have different checksums, barring a collision
-   * too unlikely to matter. Never writes to `path`.
+   * too unlikely to matter. Calls `onRead`, if given, with the number of bytes in each part read,
+   * for progress. Never writes to `path`.
    */
-  checksum(path: string): Promise<string>;
+  checksum(path: string, onRead?: (bytes: number) => void): Promise<string>;
 }
 
 /** Read size for hashing: large reads keep a spinning or USB drive streaming. */
@@ -20,10 +21,11 @@ const CHUNK_BYTES = 1024 * 1024;
 
 /** SHA-256 using Node's built-in crypto, which runs in native code. Checksums are lowercase hex. */
 export class Sha256Hasher implements Hasher {
-  async checksum(path: string): Promise<string> {
+  async checksum(path: string, onRead?: (bytes: number) => void): Promise<string> {
     const hash = createHash("sha256");
     for await (const chunk of createReadStream(path, { highWaterMark: CHUNK_BYTES })) {
       hash.update(chunk as Buffer);
+      onRead?.((chunk as Buffer).length);
     }
     return hash.digest("hex");
   }

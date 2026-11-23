@@ -40,4 +40,5 @@ export {
   type UpdateResult,
   type UpdateSetup,
 } from "./update.ts";
-export type { Remounter, Volume, VolumeIdentity } from "./volumes.ts";
+export type { CheckingMovesProgress, CompareProgress, ScanningProgress, UpdateProgress } from "./progress.ts";
+export type { ItemCounter, Remounter, Volume, VolumeIdentity } from "./volumes.ts";

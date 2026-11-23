@@ -4,6 +4,7 @@
  * nothing from Node, so the screens can use it too.
  */
 import type { PairedDrives, Pairing } from "../engine/pairing.ts";
+import type { CompareProgress, UpdateProgress } from "../engine/progress.ts";
 import type { FileEntry, Move, MoveGroup, MovesSection, Section, Totals, Unreadable } from "../engine/report.ts";
 import { SAFETY_STOP_PERCENT } from "../engine/safety-stop-limits.ts";
 import { fileCount, formatSize } from "../format.ts";
@@ -55,6 +56,8 @@ export interface StartState {
 export interface ComparingState {
   step: "comparing";
   pairing: Pairing;
+  /** How far the comparison has got. Absent until it has read the drives' item counts. */
+  progress?: CompareProgress;
 }
 
 /**
@@ -200,6 +203,8 @@ export interface UpdatingState {
    * that macOS itself keeps it from being written to, then remounted normally once the Update ends.
    */
   primary: PrimaryMountState;
+  /** How far the Update has got. Absent until the Primary is read-only and the Update has passed its checks. */
+  progress?: UpdateProgress;
 }
 
 /** The Primary's mount during an Update. */
@@ -341,6 +346,51 @@ export function freeSpaceExplanation({ needed, free, holdingArea }: FreeSpaceRef
   );
 }
 
+/**
+ * A progress bar: how full it is, from 0 to 1, and what it says. Without `fraction` it is a moving
+ * bar with no percentage, for work whose total is not known.
+ */
+export interface ProgressBar {
+  fraction?: number;
+  label: string;
+}
+
+/**
+ * The fullest the Comparing bar gets before the comparison finishes. The item counts are only an
+ * estimate, so the bar must not claim to be done before it is.
+ */
+const COMPARING_MOST = 0.99;
+
+/**
+ * The Comparing bar: items scanned out of the drives' item counts, then bytes read to confirm
+ * moves. A moving bar when a drive has no usable count, or before the counts are read.
+ */
+export function comparingBar(progress: CompareProgress | undefined): ProgressBar {
+  const capped = (part: number, whole: number) => (whole > 0 ? { fraction: Math.min(part / whole, COMPARING_MOST) } : {});
+  if (progress === undefined) return { label: "Counting the items on both drives" };
+  if (progress.phase === "checking moves") {
+    return {
+      ...capped(progress.checkedBytes, progress.totalBytes),
+      label: `Confirming moved files by checksum: read ${formatSize(progress.checkedBytes)} of ${formatSize(progress.totalBytes)}`,
+    };
+  }
+  const scanned = progress.scanned.toLocaleString("en-US");
+  if (progress.total === undefined || progress.total === 0) return { label: `Read ${scanned} items` };
+  return { ...capped(progress.scanned, progress.total), label: `Read ${scanned} of about ${progress.total.toLocaleString("en-US")} items` };
+}
+
+/** The Updating bar: bytes copied out of the approved total. None when nothing is copied, or before the Update starts. */
+export function copiesBar(progress: UpdateProgress | undefined): ProgressBar | undefined {
+  if (progress === undefined || progress.copies.totalBytes === 0) return undefined;
+  const { copiedBytes, notCopiedBytes, totalBytes } = progress.copies;
+  return {
+    fraction: (copiedBytes + notCopiedBytes) / totalBytes,
+    label:
+      `Copied ${formatSize(copiedBytes)} of ${formatSize(totalBytes)}` +
+      (notCopiedBytes > 0 ? ` (${formatSize(notCopiedBytes)} could not be copied)` : ""),
+  };
+}
+
 /** `part` as a share of `whole`, to one decimal place: "50.5%". */
 function percent(part: number, whole: number): string {
   return whole === 0 ? "0%" : `${((part / whole) * 100).toFixed(1)}%`;
@@ -349,4 +399,5 @@ function percent(part: number, whole: number): string {
 /** The IPC channels between the main process and the screens. */
 export const CHANNELS = { state: "flow:state", action: "flow:action" } as const;
 
+export type { CompareProgress, UpdateProgress };
 export type { FileEntry, Move, MoveGroup, MovesSection, PairedDrives, Pairing, Section, Totals, Unreadable };

@@ -23,7 +23,7 @@ npm start     # build and open the app
 
 **Start.** Shows the paired drives and the **Exclusions**: path patterns left out of every comparison on both drives, so what they match is never copied, moved or deleted (ADR 0016). They are saved beside the Pairing in `exclusions.json`. **Compare** finds the paired drives among those connected. It never asks for drive paths, so the roles can never be swapped. It refuses if a paired drive is not connected, or if two connected drives share a paired Volume ID.
 
-**Comparing.** A **Quick compare** judges files equal by size and modification date. A file moved into another folder on the Primary is reported as a **Move** once a checksum confirms it is the same file. Comparing never writes to either drive. If the Replica already matches the Primary, the app says so on Start. Anything on the Primary it cannot read is listed and skipped, and its Replica copy is never treated as deleted (ADR 0015).
+**Comparing.** A **Quick compare** judges files equal by size and modification date. A file moved into another folder on the Primary is reported as a **Move** once a checksum confirms it is the same file. Comparing never writes to either drive. If the Replica already matches the Primary, the app says so on Start. Anything on the Primary it cannot read is listed and skipped, and its Replica copy is never treated as deleted (ADR 0015). A progress bar shows the items read out of the drives' item counts, which macOS gives at once. Those counts are only an estimate, so the bar stops short of 100% until the comparison is done. On a drive that keeps no count, such as FAT or exFAT, it is a moving bar. Confirming Moves by checksum has its own bar, by bytes read.
 
 **Refusal screen** (only when needed). Comes before any Approval and says why:
 
@@ -38,7 +38,7 @@ npm start     # build and open the app
 
 1. If the deletions are approved, it permanently deletes what the Holding area held from the previous Update, then moves the approved deletions into the visible `sync-drive Holding Area` folder on the Replica, keeping their folder paths. They stay there, not destroyed, until the next Update whose deletions are approved.
 2. It renames the approved Moves on the Replica.
-3. It copies the new and changed files. Copies keep their modification and creation dates, Finder tags, other extended attributes, permissions and flags (ADR 0005), and each copy's checksum is checked against the Primary (ADR 0010). Each file is written under a temporary name in a hidden `.sync-drive-incoming` folder on the Replica and renamed into place when complete, so an interrupted Update never leaves a truncated file under a real name. The next Update clears anything left there.
+3. It copies the new and changed files, with a progress bar by bytes out of the approved total. Copies keep their modification and creation dates, Finder tags, other extended attributes, permissions and flags (ADR 0005), and each copy's checksum is checked against the Primary (ADR 0010). Each file is written under a temporary name in a hidden `.sync-drive-incoming` folder on the Replica and renamed into place when complete, so an interrupted Update never leaves a truncated file under a real name. The next Update clears anything left there.
 
 Before moving a deleted file, the app checks again that a comparison would still call it deleted. A file that is back on the Primary stays on the Replica (ADR 0014).
 

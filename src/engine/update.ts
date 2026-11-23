@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import type { FileEntry, Move, Report } from "./report.ts";
 import { exclusionMatcher } from "./exclusions.ts";
 import { Sha256Hasher, type Hasher } from "./hashing.ts";
+import { reporter, type UpdateProgress } from "./progress.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
 import { sameDate } from "./same-date.ts";
@@ -64,6 +65,11 @@ export interface UpdateSetup {
    * they leave out, as it was then made with other Exclusions. Defaults to none.
    */
   exclusions?: readonly string[];
+  /**
+   * Called as the Update goes on, once it has passed its checks and before it writes, with how far it
+   * has got. What it throws is ignored.
+   */
+  onProgress?: (progress: UpdateProgress) => void;
 }
 
 /** A file the Update did not copy or move, and why. */
@@ -110,7 +116,8 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * Safety stop applies to the report's deletions (counted again here, not read from
  * `report.safetyStop`) without `approvals.overrideSafetyStop`, or when the Replica lacks the free
  * space for the copies (ADR 0008). Every rejection is an
- * `UpdateStoppedError` saying what had been done before it stopped.
+ * `UpdateStoppedError` saying what had been done before it stopped. Reports its progress to
+ * `setup.onProgress`: deleted files and moves dealt with, then bytes copied out of the total.
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
   const result = nothingDone();
@@ -175,6 +182,16 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       `The Replica has ${space.free} bytes free but the copies need ${space.needed}; nothing was written`,
     );
   }
+  const tell = reporter(setup.onProgress);
+  const copies = { copiedBytes: 0, notCopiedBytes: 0, totalBytes: files.reduce((total, file) => total + file.size, 0) };
+  /** Reports how far the Update has got, from what `result` says it has done and the bytes in `copies`. */
+  const progress = () =>
+    tell({
+      deletions: { done: result.moved.length + result.notMoved.length, total: deletions.length },
+      moves: { done: result.renamed.length + result.notRenamed.length, total: moves.length },
+      copies: { ...copies },
+    });
+  progress();
   const holdingArea = join(setup.replica, HOLDING_AREA);
   // Deletions first, so a path that changed between a file and a folder is free before copying.
   if (deletions.length > 0) {
@@ -201,6 +218,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     } catch (error) {
       result.notMoved.push({ ...file, reason: (error as Error).message });
     }
+    progress();
   }
   for (const file of result.moved) await removeEmptiedFolders(file.path, setup);
   // After the deletions, so a deleted file is out of the way of a move to a folder of its name.
@@ -227,6 +245,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     } catch (error) {
       result.notRenamed.push({ ...move, reason: (error as Error).message });
     }
+    progress();
   }
   for (const move of result.renamed) await removeEmptiedFolders(move.from, setup);
   const hasher = setup.hasher ?? new Sha256Hasher();
@@ -259,10 +278,13 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       await makeReplicaFolders(setup.replica, dirname(file.path));
       await rename(temporary, destination);
       result.copied.push(file);
+      copies.copiedBytes += file.size;
     } catch (error) {
       await rm(temporary, { force: true });
       result.failed.push({ ...file, reason: (error as Error).message });
+      copies.notCopiedBytes += file.size;
     }
+    progress();
   }
   await rm(incoming, { recursive: true, force: true });
 }

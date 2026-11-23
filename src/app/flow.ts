@@ -15,6 +15,7 @@ import {
   writeExclusions,
   writePairing,
   type FileCopier,
+  type ItemCounter,
   type PairedDrives,
   type Pairing,
   type Remounter,
@@ -50,6 +51,8 @@ export interface FlowDeps {
   copier: FileCopier;
   /** Remounts the Primary read-only for each Update, and normally afterwards. */
   remounter: Remounter;
+  /** Reads each drive's item count from macOS, for the Comparing progress bar. */
+  itemCounter: ItemCounter;
 }
 
 /**
@@ -232,7 +235,15 @@ export class Flow {
     this.#set({ step: "comparing", pairing });
     try {
       const drives = await findPairedDrives(pairing, this.#deps.volumes);
-      const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint, { exclusions });
+      const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint, {
+        exclusions,
+        itemCounter: this.#deps.itemCounter,
+        onProgress: (progress) => {
+          // Only while still on Comparing for this comparison: a discarded one must not bring it back.
+          const now = this.#state;
+          if (comparison === this.#comparisonGeneration && now.step === "comparing") this.#set({ ...now, progress });
+        },
+      });
       if (comparison !== this.#comparisonGeneration) return;
       const { new: newFiles, changed, moves, deleted, unreadable } = report;
       // Anything unreadable is shown in the review, even with nothing else to do: it was not compared.
@@ -480,6 +491,7 @@ export class Flow {
         replica: review.drives.replica.mountPoint,
         copier: this.#copier,
         exclusions: review.exclusions,
+        onProgress: (progress) => this.#set({ ...updating, primary: "read-only", progress }),
       });
     } catch (stopped) {
       // Stopped partway: still say exactly what it did first.

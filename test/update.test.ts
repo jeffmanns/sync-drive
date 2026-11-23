@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, lstat, lutimes, mkdir, readdir, readFile, readlink, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { after, describe, it } from "node:test";
-import { compare, update, UpdateStoppedError, type Approvals, type FileCopier } from "../src/engine/index.ts";
+import { compare, update, UpdateStoppedError, type Approvals, type FileCopier, type UpdateProgress } from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
 import {
   extendedAttributes,
@@ -231,6 +231,101 @@ describe("Update", () => {
     assert.deepEqual(await readdir(outside), ["Replica"]);
     assert.deepEqual(await readdir(replica), []);
     assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+});
+
+describe("Update progress", () => {
+  it("reports bytes copied out of the approved total, as each copy is confirmed", async () => {
+    const primary = await makeTree({ "a.txt": "12345", "b.txt": "123" });
+    const replica = await makeTree();
+    const report = await compare(primary, replica);
+    const seen: UpdateProgress[] = [];
+
+    await update(report, APPROVED, { primary, replica, copier: new MacFileCopier(), onProgress: (p) => seen.push(structuredClone(p)) });
+
+    const none = { done: 0, total: 0 };
+    assert.deepEqual(seen.map((p) => p.copies), [
+      { copiedBytes: 0, notCopiedBytes: 0, totalBytes: 8 },
+      { copiedBytes: 5, notCopiedBytes: 0, totalBytes: 8 },
+      { copiedBytes: 8, notCopiedBytes: 0, totalBytes: 8 },
+    ]);
+    assert.ok(seen.every((p) => isDeepStrictEqual(p.deletions, none) && isDeepStrictEqual(p.moves, none)));
+  });
+
+  it("counts a file that could not be copied apart from those copied", async () => {
+    const primary = await makeTree({ "a.txt": "12345", "b.txt": "123" });
+    const replica = await makeTree();
+    const report = await compare(primary, replica);
+    const seen: UpdateProgress[] = [];
+    const failingForA: FileCopier = {
+      copy: (source, destination) => (source.endsWith("a.txt") ? Promise.reject(new Error("EIO")) : new MacFileCopier().copy(source, destination)),
+    };
+
+    await update(report, APPROVED, { primary, replica, copier: failingForA, onProgress: (p) => seen.push(structuredClone(p)) });
+
+    assert.deepEqual(seen.at(-1)!.copies, { copiedBytes: 3, notCopiedBytes: 5, totalBytes: 8 });
+  });
+
+  it("reports the deleted files moved into the Holding area and the moves renamed, before the copies", async () => {
+    const primary = await makeTree({ "New/x.jpg": "12345", "fresh.txt": "f" });
+    const replica = await makeTree({ "Old/x.jpg": "12345", "gone-1.txt": "1", "gone-2.txt": "2" });
+    const report = await compare(primary, replica);
+    const seen: UpdateProgress[] = [];
+
+    await update(report, { update: true, moves: true, deletions: true }, {
+      primary,
+      replica,
+      copier: new MacFileCopier(),
+      onProgress: (p) => seen.push(structuredClone(p)),
+    });
+
+    assert.deepEqual(seen.map((p) => [p.deletions.done, p.moves.done, p.copies.copiedBytes]), [
+      [0, 0, 0],
+      [1, 0, 0],
+      [2, 0, 0],
+      [2, 1, 0],
+      [2, 1, 1],
+    ]);
+    assert.deepEqual(seen.at(-1), {
+      deletions: { done: 2, total: 2 },
+      moves: { done: 1, total: 1 },
+      copies: { copiedBytes: 1, notCopiedBytes: 0, totalBytes: 1 },
+    });
+  });
+
+  it("reports only the approved work: no copies without the copies in the report, no moves or deletions without their Approvals", async () => {
+    const primary = await makeTree({ "New/x.jpg": "12345" });
+    const replica = await makeTree({ "Old/x.jpg": "12345", "gone.txt": "1" });
+    const report = await compare(primary, replica);
+    const seen: UpdateProgress[] = [];
+
+    await update(report, APPROVED, { primary, replica, copier: new MacFileCopier(), onProgress: (p) => seen.push(structuredClone(p)) });
+
+    assert.deepEqual(seen, [{ deletions: { done: 0, total: 0 }, moves: { done: 0, total: 0 }, copies: { copiedBytes: 0, notCopiedBytes: 0, totalBytes: 0 } }]);
+  });
+
+  it("gives the same Result, and stops with the same UpdateStoppedError, with progress reported to a listener that throws", async () => {
+    const throwing = () => {
+      throw new Error("the screens went away");
+    };
+    const spec = { "a.txt": "12345", "New/x.jpg": "12345" };
+    const replicaSpec = { "Old/x.jpg": "12345", "gone.txt": "1" };
+    const run = async (onProgress?: () => void) => {
+      const primary = await makeTree(spec);
+      const replica = await makeTree(replicaSpec);
+      const report = await compare(primary, replica);
+      return update(report, { update: true, moves: true, deletions: true }, { primary, replica, copier: new MacFileCopier(), ...(onProgress === undefined ? {} : { onProgress }) });
+    };
+    assert.deepEqual(await run(throwing), await run());
+
+    // Stopped before writing anything: the Safety stop is not overridden.
+    const primary = await makeTree();
+    const replica = await makeTree(files("old", 200));
+    const report = await compare(primary, replica);
+    const stopped = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier(), onProgress: throwing }).catch((e: unknown) => e);
+    assert.ok(stopped instanceof UpdateStoppedError);
+    assert.match(stopped.message, /Safety stop/);
+    assert.deepEqual(stopped.result, { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [] });
   });
 });
 

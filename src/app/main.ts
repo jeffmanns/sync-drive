@@ -5,9 +5,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { exclusionsFileBeside } from "../engine/index.ts";
 import { MacFileCopier } from "../macos/file-copier.ts";
+import { MacItemCounter } from "../macos/item-counter.ts";
 import { MacRemounter } from "../macos/remounter.ts";
 import { MacVolumes } from "../macos/volume-identity.ts";
 import { Flow } from "./flow.ts";
+import { throttleProgress } from "./throttle.ts";
 import { CHANNELS, type Action } from "./view.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -20,6 +22,9 @@ const PAIRING_FILE =
 /** Where the Exclusions are stored: beside the Pairing. */
 const EXCLUSIONS_FILE = exclusionsFileBeside(PAIRING_FILE);
 
+/** How often, at most, progress is sent to the screens: often enough to look smooth, rarely enough to stay cheap. */
+const PROGRESS_EVERY_MS = 100;
+
 /** Where macOS mounts drives. A change here is a drive connecting or disconnecting. */
 const VOLUMES = "/Volumes";
 
@@ -29,6 +34,7 @@ const flow = new Flow({
   exclusionsFile: EXCLUSIONS_FILE,
   copier: new MacFileCopier(),
   remounter: new MacRemounter(),
+  itemCounter: new MacItemCounter(),
 });
 
 app.on("web-contents-created", (_event, contents) => {
@@ -77,9 +83,11 @@ async function start(): Promise<void> {
     assertFromScreens(event);
     await perform(action, window);
   });
-  flow.onChange((state) => {
-    if (!window.isDestroyed()) window.webContents.send(CHANNELS.state, state);
-  });
+  flow.onChange(
+    throttleProgress((state) => {
+      if (!window.isDestroyed()) window.webContents.send(CHANNELS.state, state);
+    }, PROGRESS_EVERY_MS),
+  );
   watchDrives();
   await window.loadFile(SCREENS);
 }

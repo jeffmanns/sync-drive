@@ -4,6 +4,7 @@ import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
+import { MacItemCounter } from "../src/macos/item-counter.ts";
 import { MacVolumes } from "../src/macos/volume-identity.ts";
 import { makeDiskImageTree, makeTree, removeTrees } from "./helpers/trees.ts";
 
@@ -50,5 +51,26 @@ describe("Volume identity on macOS", () => {
     await assert.rejects(volumes.volumeAt(inside), /not the top level of a drive/);
     await assert.rejects(volumes.volumeAt(await makeTree()), /not the top level of a drive/);
     await assert.rejects(volumes.volumeAt(join(drive, "missing")), /missing/);
+  });
+});
+
+describe("Item counts on macOS", () => {
+  it("counts a drive's files plus folders without reading its folders", async () => {
+    // Photos, Photos/2026, two photos, and notes.txt.
+    const drive = await makeDiskImageTree({ "Photos/2026/a.jpg": "a", "Photos/2026/b.jpg": "b", "notes.txt": "n" });
+
+    assert.equal(await new MacItemCounter().itemCount(drive), 5);
+  });
+
+  it("gives no usable count for a file system that keeps none, such as FAT and exFAT", async () => {
+    for (const fileSystem of ["MS-DOS", "ExFAT"]) {
+      const drive = await makeDiskImageTree({ "Photos/a.jpg": "a" }, { fileSystem, size: "40m", name: "SDTEST" });
+
+      assert.equal(await new MacItemCounter().itemCount(drive), undefined, fileSystem);
+    }
+  });
+
+  it("gives no usable count, rather than rejecting, for a drive that is not there", async () => {
+    assert.equal(await new MacItemCounter().itemCount(join(await makeTree(), "gone")), undefined);
   });
 });

@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { exclusionMatcher } from "./exclusions.ts";
 import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { findMoveCandidates } from "./moves.ts";
+import { reporter, type CompareProgress } from "./progress.ts";
 import { makeMovesSection, makeSection, type FileEntry, type Report } from "./report.ts";
 import { sameDate } from "./same-date.ts";
 import { safetyStopApplies } from "./safety-stops.ts";
 import { matchKey, readFailure, scan, type ScannedFile } from "./scan.ts";
+import type { ItemCounter } from "./volumes.ts";
 
 /** Options for a comparison. Quick compare is currently the only kind; Deep verify will be added here. */
 export interface CompareOptions {
@@ -18,6 +20,13 @@ export interface CompareOptions {
   exclusions?: readonly string[];
   /** Confirms move candidates by checksum. Defaults to SHA-256 (ADR 0010). */
   hasher?: Hasher;
+  /**
+   * Gives each drive's item count before scanning, for `onProgress`. Without it, scanning progress
+   * has no total. Called with the folders given to `compare`.
+   */
+  itemCounter?: ItemCounter;
+  /** Called as the comparison goes on, with how far it has got. What it throws is ignored. */
+  onProgress?: (progress: CompareProgress) => void;
 }
 
 /**
@@ -27,7 +36,8 @@ export interface CompareOptions {
  * shortcuts, never followed. What cannot be read on the Primary is listed in `unreadable` and left
  * out, and its Replica copies are never reported as deleted. Reads both drives; writes nothing to
  * either. Rejects if either folder is missing or is not a folder, or
- * if anything on the Replica cannot be read.
+ * if anything on the Replica cannot be read. Reports its progress to `options.onProgress`: items
+ * scanned out of both drives' item counts, then bytes read to confirm moves.
  */
 export async function compare(
   primary: string,
@@ -35,10 +45,22 @@ export async function compare(
   options: CompareOptions = {},
 ): Promise<Report> {
   const isExcluded = exclusionMatcher(options.exclusions ?? []);
-  await Promise.all([assertFolder("Primary", primary), assertFolder("Replica", replica)]);
+  const report = reporter(options.onProgress);
+  const [, , total] = await Promise.all([
+    assertFolder("Primary", primary),
+    assertFolder("Replica", replica),
+    itemTotal(options.itemCounter, primary, replica),
+  ]);
+  let scanned = 0;
+  const scanning = () => report({ phase: "scanning", scanned, ...(total === undefined ? {} : { total }) });
+  scanning();
+  const onListed = (items: number) => {
+    scanned += items;
+    scanning();
+  };
   const [{ files: primaryFiles, unreadable }, { files: replicaFiles }] = await Promise.all([
-    scan("Primary", primary, isExcluded),
-    scan("Replica", replica, isExcluded),
+    scan("Primary", primary, isExcluded, onListed),
+    scan("Replica", replica, isExcluded, onListed),
   ]);
   const primaryOnly: ScannedFile[] = [];
   const changed: ScannedFile[] = [];
@@ -95,13 +117,26 @@ export async function compare(
   }
   // Lookalikes are never one end of a move either: a rename would take the backup from where it was.
   const movable = replicaOnly.filter((file) => !copiesOfUnreadable.has(file));
-  for (const candidate of findMoveCandidates(primaryOnly, movable)) {
-    if (cannotRead.has(candidate.primary)) continue;
+  const candidates = findMoveCandidates(primaryOnly, movable).filter((candidate) => !cannotRead.has(candidate.primary));
+  // Each candidate is read in full on both drives.
+  const totalBytes = candidates.reduce((total, candidate) => total + 2 * candidate.primary.size, 0);
+  /** Bytes of the candidates already checked, whether or not they could be read in full. */
+  let checkedBefore = 0;
+  if (candidates.length > 0) report({ phase: "checking moves", checkedBytes: 0, totalBytes });
+  for (const candidate of candidates) {
+    let read = 0;
+    const onRead = (bytes: number) => {
+      read += bytes;
+      // A file that grew since it was scanned must not take the bar past this candidate.
+      report({ phase: "checking moves", checkedBytes: checkedBefore + Math.min(read, 2 * candidate.primary.size), totalBytes });
+    };
     // One at a time: reading many files at once makes a spinning drive seek back and forth.
     const [primarySum, replicaSum] = await Promise.allSettled([
-      hasher.checksum(join(primary, candidate.primary.path)),
-      hasher.checksum(join(replica, candidate.replica.path)),
+      hasher.checksum(join(primary, candidate.primary.path), onRead),
+      hasher.checksum(join(replica, candidate.replica.path), onRead),
     ]);
+    checkedBefore += 2 * candidate.primary.size;
+    if (read !== 2 * candidate.primary.size) report({ phase: "checking moves", checkedBytes: checkedBefore, totalBytes });
     if (primarySum.status === "rejected") {
       // The Primary file cannot be read (damage, say): skipped like any other, and its copy kept.
       cannotRead.add(candidate.primary);
@@ -143,6 +178,14 @@ function quickEqual(a: ScannedFile, b: ScannedFile): boolean {
 /** The last name in `path`: the file's own name, without its folders. */
 function nameOf(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
+}
+
+/** Both drives' item counts together, or `undefined` without a counter or when either has no usable count. */
+async function itemTotal(counter: ItemCounter | undefined, primary: string, replica: string): Promise<number | undefined> {
+  if (counter === undefined) return undefined;
+  const count = (root: string) => counter.itemCount(root).catch(() => undefined);
+  const [p, r] = await Promise.all([count(primary), count(replica)]);
+  return p === undefined || r === undefined ? undefined : p + r;
 }
 
 async function assertFolder(role: "Primary" | "Replica", path: string): Promise<void> {

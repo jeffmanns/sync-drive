@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { after, afterEach, describe, it } from "node:test";
 import { Flow } from "../src/app/flow.ts";
+import type { FlowState } from "../src/app/view.ts";
 import { freeSpaceExplanation, safetyStopExplanation } from "../src/app/view.ts";
 import { compare, type FileCopier } from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
+import { FakeItemCounter } from "./helpers/fake-item-counter.ts";
 import { FakeRemounter } from "./helpers/fake-remounter.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
 import { makeDiskImageTree, makeTree, removeTrees, snapshotTree, type TreeSpec } from "./helpers/trees.ts";
@@ -40,14 +42,29 @@ afterEach(async () => {
 async function testMac(copier: FileCopier = new MacFileCopier()) {
   const volumes = new FakeVolumes();
   const remounter = new FakeRemounter();
+  const itemCounter = new FakeItemCounter();
   const pairingFile = join(await makeTree(), "sync-drive", "pairing.json");
   const exclusionsFile = join(dirname(pairingFile), "exclusions.json");
   const open = async () => {
-    const flow = new Flow({ volumes, pairingFile, exclusionsFile, copier, remounter });
+    const flow = new Flow({ volumes, pairingFile, exclusionsFile, copier, remounter, itemCounter });
     await flow.open();
     return flow;
   };
-  return { volumes, remounter, pairingFile, exclusionsFile, open };
+  return { volumes, remounter, itemCounter, pairingFile, exclusionsFile, open };
+}
+
+/**
+ * Calls `listener` with every new state of `flow`, except those that differ from the one before only
+ * in how far the comparison or the Update has got.
+ */
+function onChangeIgnoringProgress(flow: Flow, listener: (state: FlowState) => void): void {
+  let last: FlowState | undefined;
+  flow.onChange((state) => {
+    const withoutProgress = (s: FlowState) => ({ ...s, progress: undefined });
+    if (last?.step === state.step && isDeepStrictEqual(withoutProgress(last), withoutProgress(state))) return;
+    last = state;
+    listener(state);
+  });
 }
 
 describe("app flow: opening", () => {
@@ -195,7 +212,7 @@ describe("app flow: Comparing and Copies", () => {
   it("compares the paired drives, showing Comparing meanwhile, then the new and changed files by folder", async () => {
     const { flow, primary, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
     const steps: string[] = [];
-    flow.onChange((state) => steps.push(state.step));
+    onChangeIgnoringProgress(flow, (state) => steps.push(state.step));
 
     await flow.compare();
 
@@ -255,6 +272,57 @@ describe("app flow: Comparing and Copies", () => {
 
     assert.equal(stateOf(flow).step, "start");
     assert.match(stateOf(flow).notice, /matches the Primary/);
+  });
+});
+
+describe("app flow: progress", () => {
+  it("shows Comparing's progress as items scanned out of the paired drives' item counts", async () => {
+    const { flow, itemCounter, primary, replica } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    itemCounter.set(primary, 40);
+    itemCounter.set(replica, 60);
+    const comparing: Record<string, any>[] = [];
+    flow.onChange((state) => {
+      if (state.step === "comparing") comparing.push(state);
+    });
+
+    await flow.compare();
+
+    assert.equal(comparing[0]!.progress, undefined, "nothing to show until the counts are read");
+    assert.deepEqual(comparing[1]!.progress, { phase: "scanning", scanned: 0, total: 100 });
+    // Photos, Photos/2026, a.jpg, b.jpg, readme.txt; readme.txt, Docs, old.pdf.
+    assert.deepEqual(comparing.at(-1)!.progress, { phase: "scanning", scanned: 8, total: 100 });
+    assert.equal(stateOf(flow).step, "copies");
+  });
+
+  it("shows Comparing's progress with no total when a paired drive has no usable item count", async () => {
+    const { flow, itemCounter, primary } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    itemCounter.set(primary, 40);
+    const comparing: Record<string, any>[] = [];
+    flow.onChange((state) => {
+      if (state.step === "comparing") comparing.push(state);
+    });
+
+    await flow.compare();
+
+    assert.deepEqual(comparing.at(-1)!.progress, { phase: "scanning", scanned: 8 });
+  });
+
+  it("shows Updating's progress, by bytes copied out of the approved total, while the Primary is read-only", async () => {
+    const { flow } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+    const updating: Record<string, any>[] = [];
+    flow.onChange((state) => {
+      if (state.step === "updating" && state.progress !== undefined) updating.push(state);
+    });
+
+    await flow.apply();
+
+    assert.ok(updating.every((state) => state.primary === "read-only"), "the bar belongs to the read-only stage");
+    assert.deepEqual(updating[0]!.progress.copies, { copiedBytes: 0, notCopiedBytes: 0, totalBytes: 1_500_013 });
+    assert.deepEqual(updating.at(-1)!.progress.copies, { copiedBytes: 1_500_013, notCopiedBytes: 0, totalBytes: 1_500_013 });
+    assert.equal(stateOf(flow).step, "result");
   });
 });
 
@@ -322,7 +390,7 @@ describe("app flow: Approval, Summary and Apply", () => {
       leaveOnReplica: { count: 1, totalSize: 3 },
     });
     const steps: string[] = [];
-    flow.onChange((state) => steps.push(state.step));
+    onChangeIgnoringProgress(flow, (state) => steps.push(state.step));
     await flow.apply();
 
     assert.deepEqual(steps, ["updating", "updating", "updating", "result"]);
@@ -466,7 +534,7 @@ describe("app flow: refusals", () => {
   it("stops on the refusal screen, before any Approval, when the Safety stop applies, explaining the deleted files' share of the Replica", async () => {
     const { flow } = await pairedPastTheSafetyStop();
     const steps: string[] = [];
-    flow.onChange((state) => steps.push(state.step));
+    onChangeIgnoringProgress(flow, (state) => steps.push(state.step));
 
     await flow.compare();
 
@@ -738,7 +806,7 @@ describe("app flow: Deletions", () => {
       leaveOnReplica: { count: 0, totalSize: 0 },
     });
     const steps: string[] = [];
-    flow.onChange((state) => steps.push(state.step));
+    onChangeIgnoringProgress(flow, (state) => steps.push(state.step));
     await flow.apply();
 
     assert.deepEqual(steps, ["updating", "updating", "updating", "result"]);
@@ -1055,7 +1123,7 @@ describe("app flow: the Primary read-only during the Update", () => {
     flow.approveCopies(true);
     toSummary(flow);
     const states: Record<string, any>[] = [];
-    flow.onChange((state) => states.push(state));
+    onChangeIgnoringProgress(flow, (state) => states.push(state));
 
     await flow.apply();
 
