@@ -4,9 +4,6 @@
   "description": "Compare an everyday Primary drive against its Replica, and bring the Replica up to date on approval.",
   "private": true,
   "type": "module",
-  "bin": {
-    "sync-drive": "dist/cli.js"
-  },
   "engines": {
     "node": ">=24.22.1"
   },

@@ -183,7 +183,7 @@ function toSummaryApprovingDeletions(flow: Flow): void {
   assert.equal(flow.state.step, "summary");
 }
 
-/** The CLI's example drives: two new files and one changed, and one file only on the Replica. */
+/** The example drives: two new files and one changed, and one file only on the Replica. */
 const EXAMPLE_PRIMARY: TreeSpec = {
   "Photos/2026/a.jpg": "x".repeat(1_500_000),
   "Photos/2026/b.jpg": "12345",
@@ -227,6 +227,25 @@ describe("app flow: Comparing and Copies", () => {
 
     assert.equal(stateOf(flow).step, "start");
     assert.match(stateOf(flow).error, /Replica .* is not connected/);
+    assert.match(stateOf(flow).error, /If a drive has been replaced, use Re-pair on Start\.$/, "points to the app's Re-pair, not a command");
+  });
+
+  it("writes nothing to either drive while pairing and comparing", async () => {
+    const mac = await testMac();
+    const primary = await makePrimary(EXAMPLE_PRIMARY);
+    const replica = await makeTree(EXAMPLE_REPLICA);
+    mac.volumes.connect(primary, "PRIMARY-ID");
+    mac.volumes.connect(replica, "REPLICA-ID");
+    const replicaBefore = await snapshotTree(replica);
+    const flow = await mac.open();
+
+    flow.choose("primary", primary);
+    flow.choose("replica", replica);
+    await flow.pair();
+    await flow.compare();
+
+    assert.equal(stateOf(flow).step, "copies");
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 
   it("says so on Start, asking nothing, when the Replica matches the Primary", async () => {
