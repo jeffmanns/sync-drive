@@ -10,7 +10,7 @@ import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-
 import { INCOMING_FOLDER } from "./incoming.ts";
 import { sameDate } from "./same-date.ts";
 import { checkFreeSpace, safetyStopApplies } from "./safety-stops.ts";
-import { readFailure } from "./scan.ts";
+import { matchKey, readFailure } from "./scan.ts";
 import { isSyncDriveFolder } from "./sync-drive-folders.ts";
 
 /** What the user has approved for an Update. Nothing is written without `update`. */
@@ -66,6 +66,12 @@ export interface UpdateSetup {
    */
   exclusions?: readonly string[];
   /**
+   * The folder the report's comparison was limited to, if any (relative to the top of the drives,
+   * using `/`). The Update writes nothing if the report holds a path outside it, and never removes
+   * an emptied Replica folder at or above it. Letter case is ignored, as when pairing files.
+   */
+  only?: string;
+  /**
    * Called as the Update goes on, once it has passed its checks and before it writes, with how far it
    * has got. What it throws is ignored.
    */
@@ -114,7 +120,8 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
  * having written nothing, when the report holds a path `setup.exclusions` leave out, when the
  * Safety stop applies to the report's deletions (counted again here, not read from
- * `report.safetyStop`) without `approvals.overrideSafetyStop`, or when the Replica lacks the free
+ * `report.safetyStop`) without `approvals.overrideSafetyStop`, when it holds a path outside
+ * `setup.only`, or when the Replica lacks the free
  * space for the copies (ADR 0008). Every rejection is an
  * `UpdateStoppedError` saying what had been done before it stopped. Reports its progress to
  * `setup.onProgress`: deleted files and moves dealt with, then bytes copied out of the total.
@@ -170,6 +177,11 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   const excluded = reportPaths.find(isExcluded);
   if (excluded !== undefined) {
     throw new Error(`"${excluded}" is left out by the Exclusions; nothing was written. Compare again.`);
+  }
+  // Every path in the report too: one outside the folder means the report was made for more than it.
+  const outside = setup.only === undefined ? undefined : reportPaths.find((path) => !isInsideFolder(setup.only!, path));
+  if (outside !== undefined) {
+    throw new Error(`"${outside}" is outside the folder "${setup.only}" the Update is limited to; nothing was written. Compare again.`);
   }
   // Counted again from the deletions it was handed, rather than trusting the Report's flag, so the
   // Safety stop holds whoever built the Report (ADR 0008).
@@ -291,11 +303,13 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
 
 /**
  * Removes the Replica folders that held `path` (relative to the drive root) if moving it left them
- * empty and the Primary has no folder there, deepest first. `rmdir` only ever removes an empty
+ * empty and the Primary has no folder there, deepest first, stopping below `setup.only` if given. `rmdir` only ever removes an empty
  * folder, so no file can be lost.
  */
 async function removeEmptiedFolders(path: string, setup: UpdateSetup): Promise<void> {
   for (let folder = dirname(path); folder !== "."; folder = dirname(folder)) {
+    // Limited to one folder: that folder and everything above it are outside what the Update may change.
+    if (setup.only !== undefined && !isInsideFolder(setup.only, folder)) return;
     const onPrimary = await lstat(join(setup.primary, folder)).catch(() => undefined);
     if (onPrimary?.isDirectory()) return;
     try {
@@ -418,6 +432,14 @@ async function assertSeparate(primary: string, replica: string): Promise<void> {
   if (isWithin(p, r) || isWithin(r, p)) {
     throw new Error(`The Primary ${primary} and the Replica ${replica} overlap; nothing was written`);
   }
+}
+
+/**
+ * Whether `path` (relative to the top of the drive) is below `folder`, not `folder` itself, ignoring
+ * letter case as files are paired (`matchKey`).
+ */
+function isInsideFolder(folder: string, path: string): boolean {
+  return matchKey(path).startsWith(`${matchKey(folder)}/`);
 }
 
 /** Whether `path` is `folder` itself or somewhere inside it. */

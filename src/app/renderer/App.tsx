@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines } from "../view.ts";
+import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines } from "../view.ts";
 import type {
   Action,
   CopiesState,
@@ -139,6 +139,7 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
         <dt>Replica</dt>
         <dd>"{replica.name}" <span className="note">volume ID {replica.id}</span></dd>
       </dl>
+      <OnlyFolder state={state} send={send} busy={busy} />
       <ExclusionsList state={state} send={send} busy={busy} />
       <Problem text={state.error} />
       {state.notice !== undefined && <p className="notice">{state.notice}</p>}
@@ -148,6 +149,31 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
       </Buttons>
     </>
   );
+}
+
+/** Which part of the drive the next run compares: the whole drive, or one folder chosen on the Primary. */
+function OnlyFolder({ state, send, busy }: ScreenProps<StartState>) {
+  return (
+    <section className="only-folder">
+      <h2>What to compare</h2>
+      {state.only === undefined ? (
+        <p>The whole drive. To start with a small part of it, limit the run to one folder.</p>
+      ) : (
+        <p>Only the folder <strong>"{state.only}"</strong>. Nothing outside it is compared, copied, moved or deleted.</p>
+      )}
+      <Buttons>
+        <button onClick={() => send({ type: "chooseOnlyFolder" })} disabled={busy}>
+          {state.only === undefined ? "Limit to one folder…" : "Choose another folder…"}
+        </button>
+        {state.only !== undefined && <button onClick={() => send({ type: "wholeDrive" })} disabled={busy}>Compare the whole drive</button>}
+      </Buttons>
+    </section>
+  );
+}
+
+/** The note on the review steps, the Summary and the Result when the run is limited to one folder. */
+function OnlyFolderNote({ only }: { only: string | undefined }) {
+  return only === undefined ? null : <p className="warning">{onlyFolderNote(only)}</p>;
 }
 
 /**
@@ -204,6 +230,7 @@ function RefusedScreen({ state, send, busy }: ScreenProps<RefusedState>) {
   return (
     <>
       <h1>The Update is refused</h1>
+      <OnlyFolderNote only={state.review.only} />
       {safetyStop !== undefined && <p className="problem">{safetyStopExplanation(safetyStop)}</p>}
       {freeSpace !== undefined && <p className="problem">{freeSpaceExplanation(freeSpace)}</p>}
       <p>Nothing was written to the Replica.</p>
@@ -252,6 +279,7 @@ function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
     <>
       <Steps current="copies" review={review} />
       <h1>Copies</h1>
+      <OnlyFolderNote only={state.review.only} />
       {review.exclusions.length > 0 && (
         <p className="note">Left out by the Exclusions: {review.exclusions.join(", ")}.</p>
       )}
@@ -280,6 +308,7 @@ function MovesScreen({ state, send, busy }: ScreenProps<MovesState>) {
     <>
       <Steps current="moves" review={review} />
       <h1>Moves</h1>
+      <OnlyFolderNote only={state.review.only} />
       <p>
         These files were moved or renamed on the Primary. Each was matched by name, size and date, and its contents confirmed
         identical by checksum. Approving renames them on the Replica: nothing is copied, and nothing goes into the Holding area.
@@ -340,6 +369,7 @@ function DeletionsScreen({ state, send, busy }: ScreenProps<DeletionsState>) {
     <>
       <Steps current="deletions" review={review} />
       <h1>Deletions</h1>
+      <OnlyFolderNote only={state.review.only} />
       <p>These files are on the Replica but no longer on the Primary. Approving moves them into the Holding area on the Replica, keeping their folders.</p>
       <SectionList title="Deleted" section={review.deleted} />
       {/* Right before the deletions Approval, as in ADR 0006. */}
@@ -414,6 +444,7 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
     <>
       <Steps current="summary" review={state.review} />
       <h1>Summary</h1>
+      <OnlyFolderNote only={state.review.only} />
       <p>Apply will:</p>
       <ul className="summary">
         {copy.count > 0
@@ -481,6 +512,7 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
   return (
     <>
       <h1>{problems ? "Update finished with problems" : "Update done"}</h1>
+      <OnlyFolderNote only={state.only} />
       <Problem text={state.error === undefined ? undefined : `The Update stopped: ${state.error}`} />
       <Problem text={state.primaryStillReadOnly === undefined ? undefined : `The Primary may still be read-only: ${state.primaryStillReadOnly}`} />
       <UnreadableList unreadable={state.unreadable} />

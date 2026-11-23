@@ -1039,3 +1039,74 @@ describe("Update: Exclusions", () => {
     assert.deepEqual(await readdir(join(replica, "Scratch")), ["old.txt"]);
   });
 });
+
+describe("Update: limited to one folder", () => {
+  it("copies, renames and moves into the Holding area only inside the folder, leaving everything outside it alone", async () => {
+    const primary = await makeTree({
+      "Photos/2019/new.jpg": "n",
+      "Photos/2019/Iceland/moved.jpg": "m",
+      "Photos/2020/new.jpg": "n",
+      "Elsewhere/arrived.jpg": "a",
+    });
+    const replica = await makeTree({
+      "Photos/2019/moved.jpg": "m",
+      "Photos/2019/gone.jpg": "g",
+      "Photos/2019/arrived.jpg": "a",
+      "Photos/2020/gone.jpg": "g",
+      "old.txt": "o",
+    });
+    const primaryBefore = await snapshotTree(primary);
+    /** The Replica outside the folder (and outside the Holding area), from a snapshot line: its kind, then its path. */
+    const outside = (lines: string[]) => lines.filter((line) => !/^\S+\s+(Photos\/2019|sync-drive Holding Area)(\/| )/.test(line));
+    const outsideBefore = outside(await snapshotTree(replica));
+
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+    const result = await update(report, { update: true, moves: true, deletions: true }, { primary, replica, copier: new MacFileCopier(), only: "Photos/2019" });
+
+    assert.deepEqual(result.copied, [{ path: "Photos/2019/new.jpg", size: 1 }]);
+    assert.deepEqual(result.renamed, [{ from: "Photos/2019/moved.jpg", to: "Photos/2019/Iceland/moved.jpg", size: 1 }]);
+    // Moved out of the folder on the Primary: it cannot be recognised as a move, so it is a deletion.
+    assert.deepEqual(result.moved.map((file) => file.path), ["Photos/2019/arrived.jpg", "Photos/2019/gone.jpg"]);
+    assert.deepEqual(outside(await snapshotTree(replica)), outsideBefore);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore, "the Primary must never be written to");
+  });
+
+  it("writes nothing when the report holds a path outside the folder, whether to copy, move or delete", async () => {
+    const primary = await makeTree({ "Photos/2019/a.jpg": "a", "Other/new.txt": "x", "New/photo.jpg": "same" });
+    const replica = await makeTree({ "Other/old.txt": "x", "Old/photo.jpg": "same" });
+    // Compared without the folder, as from a Report made for the whole drive.
+    const report = await compare(primary, replica);
+    const replicaBefore = await snapshotTree(replica);
+
+    await assert.rejects(
+      update(report, { update: true, moves: true, deletions: true }, { primary, replica, copier: new MacFileCopier(), only: "Photos/2019" }),
+      (error: Error) => error instanceof UpdateStoppedError && /is outside the folder "Photos\/2019" the Update is limited to; nothing was written/.test(error.message),
+    );
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("matches the folder whatever its letter case on the Replica", async () => {
+    const primary = await makeTree({ "Photos/2019/a.jpg": "a" });
+    const replica = await makeTree({ "photos/2019/gone.jpg": "g" });
+
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier(), only: "Photos/2019" });
+
+    assert.deepEqual(result.moved, [{ path: "photos/2019/gone.jpg", size: 1 }]);
+    assert.deepEqual(result.copied, [{ path: "Photos/2019/a.jpg", size: 1 }]);
+  });
+
+  it("never removes an emptied folder at or above the folder it is limited to", async () => {
+    const primary = await makeTree({ "Photos/2019/kept.jpg": "k" });
+    const replica = await makeTree({ "Photos/2019/Day 1/gone.jpg": "g" });
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+    // Gone from the Primary since the comparison: the deletion still goes ahead, and the folders it empties have no Primary folder to keep them.
+    await rm(join(primary, "Photos"), { recursive: true });
+
+    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier(), only: "Photos/2019" });
+
+    assert.deepEqual(result.moved, [{ path: "Photos/2019/Day 1/gone.jpg", size: 1 }]);
+    assert.deepEqual(await readdir(join(replica, "Photos")), ["2019"]);
+    assert.deepEqual(await readdir(join(replica, "Photos/2019")), []);
+  });
+});

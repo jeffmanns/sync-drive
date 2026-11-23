@@ -1,3 +1,4 @@
+import { isAbsolute, relative, sep } from "node:path";
 import {
   checkExclusion,
   checkFreeSpace,
@@ -74,6 +75,8 @@ export class Flow {
   #quitting = false;
   /** The owner's Exclusions, as saved. */
   #exclusions: string[] = [];
+  /** The folder the next run is limited to, if any. In memory only. */
+  #only: string | undefined;
   /** Why the saved Exclusions cannot be used, if they are damaged. Nothing is compared, or saved over them, until they are fixed. */
   #exclusionsDamaged: string | undefined;
 
@@ -103,6 +106,7 @@ export class Flow {
       step: "start",
       pairing,
       exclusions: this.#exclusions,
+      ...(this.#only === undefined ? {} : { only: this.#only }),
       ...(this.#exclusionsDamaged === undefined ? {} : { exclusionProblem: this.#exclusionsDamaged }),
       ...extra,
     };
@@ -219,6 +223,52 @@ export class Flow {
     }
   }
 
+  /**
+   * On Start: where the folder chooser for `limitTo` opens: the top of the Primary, or `undefined`
+   * when it is not connected.
+   */
+  async primaryTop(): Promise<string | undefined> {
+    if (this.#state.step !== "start") return undefined;
+    return findPairedDrives(this.#state.pairing, this.#deps.volumes).then(
+      (drives) => drives.primary.mountPoint,
+      () => undefined,
+    );
+  }
+
+  /**
+   * On Start: limits the next comparison and Update to `folder`, a full path the owner chose on the
+   * Primary. The top of the Primary means the whole drive. A folder elsewhere is refused, and Start
+   * says why. Whether it is a folder that can be compared is checked when comparing.
+   */
+  async limitTo(folder: string): Promise<void> {
+    const state = this.#state;
+    if (state.step !== "start") return;
+    const { pairing } = state;
+    let top: string;
+    try {
+      top = (await findPairedDrives(pairing, this.#deps.volumes)).primary.mountPoint;
+    } catch (error) {
+      if (this.#state === state) this.#set(this.#start(pairing, { error: (error as Error).message }));
+      return;
+    }
+    if (this.#state !== state) return;
+    const route = relative(top, folder);
+    if (isAbsolute(route) || route === ".." || route.startsWith("../")) {
+      this.#set(this.#start(pairing, { error: `"${folder}" is not on the Primary. Choose a folder on the Primary.` }));
+      return;
+    }
+    this.#only = route === "" ? undefined : route.split(sep).join("/");
+    this.#set(this.#start(pairing));
+  }
+
+  /** On Start: compares the whole drive again, rather than one folder. */
+  wholeDrive(): void {
+    const state = this.#state;
+    if (state.step !== "start") return;
+    this.#only = undefined;
+    this.#set(this.#start(state.pairing));
+  }
+
   /** On Start: finds the paired drives and compares them, leaving out the Exclusions, then moves on to Copies. */
   async compare(): Promise<void> {
     const state = this.#state;
@@ -230,6 +280,7 @@ export class Flow {
       return;
     }
     const exclusions = this.#exclusions;
+    const only = this.#only;
     this.#discardComparison();
     const comparison = this.#comparisonGeneration;
     this.#set({ step: "comparing", pairing });
@@ -237,6 +288,7 @@ export class Flow {
       const drives = await findPairedDrives(pairing, this.#deps.volumes);
       const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint, {
         exclusions,
+        ...(only === undefined ? {} : { only }),
         itemCounter: this.#deps.itemCounter,
         onProgress: (progress) => {
           // Only while still on Comparing for this comparison: a discarded one must not bring it back.
@@ -248,7 +300,8 @@ export class Flow {
       const { new: newFiles, changed, moves, deleted, unreadable } = report;
       // Anything unreadable is shown in the review, even with nothing else to do: it was not compared.
       if (newFiles.count + changed.count + moves.count + deleted.count + unreadable.length === 0) {
-        this.#set(this.#start(pairing, { notice: "The Replica matches the Primary. Nothing to update." }));
+        const what = only === undefined ? "The Replica" : `The folder "${only}" on the Replica`;
+        this.#set(this.#start(pairing, { notice: `${what} matches the Primary. Nothing to update.` }));
         return;
       }
       // Both stops are checked before any Approval, so a refused Update asks nothing (ADR 0008).
@@ -263,6 +316,7 @@ export class Flow {
         pairing,
         drives,
         exclusions,
+        ...(only === undefined ? {} : { only }),
         new: newFiles,
         changed,
         moves,
@@ -278,7 +332,7 @@ export class Flow {
         this.#set({
           step: "refused",
           review,
-          ...(report.safetyStop ? { safetyStop: { deleted: totalsOf(deleted), replica: report.replica } } : {}),
+          ...(report.safetyStop ? { safetyStop: { deleted: totalsOf(deleted), replica: report.replica, ...(only === undefined ? {} : { only }) } } : {}),
           ...(noRoom ? { freeSpace: { needed: space.needed, free: space.free, holdingArea: held } } : {}),
         });
         return;
@@ -491,6 +545,7 @@ export class Flow {
         replica: review.drives.replica.mountPoint,
         copier: this.#copier,
         exclusions: review.exclusions,
+        ...(review.only === undefined ? {} : { only: review.only }),
         // The Update reports only while it runs, which is all while the Primary is read-only (ADR 0013).
         onProgress: (progress) => {
           if (this.#state.step === "updating") this.#set({ ...updating, primary: "read-only", progress });
@@ -510,6 +565,7 @@ export class Flow {
     this.#set({
       step: "result",
       pairing: review.pairing,
+      ...(review.only === undefined ? {} : { only: review.only }),
       unreadable: review.unreadable,
       copied: done.copied,
       failed: done.failed,

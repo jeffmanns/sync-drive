@@ -698,6 +698,90 @@ describe("Exclusions", () => {
     assert.deepEqual(report.replica, { count: 0, totalSize: 0 });
   });
 
+  it("finds the folder on the Replica whatever its letter case there, reporting each file as stored on its drive", async () => {
+    const primary = await makeTree({ "Photos/2019/a.jpg": "a", "Photos/2019/new.jpg": "n" });
+    const replica = await makeTree({ "photos/2019/a.jpg": "a", "photos/2019/gone.jpg": "g" });
+
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+
+    assert.deepEqual(report.new.files, [{ path: "Photos/2019/new.jpg", size: 1 }]);
+    assert.deepEqual(report.changed.files, []);
+    assert.deepEqual(report.deleted.files, [{ path: "photos/2019/gone.jpg", size: 1 }]);
+  });
+
+  it("refuses a folder that is not on the Primary, or is not a folder there", async () => {
+    const primary = await makeTree({ "Photos/2020/a.jpg": "a", "notes.txt": "n" });
+    const replica = await makeTree({ "Photos/2019/a.jpg": "a" });
+
+    await assert.rejects(compare(primary, replica, { only: "Photos/2019" }), /The Primary has no folder "Photos\/2019"/);
+    await assert.rejects(compare(primary, replica, { only: "notes.txt" }), /"notes.txt" on the Primary is not a folder/);
+  });
+
+  it("refuses a folder reached through a shortcut on the Primary, which a comparison of the whole drive would not follow", async () => {
+    const primary = await makeTree({ "Real/2019/a.jpg": "a" });
+    const replica = await makeTree({ "Real/2019/a.jpg": "a" });
+    await symlink("Real", join(primary, "Photos"));
+
+    await assert.rejects(compare(primary, replica, { only: "Photos/2019" }), /"Photos" on the Primary is a shortcut/);
+  });
+
+  it("refuses a folder whose path on the Replica goes through a shortcut or a file", async () => {
+    const primary = await makeTree({ "Photos/2019/a.jpg": "a", "Docs/2019/b.txt": "b" });
+    const replica = await makeTree({ "Real/2019/a.jpg": "a", "Docs": "a file" });
+    await symlink("Real", join(replica, "Photos"));
+
+    await assert.rejects(compare(primary, replica, { only: "Photos/2019" }), /"Photos" on the Replica is a shortcut/);
+    await assert.rejects(compare(primary, replica, { only: "Docs/2019" }), /"Docs" on the Replica is not a folder/);
+  });
+
+  it("refuses a folder that cannot be read, or that sits in a folder that cannot be listed, on the Primary", async () => {
+    const primary = await makeTree({ "Photos/2019/a.jpg": "a" });
+    const replica = await makeTree();
+    const before = await snapshotTree(primary);
+    for (const [locked, mode] of [["Photos/2019", 0o000], ["Photos", 0o311]] as const) {
+      await chmod(join(primary, locked), mode);
+      try {
+        await assert.rejects(compare(primary, replica, { only: "Photos/2019" }), /on the Primary cannot be read/);
+      } finally {
+        await chmod(join(primary, locked), 0o755);
+      }
+    }
+    assert.deepEqual(await snapshotTree(primary), before, "the Primary must never be written to");
+  });
+
+  it("refuses a folder that is not plainly a folder inside the drive, is sync-drive's own, or is left out by the Exclusions", async () => {
+    const primary = await makeTree({ "Photos/2019/a.jpg": "a", "Cache/x": "x" });
+    const replica = await makeTree();
+
+    for (const only of ["", "/Photos", "Photos/../Photos", "Photos//2019", "Photos/./2019", "Photos/2019/"]) {
+      await assert.rejects(compare(primary, replica, { only }), /is not a folder inside the drive/, only);
+    }
+    await assert.rejects(compare(primary, replica, { only: "sync-drive Holding Area/Photos" }), /sync-drive's own/);
+    await assert.rejects(compare(primary, replica, { only: "Cache", exclusions: ["cache"] }), /left out by the Exclusions/);
+  });
+
+  it("gives no scanning total, as the drives' item counts are for the whole drives", async () => {
+    const primary = await makeTree({ "Photos/2019/a.jpg": "a" });
+    const replica = await makeTree();
+    const seen: CompareProgress[] = [];
+
+    await compare(primary, replica, { only: "Photos/2019", itemCounter: { itemCount: async () => 1000 }, onProgress: (p) => seen.push(p) });
+
+    assert.ok(seen.length > 0);
+    assert.ok(seen.every((p) => p.phase === "scanning" && p.total === undefined));
+  });
+
+  it("writes nothing to either drive", async () => {
+    const primary = await makeTree({ "Photos/2019/a.jpg": "a", "Photos/2019/moved/b.jpg": "b" });
+    const replica = await makeTree({ "photos/2019/old.jpg": "o", "Photos/2019/b.jpg": "b" });
+    const [primaryBefore, replicaBefore] = await Promise.all([snapshotTree(primary), snapshotTree(replica)]);
+
+    await compare(primary, replica, { only: "Photos/2019" });
+
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
   it("still refuses to compare when the Primary has an item named like sync-drive's own, even if excluded", async () => {
     const primary = await makeTree({ "sync-drive Holding Area/a.jpg": "x" });
     const replica = await makeTree();
@@ -710,6 +794,74 @@ describe("Exclusions", () => {
     const replica = await makeTree();
 
     await assert.rejects(compare(primary, replica, { exclusions: ["*"] }), /everything on the drive/);
+  });
+});
+
+describe("Limiting a comparison to one folder", () => {
+  it("compares only that folder, reporting paths from the top of the drive and ignoring everything outside it", async () => {
+    const primary = await makeTree({ "Photos/2019/new.jpg": "n", "Photos/2019/edited.jpg": "longer", "Photos/2020/new.jpg": "n", "top.txt": "t" });
+    const replica = await makeTree({ "Photos/2019/edited.jpg": "short", "Photos/2019/gone.jpg": "g", "Photos/2020/gone.jpg": "g", "old.txt": "o" });
+
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+
+    assert.deepEqual(report.new.files, [{ path: "Photos/2019/new.jpg", size: 1 }]);
+    assert.deepEqual(report.changed.files, [{ path: "Photos/2019/edited.jpg", size: 6 }]);
+    assert.deepEqual(report.deleted.files, [{ path: "Photos/2019/gone.jpg", size: 1 }]);
+  });
+
+  it("measures the Safety stop against the folder's contents, not the whole Replica", async () => {
+    const outside = Object.fromEntries(Array.from({ length: 2000 }, (_, i) => [`Other/${i}.txt`, "x"]));
+    const inFolder = Object.fromEntries(Array.from({ length: 150 }, (_, i) => [`Photos/2019/${i}.jpg`, "x"]));
+    const primary = await makeTree({ ...outside, "Photos/2019/kept.jpg": "k" });
+    const replica = await makeTree({ ...outside, ...inFolder, "Photos/2019/kept.jpg": "k" });
+
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+
+    assert.deepEqual(report.replica, { count: 151, totalSize: 151 });
+    assert.equal(report.deleted.count, 150);
+    assert.equal(report.safetyStop, true);
+  });
+
+  it("still needs more than 100 deleted files for the Safety stop, however small the folder", async () => {
+    const inFolder = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`Photos/2019/${i}.jpg`, "x"]));
+    const primary = await makeTree({ "Photos/2019/kept.jpg": "k" });
+    const replica = await makeTree({ ...inFolder, "Photos/2019/kept.jpg": "k" });
+
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+
+    assert.equal(report.deleted.count, 100);
+    assert.equal(report.safetyStop, false);
+  });
+
+  it("reports a file moved across the folder's edge as new or deleted, as it cannot be recognised as a move", async () => {
+    const primary = await makeTree({ "Photos/2019/arrived.jpg": "a", "Elsewhere/left.jpg": "l" });
+    const replica = await makeTree({ "Elsewhere/arrived.jpg": "a", "Photos/2019/left.jpg": "l" });
+
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+
+    assert.deepEqual(report.moves.moves, []);
+    assert.deepEqual(report.new.files, [{ path: "Photos/2019/arrived.jpg", size: 1 }]);
+    assert.deepEqual(report.deleted.files, [{ path: "Photos/2019/left.jpg", size: 1 }]);
+  });
+
+  it("still finds moves within the folder", async () => {
+    const primary = await makeTree({ "Photos/2019/Iceland/a.jpg": "a" });
+    const replica = await makeTree({ "Photos/2019/a.jpg": "a" });
+
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+
+    assert.deepEqual(report.moves.moves, [{ from: "Photos/2019/a.jpg", to: "Photos/2019/Iceland/a.jpg", size: 1 }]);
+  });
+
+  it("treats a folder not yet on the Replica as empty there: everything in it is new", async () => {
+    const primary = await makeTree({ "Photos/2019/a.jpg": "a" });
+    const replica = await makeTree({ "Other/b.jpg": "b" });
+
+    const report = await compare(primary, replica, { only: "Photos/2019" });
+
+    assert.deepEqual(report.new.files, [{ path: "Photos/2019/a.jpg", size: 1 }]);
+    assert.deepEqual(report.deleted.files, []);
+    assert.deepEqual(report.replica, { count: 0, totalSize: 0 });
   });
 });
 
