@@ -13,7 +13,7 @@ import { CHANNELS, type Action } from "./view.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCREENS = join(HERE, "renderer", "index.html");
 
-/** Where the Pairing is stored: the same file the CLI uses. The smoke test points it elsewhere. */
+/** Where the Pairing is stored. The smoke test points it elsewhere. */
 const PAIRING_FILE =
   process.env.SYNC_DRIVE_PAIRING_FILE ?? join(homedir(), "Library", "Application Support", "sync-drive", "pairing.json");
 

@@ -63,8 +63,7 @@ function onlyMatch(role: "Primary" | "Replica", paired: PairedVolume, connected:
   return matches[0];
 }
 
-const REPAIR_HINT =
-  "If a drive has been replaced, pair the drives again with `sync-drive pair <primary> <replica> --replace`.";
+const REPAIR_HINT = "If a drive has been replaced, use Re-pair on Start.";
 
 /** How a paired drive is named in messages: its role, its name when paired, and its volume ID. */
 function describe(role: "Primary" | "Replica", volume: PairedVolume): string {

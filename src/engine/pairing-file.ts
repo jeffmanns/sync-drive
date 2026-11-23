@@ -18,7 +18,7 @@ export async function readPairing(file: string): Promise<Pairing | undefined> {
     data = undefined;
   }
   if (!isRecord(data) || !isPairedVolume(data.primary) || !isPairedVolume(data.replica)) {
-    throw new Error(`The Pairing in ${file} is damaged. Pair the drives again with \`sync-drive pair <primary> <replica> --replace\`.`);
+    throw new Error(`The Pairing in ${file} is damaged. Pair the drives again to replace it.`);
   }
   return { primary: pick(data.primary), replica: pick(data.replica) };
 }

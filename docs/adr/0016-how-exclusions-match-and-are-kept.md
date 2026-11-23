@@ -12,7 +12,7 @@ Exclusions are path patterns the owner chooses to leave out of every comparison,
 - **A pattern that would leave out everything is refused**, as are empty names, `.` and `..`. That means any pattern whose every name is only wildcards with a `*` in it: `*`, `**`, `*/*`, `?*` and the like. Otherwise one typo would make every comparison say the drives match.
 - **The Primary still can't hide an item named like sync-drive's own folders behind an Exclusion** (ADR 0007). That check runs before the Exclusions.
 - **The Update is held to the Exclusions its Report was made with.** `update()` writes nothing if the Report holds any path those Exclusions leave out. The app passes the Exclusions it compared with. This mirrors how the Safety stop is counted again rather than trusted (ADR 0008).
-- **They are saved on the Mac beside the Pairing, in `exclusions.json`.** Re-pairing keeps them. If the file is damaged, the app says so on Start and refuses to compare, and it never saves over the file. Comparing without the owner's Exclusions would offer to delete their Replica copies. The CLI reads the same file until it is removed (#30).
+- **They are saved on the Mac beside the Pairing, in `exclusions.json`.** Re-pairing keeps them. If the file is damaged, the app says so on Start and refuses to compare, and it never saves over the file. Comparing without the owner's Exclusions would offer to delete their Replica copies.
 
 ## Considered Options
 

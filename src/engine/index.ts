@@ -29,7 +29,6 @@ export {
   safetyStopApplies,
   type FreeSpace,
 } from "./safety-stops.ts";
-export { SAFETY_STOP_MIN_FILES, SAFETY_STOP_PERCENT } from "./safety-stop-limits.ts";
 export {
   nothingDone,
   update,
