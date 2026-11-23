@@ -112,7 +112,8 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
 /**
  * Brings the Replica up to date with `report`. If `approvals.deletions` is also given and the
  * report has deleted files, empties the previous Holding area and moves them into it, each only if
- * the Primary still has no file at its path. If
+ * the Primary still has no file at its path; limited to `setup.only`, only if the Primary still has
+ * that folder. If
  * `approvals.moves` is given, renames the report's moved files on the Replica to their new paths,
  * each only if it and its Primary file still match by size and date. Then copies
  * the new and changed files from the Primary, checking each copy against its Primary file by
@@ -205,15 +206,24 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     });
   progress();
   const holdingArea = join(setup.replica, HOLDING_AREA);
+  // Limited to one folder: a comparison now would refuse, rather than call anything deleted, unless
+  // the Primary still has it as a real folder. Then every deletion is left in place, and the Holding
+  // area is left as it was (ADR 0017).
+  const folderGone = only !== undefined && deletions.length > 0 ? await whyFolderGone(setup.primary, only) : undefined;
+  if (folderGone !== undefined) {
+    for (const file of deletions) result.notMoved.push({ ...file, reason: folderGone });
+    progress();
+  }
+  const toMove = folderGone === undefined ? deletions : [];
   // Deletions first, so a path that changed between a file and a folder is free before copying.
-  if (deletions.length > 0) {
+  if (toMove.length > 0) {
     // New deletions are confirmed, so the files kept from the previous Update are now deleted for
     // good. Without that confirmation the Holding area is left untouched (ADR 0006).
     await rm(holdingArea, { recursive: true, force: true });
     await mkdir(holdingArea);
     await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
   }
-  for (const file of deletions) {
+  for (const file of toMove) {
     try {
       // Moved, never destroyed: the rename stays on the Replica, so it is atomic and keeps all metadata.
       const destination = join(holdingArea, file.path);
@@ -303,13 +313,12 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
 
 /**
  * Removes the Replica folders that held `path` (relative to the drive root) if moving it left them
- * empty and the Primary has no folder there, deepest first, stopping below `setup.only` if given.
- * `rmdir` only ever removes an empty folder, so no file can be lost.
+ * empty and the Primary has no folder there, deepest first. `rmdir` only ever removes an empty
+ * folder, so no file can be lost. In an Update limited to one folder it stops inside that folder,
+ * as the Primary is checked to still have it before any deletion.
  */
 async function removeEmptiedFolders(path: string, setup: UpdateSetup): Promise<void> {
   for (let folder = dirname(path); folder !== "."; folder = dirname(folder)) {
-    // Limited to one folder: that folder and everything above it are outside what the Update may change.
-    if (setup.only !== undefined && !isInsideFolder(setup.only, folder)) return;
     const onPrimary = await lstat(join(setup.primary, folder)).catch(() => undefined);
     if (onPrimary?.isDirectory()) return;
     try {
@@ -411,6 +420,26 @@ async function onPrimary(primary: string, path: string): Promise<boolean> {
     });
   }
   return false;
+}
+
+/**
+ * Why the Primary no longer has `only` (relative to its top) as a real folder, as it did when
+ * compared, or `undefined` if it still does. A folder along the way that is missing, or is now a file
+ * or a shortcut, counts; so does one that cannot be looked at. Reads only.
+ */
+async function whyFolderGone(primary: string, only: string): Promise<string | undefined> {
+  for (const folder of foldersAlong(only)) {
+    let stats;
+    try {
+      stats = await lstat(join(primary, folder));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return `the folder "${only}" is no longer on the Primary since the comparison`;
+      return `the Primary cannot be read at the folder "${folder}" (${readFailure(error as NodeJS.ErrnoException)})`;
+    }
+    if (!stats.isDirectory()) return `the folder "${only}" is no longer a folder on the Primary since the comparison`;
+  }
+  return undefined;
 }
 
 /**

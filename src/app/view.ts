@@ -372,6 +372,18 @@ export function onlyFolderNote(only: string): string {
   );
 }
 
+/**
+ * The warning on Deletions in a run limited to the folder `only`: a file moved out of it shows as
+ * deleted, and if it cannot be read where it now is on the Primary, the Replica's copy may be its only
+ * backup. A whole-drive comparison would keep that copy; this one cannot see it (ADR 0017).
+ */
+export function onlyFolderDeletionsWarning(only: string): string {
+  return (
+    `Files moved out of "${only}" on the Primary show here as deleted. If any of them cannot be read on the Primary where they are now, ` +
+    `the copy here may be their only backup. If you are unsure, leave the deletions unapproved until an Update of the whole drive.`
+  );
+}
+
 /** What the refusal screen says about the free space: what is needed and free, and what the Holding area holds. */
 export function freeSpaceExplanation({ needed, free, holdingArea }: FreeSpaceRefusal): string {
   return (

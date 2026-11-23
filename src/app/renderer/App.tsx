@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines } from "../view.ts";
+import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines } from "../view.ts";
 import type {
   Action,
   CopiesState,
@@ -370,6 +370,7 @@ function DeletionsScreen({ state, send, busy }: ScreenProps<DeletionsState>) {
       <Steps current="deletions" review={review} />
       <h1>Deletions</h1>
       <OnlyFolderNote only={state.review.only} />
+      {state.review.only !== undefined && <p className="warning">{onlyFolderDeletionsWarning(state.review.only)}</p>}
       <p>These files are on the Replica but no longer on the Primary. Approving moves them into the Holding area on the Replica, keeping their folders.</p>
       <SectionList title="Deleted" section={review.deleted} />
       {/* Right before the deletions Approval, as in ADR 0006. */}

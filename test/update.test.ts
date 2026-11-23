@@ -1096,17 +1096,27 @@ describe("Update: limited to one folder", () => {
     assert.deepEqual(result.copied, [{ path: "Photos/2019/a.jpg", size: 1 }]);
   });
 
-  it("never removes an emptied folder at or above the folder it is limited to", async () => {
-    const primary = await makeTree({ "Photos/2019/kept.jpg": "k" });
-    const replica = await makeTree({ "Photos/2019/Day 1/gone.jpg": "g" });
-    const report = await compare(primary, replica, { only: "Photos/2019" });
-    // Gone from the Primary since the comparison: the deletion still goes ahead, and the folders it empties have no Primary folder to keep them.
-    await rm(join(primary, "Photos"), { recursive: true });
+  for (const [what, change] of [
+    ["is gone from the Primary", (primary: string) => rm(join(primary, "Photos"), { recursive: true })],
+    ["is now a shortcut on the Primary", async (primary: string) => {
+      await rename(join(primary, "Photos"), join(primary, "Real"));
+      await symlink("Real", join(primary, "Photos"));
+    }],
+  ] as const) {
+    it(`leaves every deletion in place, and the Holding area as it was, when the folder ${what} since the comparison`, async () => {
+      const primary = await makeTree({ "Photos/2019/kept.jpg": "k" });
+      const replica = await makeTree({ "Photos/2019/kept.jpg": "k", "Photos/2019/Day 1/gone.jpg": "g", "sync-drive Holding Area/earlier.jpg": "e" });
+      const report = await compare(primary, replica, { only: "Photos/2019" });
+      await change(primary);
+      const replicaBefore = await snapshotTree(replica);
 
-    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier(), only: "Photos/2019" });
+      const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier(), only: "Photos/2019" });
 
-    assert.deepEqual(result.moved, [{ path: "Photos/2019/Day 1/gone.jpg", size: 1 }]);
-    assert.deepEqual(await readdir(join(replica, "Photos")), ["2019"]);
-    assert.deepEqual(await readdir(join(replica, "Photos/2019")), []);
-  });
+      assert.deepEqual(result.moved, []);
+      assert.deepEqual(result.notMoved, [
+        { path: "Photos/2019/Day 1/gone.jpg", size: 1, reason: `the folder "Photos/2019" ${what === "is gone from the Primary" ? "is no longer on the Primary" : "is no longer a folder on the Primary"} since the comparison` },
+      ]);
+      assert.deepEqual(await snapshotTree(replica), replicaBefore);
+    });
+  }
 });

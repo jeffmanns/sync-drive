@@ -6,7 +6,7 @@ import { isDeepStrictEqual, promisify } from "node:util";
 import { after, afterEach, describe, it } from "node:test";
 import { Flow } from "../src/app/flow.ts";
 import type { FlowState } from "../src/app/view.ts";
-import { freeSpaceExplanation, onlyFolderNote, safetyStopExplanation } from "../src/app/view.ts";
+import { freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, safetyStopExplanation } from "../src/app/view.ts";
 import { compare, type FileCopier } from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
 import { FakeItemCounter } from "./helpers/fake-item-counter.ts";
@@ -1473,5 +1473,13 @@ describe("app flow: limiting a run to one folder", () => {
     assert.match(note, /Limited to the folder "Photos\/2019"/);
     assert.match(note, /nothing outside it is compared, copied, moved or deleted/);
     assert.match(note, /moved into or out of it .* appear as new or deleted/);
+  });
+
+  it("warns on Deletions that a file moved out of the folder may be the only backup of one that cannot be read on the Primary", () => {
+    const warning = onlyFolderDeletionsWarning("Photos/2019");
+
+    assert.match(warning, /moved out of "Photos\/2019" on the Primary show here as deleted/);
+    assert.match(warning, /cannot be read on the Primary/);
+    assert.match(warning, /leave the deletions unapproved until an Update of the whole drive/);
   });
 });
