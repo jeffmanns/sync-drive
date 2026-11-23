@@ -121,8 +121,7 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * having written nothing, when the report holds a path `setup.exclusions` leave out, when the
  * Safety stop applies to the report's deletions (counted again here, not read from
  * `report.safetyStop`) without `approvals.overrideSafetyStop`, when it holds a path outside
- * `setup.only`, or when the Replica lacks the free
- * space for the copies (ADR 0008). Every rejection is an
+ * `setup.only`, or when the Replica lacks the free space for the copies (ADR 0008). Every rejection is an
  * `UpdateStoppedError` saying what had been done before it stopped. Reports its progress to
  * `setup.onProgress`: deleted files and moves dealt with, then bytes copied out of the total.
  */
@@ -179,9 +178,10 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     throw new Error(`"${excluded}" is left out by the Exclusions; nothing was written. Compare again.`);
   }
   // Every path in the report too: one outside the folder means the report was made for more than it.
-  const outside = setup.only === undefined ? undefined : reportPaths.find((path) => !isInsideFolder(setup.only!, path));
+  const { only } = setup;
+  const outside = only === undefined ? undefined : reportPaths.find((path) => !isInsideFolder(only, path));
   if (outside !== undefined) {
-    throw new Error(`"${outside}" is outside the folder "${setup.only}" the Update is limited to; nothing was written. Compare again.`);
+    throw new Error(`"${outside}" is outside the folder "${only}" the Update is limited to; nothing was written. Compare again.`);
   }
   // Counted again from the deletions it was handed, rather than trusting the Report's flag, so the
   // Safety stop holds whoever built the Report (ADR 0008).
@@ -303,8 +303,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
 
 /**
  * Removes the Replica folders that held `path` (relative to the drive root) if moving it left them
- * empty and the Primary has no folder there, deepest first, stopping below `setup.only` if given. `rmdir` only ever removes an empty
- * folder, so no file can be lost.
+ * empty and the Primary has no folder there, deepest first, stopping below `setup.only` if given.
+ * `rmdir` only ever removes an empty folder, so no file can be lost.
  */
 async function removeEmptiedFolders(path: string, setup: UpdateSetup): Promise<void> {
   for (let folder = dirname(path); folder !== "."; folder = dirname(folder)) {

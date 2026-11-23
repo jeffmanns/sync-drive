@@ -20,7 +20,7 @@ export function checkOnlyFolder(only: string, isExcluded: ExclusionMatcher): voi
     throw new Error(`"${only}" is inside sync-drive's own ${names[0]} folder, which is never compared.`);
   }
   if (names.some((_, i) => isAlwaysSkipped(names.slice(0, i + 1).join("/")))) {
-    throw new Error(`"${only}" is one of macOS's own system folders, which are never compared.`);
+    throw new Error(`"${only}" is among the macOS system files, which are never compared.`);
   }
   if (isExcluded(only)) {
     throw new Error(`"${only}" is left out by the Exclusions, so nothing in it would be compared.`);
@@ -44,7 +44,7 @@ export async function findOnlyFolder(role: "Primary" | "Replica", root: string, 
     const matches = listed.filter((entry) => matchKey(entry.name) === matchKey(name));
     if (matches.length > 1) {
       throw new Error(
-        `The ${role} holds ${matches.map((entry) => `"${found === "" ? entry.name : `${found}/${entry.name}`}"`).join(" and ")}, ` +
+        `The ${role} holds ${matches.map((entry) => `"${inside(found, entry.name)}"`).join(" and ")}, ` +
           `which differ only by letter case, so the comparison cannot be limited to "${only}" safely.`,
       );
     }
@@ -53,7 +53,7 @@ export async function findOnlyFolder(role: "Primary" | "Replica", root: string, 
       if (role === "Replica") return undefined;
       throw new Error(`The Primary has no folder "${only}". Choose a folder on the Primary.`);
     }
-    found = found === "" ? entry.name : `${found}/${entry.name}`;
+    found = inside(found, entry.name);
     if (entry.isSymbolicLink()) {
       throw new Error(`"${found}" on the ${role} is a shortcut, which sync-drive never follows, so the comparison cannot be limited to "${only}".`);
     }
@@ -64,6 +64,11 @@ export async function findOnlyFolder(role: "Primary" | "Replica", root: string, 
     throw cannotRead(role, found, only, error);
   });
   return found;
+}
+
+/** The path of `name` inside `folder` (relative to the top of the drive; `""` is the top). */
+function inside(folder: string, name: string): string {
+  return folder === "" ? name : `${folder}/${name}`;
 }
 
 /** Why the comparison limited to `only` cannot go ahead: `folder` on the `role` drive cannot be read. */

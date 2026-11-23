@@ -39,8 +39,8 @@ export interface Scanned {
  * listed in `unreadable` and the scan carries on; on the Replica it rejects. Shortcuts are never
  * followed. Reads only. Rejects if two paths differ only by letter case, or if the Primary holds a
  * top-level item with the name of one of sync-drive's own folders. Calls `onListed` with the number
- * of items (files plus folders, skipped or not) in each folder it lists, for progress. With `from`
- * (a folder below `root`, as stored on the drive), lists only what is in it, still keyed by its path
+ * of items (files plus folders, skipped or not) in each folder it lists, for progress. With
+ * `startFolder` (a folder below `root`, as stored on the drive), lists only what is in it, still keyed by its path
  * from `root`; that folder failing to be read rejects, like the top level.
  */
 export async function scan(
@@ -48,7 +48,7 @@ export async function scan(
   root: string,
   isExcluded: ExclusionMatcher = () => false,
   onListed: (items: number) => void = () => {},
-  from = "",
+  startFolder = "",
 ): Promise<Scanned> {
   const files = new Map<string, ScannedFile>();
   const unreadable: Unreadable[] = [];
@@ -57,7 +57,7 @@ export async function scan(
     try {
       return await read();
     } catch (error) {
-      if (role === "Replica" || path === from) throw error;
+      if (role === "Replica" || path === startFolder) throw error;
       unreadable.push({ path, folder, reason: readFailure(error as NodeJS.ErrnoException) });
       return undefined;
     }
@@ -117,7 +117,7 @@ export async function scan(
       }),
     );
   }
-  await walk(join(root, from), from === "" ? "" : `${from}/`);
+  await walk(join(root, startFolder), startFolder === "" ? "" : `${startFolder}/`);
   return { files, unreadable };
 }
 

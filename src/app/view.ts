@@ -368,7 +368,7 @@ export function safetyStopExplanation({ deleted, replica, only }: SafetyStopRefu
 export function onlyFolderNote(only: string): string {
   return (
     `Limited to the folder "${only}": nothing outside it is compared, copied, moved or deleted. ` +
-    `Files moved into or out of it since the last Update can't be recognised as moves, so they appear as new or deleted.`
+    `Files moved into or out of it since the last Update cannot be recognised as moves, so they appear as new or deleted.`
   );
 }
 
