@@ -32,3 +32,4 @@ When a file has been moved or renamed on the Primary since the last Update (for 
 
 - The comparison is slower when much has been moved. Hashing candidates at the same time as other reads is left to performance work (#12).
 - A file moved and also edited on the Primary is not a Move: it shows as new plus deleted.
+- Until #30 removes the CLI, `sync-drive update` asks a separate rename question between the copy question and the deletions question.
