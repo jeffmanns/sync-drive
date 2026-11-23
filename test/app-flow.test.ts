@@ -91,8 +91,8 @@ describe("app flow: Pairing", () => {
     await flow.pair();
 
     const expected = { primary: { id: "PRIMARY-ID", name: basename(primary) }, replica: { id: "REPLICA-ID", name: basename(replica) } };
-    assert.deepEqual(flow.state, { step: "start", pairing: expected, exclusions: [] });
-    assert.deepEqual((await mac.open()).state, { step: "start", pairing: expected, exclusions: [] }, "remembered when the app opens again");
+    assert.deepEqual(flow.state, { step: "start", pairing: expected, exclusions: [], deep: false });
+    assert.deepEqual((await mac.open()).state, { step: "start", pairing: expected, exclusions: [], deep: false }, "remembered when the app opens again");
   });
 
   it("stays on Pairing, saying why and saving nothing, when both choices are the same drive", async () => {
@@ -186,6 +186,7 @@ function stateOf(flow: Flow): Record<string, any> {
 /** From Copies, Next through whichever review steps there are to the Summary, approving nothing more. */
 function toSummary(flow: Flow): void {
   flow.next();
+  if (flow.state.step === "anomalies") flow.next();
   if (flow.state.step === "moves") flow.next();
   if (flow.state.step === "deletions") flow.next();
   assert.equal(flow.state.step, "summary");
@@ -418,6 +419,9 @@ describe("app flow: Approval, Summary and Apply", () => {
     assert.equal(stateOf(flow).step, "summary");
     assert.deepEqual(stateOf(flow).apply, {
       copy: { count: 3, totalSize: 1_500_013 },
+      overwrite: { count: 0, totalSize: 0 },
+      keepMismatched: { count: 0, totalSize: 0 },
+      undecided: { count: 0, totalSize: 0 },
       renameOnReplica: { count: 0, totalSize: 0 },
       leaveAtOldPaths: { count: 0, totalSize: 0 },
       moveToHoldingArea: { count: 0, totalSize: 0 },
@@ -834,6 +838,9 @@ describe("app flow: Deletions", () => {
 
     assert.deepEqual(stateOf(flow).apply, {
       copy: { count: 0, totalSize: 0 },
+      overwrite: { count: 0, totalSize: 0 },
+      keepMismatched: { count: 0, totalSize: 0 },
+      undecided: { count: 0, totalSize: 0 },
       renameOnReplica: { count: 0, totalSize: 0 },
       leaveAtOldPaths: { count: 0, totalSize: 0 },
       moveToHoldingArea: { count: 1, totalSize: 3 },
@@ -1045,6 +1052,9 @@ describe("app flow: Moves", () => {
     assert.equal(stateOf(flow).step, "summary");
     assert.deepEqual(stateOf(flow).apply, {
       copy: { count: 0, totalSize: 0 },
+      overwrite: { count: 0, totalSize: 0 },
+      keepMismatched: { count: 0, totalSize: 0 },
+      undecided: { count: 0, totalSize: 0 },
       renameOnReplica: { count: 2, totalSize: 6 },
       leaveAtOldPaths: { count: 0, totalSize: 0 },
       moveToHoldingArea: { count: 0, totalSize: 0 },
@@ -1483,3 +1493,187 @@ describe("app flow: limiting a run to one folder", () => {
     assert.match(warning, /leave the deletions unapproved until an Update of the whole drive/);
   });
 });
+
+describe("app flow: Deep verify and Anomalies", () => {
+  /**
+   * `a.txt` and `b.txt` match by size and date but not by contents, `old.txt` is newer on the Replica,
+   * `Photos/x.jpg` moved, and `gone.txt` is only on the Replica.
+   */
+  const ANOMALY_PRIMARY: TreeSpec = {
+    "a.txt": "AAAA",
+    "b.txt": "BBBB",
+    "same.txt": "same",
+    "old.txt": { content: "primary", mtime: new Date("2026-02-01T09:00:00Z") },
+    "Photos/2026/x.jpg": "xx",
+  };
+  const ANOMALY_REPLICA: TreeSpec = {
+    "a.txt": "zzzz",
+    "b.txt": "yyyy",
+    "same.txt": "same",
+    "old.txt": { content: "replica", mtime: new Date("2026-03-01T09:00:00Z") },
+    "Photos/x.jpg": "xx",
+    "gone.txt": "gone",
+  };
+
+  /** A Mac with the anomaly drives paired, Deep verify chosen on Start, and compared. */
+  async function deepVerified() {
+    const mac = await pairedMac(ANOMALY_PRIMARY, ANOMALY_REPLICA);
+    mac.flow.deepVerify(true);
+    await mac.flow.compare();
+    assert.equal(mac.flow.state.step, "copies");
+    return mac;
+  }
+
+  it("is chosen on Start and kept there until changed, with Quick compare the default", async () => {
+    const { flow } = await pairedMac({ "a.txt": "AAAA" }, { "a.txt": "zzzz" });
+    assert.equal(stateOf(flow).deep, false);
+
+    await flow.compare();
+    assert.equal(stateOf(flow).step, "start", "a Quick compare reads no contents, so finds them equal");
+    assert.equal(stateOf(flow).deep, false);
+
+    flow.deepVerify(true);
+    assert.equal(stateOf(flow).deep, true);
+    await flow.compare();
+    assert.equal(stateOf(flow).step, "copies", "a Deep verify finds the content mismatch");
+    assert.equal(stateOf(flow).review.deep, true);
+    flow.restart();
+    assert.equal(stateOf(flow).deep, true, "still chosen for the next comparison");
+    flow.deepVerify(false);
+    assert.equal(stateOf(flow).deep, false);
+  });
+
+  it("shows the checksum phase's progress by bytes while comparing", async () => {
+    const { flow } = await pairedMac({ "a.txt": "12345", "b.txt": "123" }, { "a.txt": "12345", "b.txt": "123" });
+    flow.deepVerify(true);
+    const comparing: Record<string, any>[] = [];
+    flow.onChange((state) => {
+      if (state.step === "comparing") comparing.push(state);
+    });
+
+    await flow.compare();
+
+    assert.ok(comparing.every((state) => state.deep === true));
+    const verifying = comparing.map((state) => state.progress).filter((progress) => progress?.phase === "verifying");
+    assert.deepEqual(verifying.at(-1), { phase: "verifying", checkedBytes: 16, totalBytes: 16 });
+  });
+
+  it("flags on Copies the files whose Replica copy is newer, which the copies Approval replaces with the Primary's", async () => {
+    const { flow, replica } = await deepVerified();
+    const { review } = stateOf(flow);
+    assert.deepEqual(review.anomalies.replicaNewer.files, [{ path: "old.txt", size: 7 }]);
+    assert.deepEqual(review.changed.files, [{ path: "old.txt", size: 7 }]);
+
+    flow.approveCopies(true);
+    toSummary(flow);
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).copied, [{ path: "old.txt", size: 7 }]);
+    assert.equal(await readFile(join(replica, "old.txt"), "utf8"), "primary");
+  });
+
+  it("puts the Anomalies step after Copies and before Moves and Deletions, with no file chosen", async () => {
+    const { flow } = await deepVerified();
+
+    flow.next();
+
+    assert.equal(stateOf(flow).step, "anomalies");
+    const { review } = stateOf(flow);
+    assert.deepEqual(review.anomalies.contentMismatch.files, [{ path: "a.txt", size: 4 }, { path: "b.txt", size: 4 }]);
+    assert.deepEqual(review.mismatchChoices, {});
+    flow.next();
+    assert.equal(stateOf(flow).step, "moves");
+    flow.next();
+    assert.equal(stateOf(flow).step, "deletions");
+    flow.back();
+    flow.back();
+    assert.equal(stateOf(flow).step, "anomalies");
+  });
+
+  it("skips Anomalies when there is no content mismatch", async () => {
+    const { flow } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    flow.deepVerify(true);
+    await flow.compare();
+
+    flow.next();
+
+    assert.equal(stateOf(flow).step, "deletions");
+  });
+
+  it("keeps each per-file choice through Back and Next, and shows them all on the Summary", async () => {
+    const { flow } = await deepVerified();
+    flow.next();
+    flow.chooseForMismatch("a.txt", "overwrite");
+    flow.chooseForMismatch("b.txt", "keep");
+    flow.chooseForMismatch("b.txt", "overwrite");
+    flow.chooseForMismatch("b.txt", "keep");
+    flow.chooseForMismatch("same.txt", "overwrite");
+
+    flow.back();
+    flow.next();
+    assert.equal(stateOf(flow).step, "anomalies");
+    assert.deepEqual(stateOf(flow).review.mismatchChoices, { "a.txt": "overwrite", "b.txt": "keep" }, "only content mismatches can be chosen");
+    flow.next();
+    flow.next();
+    flow.next();
+
+    assert.equal(stateOf(flow).step, "summary");
+    assert.deepEqual(stateOf(flow).review.mismatchChoices, { "a.txt": "overwrite", "b.txt": "keep" });
+    assert.deepEqual(stateOf(flow).apply.overwrite, { count: 1, totalSize: 4 });
+    assert.deepEqual(stateOf(flow).apply.keepMismatched, { count: 1, totalSize: 4 });
+    assert.deepEqual(stateOf(flow).apply.undecided, { count: 0, totalSize: 0 });
+  });
+
+  it("leaves a content mismatch with no choice out of the Update, saying so on the Summary", async () => {
+    const { flow, replica } = await deepVerified();
+    flow.next();
+    flow.chooseForMismatch("a.txt", "overwrite");
+    flow.next();
+    flow.next();
+    flow.next();
+
+    assert.deepEqual(stateOf(flow).apply.undecided, { count: 1, totalSize: 4 });
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).copied, [{ path: "a.txt", size: 4 }]);
+    assert.equal(await readFile(join(replica, "a.txt"), "utf8"), "AAAA");
+    assert.equal(await readFile(join(replica, "b.txt"), "utf8"), "yyyy");
+  });
+
+  it("honours each choice on Apply, with no Approval given: overwrites the chosen Replica copies and keeps the others", async () => {
+    const { flow, primary, replica } = await deepVerified();
+    flow.next();
+    flow.chooseForMismatch("a.txt", "keep");
+    flow.chooseForMismatch("b.txt", "overwrite");
+    flow.next();
+    flow.next();
+    flow.next();
+    assert.equal(stateOf(flow).step, "summary");
+    assert.deepEqual(stateOf(flow).apply.copy, { count: 0, totalSize: 0 });
+
+    await flow.apply();
+
+    assert.equal(stateOf(flow).step, "result");
+    assert.deepEqual(stateOf(flow).copied, [{ path: "b.txt", size: 4 }]);
+    assert.deepEqual(stateOf(flow).overwritten, [{ path: "b.txt", size: 4 }]);
+    assert.equal(await readFile(join(replica, "a.txt"), "utf8"), "zzzz");
+    assert.equal(await readFile(join(replica, "b.txt"), "utf8"), "BBBB");
+    assert.deepEqual(await readdir(join(replica, "Photos")), ["x.jpg"], "the moves were not approved");
+    const after = await compare(primary, replica, { deep: true });
+    assert.deepEqual(after.anomalies.contentMismatch.files, [{ path: "a.txt", size: 4 }]);
+  });
+
+  it("discards the choices with the comparison", async () => {
+    const { flow } = await deepVerified();
+    flow.next();
+    flow.chooseForMismatch("a.txt", "overwrite");
+    flow.restart();
+
+    await flow.compare();
+    flow.next();
+
+    assert.equal(stateOf(flow).step, "anomalies");
+    assert.deepEqual(stateOf(flow).review.mismatchChoices, {});
+  });
+});
+

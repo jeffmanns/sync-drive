@@ -1006,6 +1006,66 @@ describe("Update: safety stops", () => {
   });
 });
 
+describe("Overwriting content mismatches", () => {
+  /** A Primary and a Replica whose `a.txt` and `b.txt` match by size and date but not by contents. */
+  async function mismatchedDrives() {
+    const primary = await makeTree({ "a.txt": "AAAA", "b.txt": "BBBB", "same.txt": "same", "new.txt": "new" });
+    const replica = await makeTree({ "a.txt": "zzzz", "b.txt": "yyyy", "same.txt": "same" });
+    return { primary, replica, primaryBefore: await snapshotTree(primary) };
+  }
+
+  it("leaves every content mismatch alone without a choice to overwrite it, copying the rest", async () => {
+    const { primary, replica, primaryBefore } = await mismatchedDrives();
+    const report = await compare(primary, replica, { deep: true });
+
+    const result = await update(report, APPROVED, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.copied, [{ path: "new.txt", size: 3 }]);
+    assert.equal(await readFile(join(replica, "a.txt"), "utf8"), "zzzz");
+    assert.equal(await readFile(join(replica, "b.txt"), "utf8"), "yyyy");
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("overwrites exactly the content mismatches chosen with the Primary's copy, confirmed by checksum, and keeps the others", async () => {
+    const { primary, replica, primaryBefore } = await mismatchedDrives();
+    const report = await compare(primary, replica, { deep: true });
+
+    const result = await update(report, { ...APPROVED, overwrite: ["a.txt"] }, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.copied, [{ path: "new.txt", size: 3 }, { path: "a.txt", size: 4 }]);
+    assert.deepEqual(result.failed, []);
+    assert.equal(await readFile(join(replica, "a.txt"), "utf8"), "AAAA");
+    assert.equal(await metadataOf(join(replica, "a.txt")), await metadataOf(join(primary, "a.txt")));
+    assert.equal(await readFile(join(replica, "b.txt"), "utf8"), "yyyy");
+    const after = await compare(primary, replica, { deep: true });
+    assert.deepEqual(after.anomalies.contentMismatch.files, [{ path: "b.txt", size: 4 }]);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("overwrites the chosen content mismatches even when the Report it is given holds no new or changed files", async () => {
+    const { primary, replica } = await mismatchedDrives();
+    const report = await compare(primary, replica, { deep: true });
+    const none = { ...report.new, count: 0, totalSize: 0, files: [], folders: [] };
+
+    const result = await update({ ...report, new: none, changed: none }, { ...APPROVED, overwrite: ["b.txt"] }, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.copied, [{ path: "b.txt", size: 4 }]);
+    assert.equal(await readFile(join(replica, "b.txt"), "utf8"), "BBBB");
+  });
+
+  it("refuses, writing nothing, a choice to overwrite a file that is not a content mismatch in the Report", async () => {
+    const { primary, replica } = await mismatchedDrives();
+    const report = await compare(primary, replica, { deep: true });
+    const replicaBefore = await snapshotTree(replica);
+
+    await assert.rejects(
+      update(report, { ...APPROVED, overwrite: ["same.txt"] }, { primary, replica, copier: new MacFileCopier() }),
+      /"same.txt" is not a content mismatch in the Report; nothing was written/,
+    );
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+});
+
 /** A Finder tags list holding the single tag "Red", as Finder stores it (a binary property list). */
 const RED_TAG_HEX =
   "62706C6973743030A101565265640A36080A0000000000000101000000000000000200000000000000000000000000000013";

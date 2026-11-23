@@ -1,5 +1,5 @@
 import { statfs } from "node:fs/promises";
-import type { Report, Totals } from "./report.ts";
+import type { FileEntry, Totals } from "./report.ts";
 import { SAFETY_STOP_MIN_FILES, SAFETY_STOP_PERCENT } from "./safety-stop-limits.ts";
 
 /**
@@ -24,14 +24,14 @@ export interface FreeSpace {
 }
 
 /**
- * Checks whether `replica` has room for every new and changed file in `report`. Cautious: space
- * the Update would free (replaced versions, an emptied Holding area) is not counted (ADR 0008).
- * Reads only.
+ * Checks whether `replica` has room for every file in `copies` (sizes as on the Primary), such as a
+ * Report's new and changed files. Cautious: space the Update would free (replaced versions, an
+ * emptied Holding area) is not counted (ADR 0008). Reads only.
  */
-export async function checkFreeSpace(report: Report, replica: string): Promise<FreeSpace> {
+export async function checkFreeSpace(copies: readonly FileEntry[], replica: string): Promise<FreeSpace> {
   const { bsize, bavail } = await statfs(replica);
   let needed = 0;
-  for (const file of [...report.new.files, ...report.changed.files]) {
+  for (const file of copies) {
     needed += Math.ceil(file.size / bsize) * bsize;
   }
   const free = bavail * bsize;

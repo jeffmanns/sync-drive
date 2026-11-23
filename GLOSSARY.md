@@ -57,7 +57,7 @@ A comparison that judges files equal by size and modification date alone (dates 
 _Avoid_: fast scan, shallow compare
 
 **Deep verify**:
-An opt-in comparison that judges files equal by a checksum of their full contents, catching silent corruption on the Replica.
+An opt-in comparison that judges files equal by a checksum of their full contents, catching silent corruption on the Replica. It reads in full only the files a Quick compare would judge equal. The others differ already. Chosen on the Start screen.
 _Avoid_: full scan, integrity check, hash compare
 
 **Exclusion**:
@@ -77,5 +77,9 @@ Something on the Primary that a comparison could not read: a folder it could not
 _Avoid_: corrupt, missing, failed
 
 **Anomaly**:
-A difference that should not occur if the Replica is only ever changed by updates, such as a Replica copy newer than its Primary counterpart. Flagged in the report for the user's attention.
+A difference that should not occur if the Replica is only ever changed by updates. There are two kinds (ADR 0018). A Replica copy newer than its Primary counterpart is flagged in the Copies step, by every comparison, and the copies Approval still replaces it. A **Content mismatch** is found only by a Deep verify.
 _Avoid_: conflict, error, warning
+
+**Content mismatch**:
+A file with the same size and modification date on both drives whose contents, read in full by a Deep verify, differ. It is also one whose Replica copy could not be read in full. It is left out of the Update until the owner chooses, for that file, to keep the Replica's copy or overwrite it with the Primary's. That choice is not an Approval (ADR 0018).
+_Avoid_: corrupt file, hash mismatch, conflict

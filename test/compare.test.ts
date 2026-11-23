@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, lstat, lutimes, symlink } from "node:fs/promises";
+import { chmod, lstat, lutimes, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { checkExclusion, compare, Sha256Hasher, type CompareProgress, type Hasher, type ItemCounter } from "../src/engine/index.ts";
@@ -961,3 +961,134 @@ describe("Checking an Exclusion as typed", () => {
     for (const typed of ["*", "**", "/*", "*/*", "**/*", "?*", "*?", "/?*", "**/?*"]) assert.throws(() => checkExclusion(typed), /everything on the drive/, typed);
   });
 });
+
+describe("Deep verify", () => {
+  it("reports a file whose size and date match but whose contents differ as a content mismatch, not as changed", async () => {
+    const primary = await makeTree({ "Photos/a.jpg": "AAAA", "Photos/b.jpg": "same" });
+    const replica = await makeTree({ "Photos/a.jpg": "ZZZZ", "Photos/b.jpg": "same" });
+
+    const report = await compare(primary, replica, { deep: true });
+
+    assert.deepEqual(report.anomalies.contentMismatch.files, [{ path: "Photos/a.jpg", size: 4 }]);
+    assert.deepEqual(report.changed.files, []);
+    assert.deepEqual(report.new.files, []);
+    assert.deepEqual(report.deleted.files, []);
+  });
+
+  it("reports bytes read to verify contents, out of each file's size on both drives, after scanning and before confirming moves", async () => {
+    const primary = await makeTree({ "a.txt": "12345", "b.txt": "123", "New/x.jpg": "xx" });
+    const replica = await makeTree({ "a.txt": "12345", "b.txt": "123", "Old/x.jpg": "xx" });
+    const seen: CompareProgress[] = [];
+
+    await compare(primary, replica, { deep: true, onProgress: (p) => seen.push(p) });
+
+    const phases = seen.map((p) => p.phase).filter((phase, i, all) => phase !== all[i - 1]);
+    assert.deepEqual(phases, ["scanning", "verifying", "checking moves"]);
+    const verifying = seen.filter((p) => p.phase === "verifying");
+    assert.deepEqual(verifying[0], { phase: "verifying", checkedBytes: 0, totalBytes: 16 });
+    assert.deepEqual(verifying.at(-1), { phase: "verifying", checkedBytes: 16, totalBytes: 16 });
+    const checked = verifying.map((p) => p.checkedBytes);
+    assert.deepEqual(checked, [...checked].sort((a, b) => a - b), "never goes backwards");
+  });
+
+  it("lists a Primary file it cannot read in full as unreadable, and never treats its Replica copy or a lookalike as deleted", async () => {
+    const primary = await makeTree({ "Docs/a.txt": "aaaa", "b.txt": "bbbb" });
+    const replica = await makeTree({ "Docs/a.txt": "aaaa", "Old/a.txt": "aaaa", "b.txt": "BBBB" });
+    const sha256 = new Sha256Hasher();
+    const damaged: Hasher = {
+      checksum: (path) =>
+        path === join(primary, "Docs/a.txt") ? Promise.reject(Object.assign(new Error("EIO: i/o error"), { code: "EIO" })) : sha256.checksum(path),
+    };
+
+    const report = await compare(primary, replica, { deep: true, hasher: damaged });
+
+    assert.deepEqual(report.unreadable, [{ path: "Docs/a.txt", folder: false, reason: "the drive could not read it (EIO)" }]);
+    assert.deepEqual(report.deleted.files, []);
+    assert.deepEqual(report.anomalies.contentMismatch.files, [{ path: "b.txt", size: 4 }]);
+  });
+
+  it("reports a Replica copy it cannot read in full as a content mismatch, saying why, and still compares the rest", async () => {
+    const primary = await makeTree({ "a.txt": "aaaa", "b.txt": "bbbb" });
+    const replica = await makeTree({ "a.txt": "aaaa", "b.txt": "bbbb" });
+    const sha256 = new Sha256Hasher();
+    const damaged: Hasher = {
+      checksum: (path) =>
+        path === join(replica, "a.txt") ? Promise.reject(Object.assign(new Error("EIO: i/o error"), { code: "EIO" })) : sha256.checksum(path),
+    };
+
+    const report = await compare(primary, replica, { deep: true, hasher: damaged });
+
+    assert.deepEqual(report.anomalies.contentMismatch.files, [
+      { path: "a.txt", size: 4, replicaUnreadable: "the drive could not read it (EIO)" },
+    ]);
+    assert.deepEqual(report.unreadable, []);
+  });
+
+  it("reports a file edited on the Primary while it was being verified as changed, not as a content mismatch", async () => {
+    const primary = await makeTree({ "notes.txt": "before" });
+    const replica = await makeTree({ "notes.txt": "before" });
+    const sha256 = new Sha256Hasher();
+    const editedMeanwhile: Hasher = {
+      checksum: async (path) => {
+        if (path !== join(primary, "notes.txt")) return sha256.checksum(path);
+        // The owner saves the file as it is read.
+        await writeFile(path, "after, and longer");
+        return sha256.checksum(path);
+      },
+    };
+
+    const report = await compare(primary, replica, { deep: true, hasher: editedMeanwhile });
+
+    assert.deepEqual(report.changed.files, [{ path: "notes.txt", size: 6 }]);
+    assert.deepEqual(report.anomalies.contentMismatch.files, []);
+  });
+
+  it("writes nothing to either drive", async () => {
+    const primary = await makeTree({ "a.txt": "AAAA", "b.txt": "same", "New/x.jpg": "xx" });
+    const replica = await makeTree({ "a.txt": "ZZZZ", "b.txt": "same", "Old/x.jpg": "xx" });
+    const primaryBefore = await snapshotTree(primary);
+    const replicaBefore = await snapshotTree(replica);
+
+    await compare(primary, replica, { deep: true });
+
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+    assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("reads only what a Quick compare with the same Folder limit and Exclusions compares", async () => {
+    const primary = await makeTree({ "Photos/a.jpg": "AAAA", "Photos/cache.tmp": "CCCC", "Docs/b.txt": "BBBB" });
+    const replica = await makeTree({ "Photos/a.jpg": "ZZZZ", "Photos/cache.tmp": "zzzz", "Docs/b.txt": "zzzz" });
+    const read: string[] = [];
+    const sha256 = new Sha256Hasher();
+    const watching: Hasher = { checksum: (path, onRead) => (read.push(path), sha256.checksum(path, onRead)) };
+
+    const report = await compare(primary, replica, { deep: true, only: "Photos", exclusions: ["*.tmp"], hasher: watching });
+
+    assert.deepEqual(report.anomalies.contentMismatch.files, [{ path: "Photos/a.jpg", size: 4 }]);
+    assert.deepEqual(read.sort(), [join(primary, "Photos/a.jpg"), join(replica, "Photos/a.jpg")].sort());
+  });
+});
+
+describe("Anomalies: Replica newer", () => {
+  it("flags a changed file whose Replica copy is newer than the Primary's, keeping it among the changed files", async () => {
+    const primary = await makeTree({
+      "older-here.txt": { content: "primary", mtime: new Date("2026-02-01T09:00:00Z") },
+      "newer-here.txt": { content: "primary", mtime: new Date("2026-04-01T09:00:00Z") },
+    });
+    const replica = await makeTree({
+      "older-here.txt": { content: "replica", mtime: new Date("2026-03-01T09:00:00Z") },
+      "newer-here.txt": { content: "replica", mtime: new Date("2026-03-01T09:00:00Z") },
+    });
+
+    for (const deep of [false, true]) {
+      const report = await compare(primary, replica, { deep });
+
+      assert.deepEqual(report.anomalies.replicaNewer.files, [{ path: "older-here.txt", size: 7 }]);
+      assert.deepEqual(report.changed.files, [
+        { path: "newer-here.txt", size: 7 },
+        { path: "older-here.txt", size: 7 },
+      ]);
+    }
+  });
+});
+

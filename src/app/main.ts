@@ -115,12 +115,16 @@ async function perform(action: Action, window: BrowserWindow): Promise<void> {
       return chooseOnlyFolder(window);
     case "wholeDrive":
       return flow.wholeDrive();
+    case "deepVerify":
+      return flow.deepVerify(action.on === true);
     case "overrideSafetyStop":
       return flow.overrideSafetyStop(String(action.typed));
     case "approveCopies":
       return flow.approveCopies(action.approved === true);
     case "approveMoves":
       return flow.approveMoves(action.approved === true);
+    case "chooseForMismatch":
+      return flow.chooseForMismatch(String(action.path), action.choice);
     case "approveDeletions":
       return flow.approveDeletions(action.approved === true);
     case "next":
