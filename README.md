@@ -32,13 +32,13 @@ npm start     # build and open the app
 
 **Copies, Moves, Deletions.** These are the review steps. Each one is grouped by folder, each folder expands to its files, and each step has its own all-or-nothing **Approval**. Nothing is approved until you approve it. Moves and Deletions are skipped when there is nothing in them. Deletions also warns when the **Holding area** still holds files from the previous Update, because approving the new deletions deletes those for good (ADR 0006). Back and Next keep the Approvals. **Start over**, a drive disconnecting or quitting discards them.
 
-**Summary.** Says exactly what **Apply** will do: what it copies, renames and moves into the Holding area, and what it leaves alone. Nothing is written before Apply.
+**Summary.** Says exactly what **Apply** will do: what it copies, renames and moves into the Holding area, what it permanently deletes from the previous Holding area, and what it leaves alone. Nothing is written before Apply.
 
 **Updating.** Once Apply starts there is no going back. The app first remounts the Primary read-only and remounts it normally afterwards (ADR 0013). It then works in this order:
 
-1. It moves the approved deletions into the visible `sync-drive Holding Area` folder on the Replica, keeping their folder paths. They are not destroyed.
+1. If the deletions are approved, it permanently deletes what the Holding area held from the previous Update, then moves the approved deletions into the visible `sync-drive Holding Area` folder on the Replica, keeping their folder paths. They stay there, not destroyed, until the next Update whose deletions are approved.
 2. It renames the approved Moves on the Replica.
-3. It copies the new and changed files. Copies keep their modification and creation dates, Finder tags, other extended attributes, permissions and flags (ADR 0005), and each copy's checksum is checked against the Primary (ADR 0010). Each file is written under a temporary name in a hidden `.sync-drive-incoming` folder on the Replica and renamed into place when complete, so an interrupted Update never leaves a truncated file under a real name.
+3. It copies the new and changed files. Copies keep their modification and creation dates, Finder tags, other extended attributes, permissions and flags (ADR 0005), and each copy's checksum is checked against the Primary (ADR 0010). Each file is written under a temporary name in a hidden `.sync-drive-incoming` folder on the Replica and renamed into place when complete, so an interrupted Update never leaves a truncated file under a real name. The next Update clears anything left there.
 
 Before moving a deleted file, the app checks again that a comparison would still call it deleted. A file that is back on the Primary stays on the Replica (ADR 0014).
 
