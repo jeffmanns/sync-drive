@@ -168,7 +168,7 @@ export class UpdateStoppedError extends Error {
 /** Does the Update for `update()`, recording each file copied, moved or not as it goes into `result`. */
 async function updateInto(result: UpdateResult, report: Report, approvals: Approvals, setup: UpdateSetup): Promise<void> {
   await assertSeparate(setup.primary, setup.replica);
-  const files = [...report.new.files, ...report.changed.files, ...overwritten(report, approvals.overwrite ?? [])];
+  const files = [...report.new.files, ...report.changed.files, ...mismatchesToOverwrite(report, approvals.overwrite ?? [])];
   const deletions = approvals.deletions ? report.deleted.files : [];
   const moves = approvals.moves ? report.moves.moves : [];
   for (const file of [...files, ...deletions]) assertInsideDrive(file.path);
@@ -324,7 +324,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
  * The content mismatches in `report` named by `paths`, for copying over their Replica copies. Rejects
  * if a path is not one of them, as the choice was then made on another comparison.
  */
-function overwritten(report: Report, paths: readonly string[]): FileEntry[] {
+function mismatchesToOverwrite(report: Report, paths: readonly string[]): FileEntry[] {
   const mismatches = new Map(report.anomalies.contentMismatch.files.map((file) => [file.path, file]));
   return paths.map((path) => {
     const file = mismatches.get(path);

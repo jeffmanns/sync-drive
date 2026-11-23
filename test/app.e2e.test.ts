@@ -82,7 +82,7 @@ describe("the desktop app", () => {
       await window.locator("input[type=checkbox]:checked").waitFor();
       await window.getByRole("button", { name: "Next" }).click();
       await window.getByText("Copy 2 files (17 B) from the Primary to the Replica.").waitFor();
-      await window.getByText("Overwrite the Replica's copy of 1 file (4 B) with a content mismatch, as you chose.").waitFor();
+      await window.getByText("Overwrite 1 file (4 B) with a content mismatch on the Replica with the Primary's copy, as you chose.").waitFor();
       await window.getByText("Move 1 file (9 B) no longer on the Primary into the Holding area.").waitFor();
       await window.getByText("Permanently delete the 1 file (4 B) in the Holding area from an earlier Update.").waitFor();
       phase("review steps");

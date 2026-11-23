@@ -1067,6 +1067,23 @@ describe("Deep verify", () => {
     assert.deepEqual(report.anomalies.contentMismatch.files, [{ path: "Photos/a.jpg", size: 4 }]);
     assert.deepEqual(read.sort(), [join(primary, "Photos/a.jpg"), join(replica, "Photos/a.jpg")].sort());
   });
+
+  it("reports a file changed on the Replica while it was being verified as changed, not as a content mismatch", async () => {
+    const primary = await makeTree({ "notes.txt": "before" });
+    const replica = await makeTree({ "notes.txt": "before" });
+    const sha256 = new Sha256Hasher();
+    const changedMeanwhile: Hasher = {
+      checksum: async (path) => {
+        if (path === join(replica, "notes.txt")) await writeFile(path, "BEFORE");
+        return sha256.checksum(path);
+      },
+    };
+
+    const report = await compare(primary, replica, { deep: true, hasher: changedMeanwhile });
+
+    assert.deepEqual(report.changed.files, [{ path: "notes.txt", size: 6 }]);
+    assert.deepEqual(report.anomalies.contentMismatch.files, []);
+  });
 });
 
 describe("Anomalies: Replica newer", () => {

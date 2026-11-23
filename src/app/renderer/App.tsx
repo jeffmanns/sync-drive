@@ -542,9 +542,9 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
         {copy.count > 0
           ? <li>Copy {describe(copy)} from the Primary to the Replica.</li>
           : hasCopies && <li>Copy nothing: the copies are not approved.</li>}
-        {overwrite.count > 0 && <li className="warning">Overwrite the Replica's copy of {describe(overwrite)} with a content mismatch, as you chose.</li>}
+        {overwrite.count > 0 && <li className="warning">Overwrite {describe(overwrite)} with a content mismatch on the Replica with the Primary's copy, as you chose.</li>}
         {keepMismatched.count > 0 && <li>Keep the Replica's copy of {describe(keepMismatched)} with a content mismatch, as you chose.</li>}
-        {undecided.count > 0 && <li>Leave as they are {describe(undecided)} with a content mismatch and no choice.</li>}
+        {undecided.count > 0 && <li>Leave {describe(undecided)} with a content mismatch as they are on the Replica: no choice was made for them.</li>}
         {renameOnReplica.count > 0 && <li>Rename {describe(renameOnReplica)} moved on the Primary to their new paths on the Replica.</li>}
         {leaveAtOldPaths.count > 0 && <li>Leave the moved files at their old paths on the Replica: {describe(leaveAtOldPaths)}. The moves are not approved.</li>}
         {deleteFromHoldingArea.count > 0 && (

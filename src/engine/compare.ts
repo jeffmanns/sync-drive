@@ -91,12 +91,12 @@ export async function compare(
   const primaryOnly: ScannedFile[] = [];
   const changed: ScannedFile[] = [];
   /** Files a Quick compare judges equal, with their Replica copies: what a Deep verify reads. */
-  const same: Array<{ primary: ScannedFile; replica: ScannedFile }> = [];
+  const quickEqualPairs: Array<{ primary: ScannedFile; replica: ScannedFile }> = [];
   for (const [key, file] of primaryFiles) {
     const counterpart = replicaFiles.get(key);
     if (counterpart === undefined) primaryOnly.push(file);
     else if (!quickEqual(file, counterpart)) changed.push(file);
-    else same.push({ primary: file, replica: counterpart });
+    else quickEqualPairs.push({ primary: file, replica: counterpart });
   }
   // An Update would read these, so check now that it can. Files that match their Replica copy are
   // not read, so they are not checked: there is nothing to copy.
@@ -113,7 +113,7 @@ export async function compare(
   const hasher = options.hasher ?? new Sha256Hasher();
   const contentMismatch: ContentMismatch[] = [];
   if (options.deep === true) {
-    await verifyContents(same, { primary, replica, hasher, tellProgress, changed, contentMismatch, cannotRead, unreadable });
+    await verifyContents(quickEqualPairs, { primary, replica, hasher, tellProgress, changed, contentMismatch, cannotRead, unreadable });
   }
   // A Replica file at or under a path that could not be read on the Primary may still be there: it is
   // never treated as deleted, nor as one end of a move.
@@ -206,11 +206,11 @@ export async function compare(
 }
 
 /**
- * Deep verify: reads each pair in `same` (files a Quick compare judges equal) in full on both drives,
+ * Deep verify: reads each pair in `quickEqualPairs` (files a Quick compare judges equal) in full on both drives,
  * one pair at a time, and adds to `contentMismatch` each regular file whose checksums differ.
  */
 async function verifyContents(
-  same: Array<{ primary: ScannedFile; replica: ScannedFile }>,
+  quickEqualPairs: Array<{ primary: ScannedFile; replica: ScannedFile }>,
   { primary, replica, hasher, tellProgress, changed, contentMismatch, cannotRead, unreadable }: {
     primary: string;
     replica: string;
@@ -226,7 +226,7 @@ async function verifyContents(
     unreadable: Unreadable[];
   },
 ): Promise<void> {
-  const files = same.filter((pair) => pair.primary.kind === "file");
+  const files = quickEqualPairs.filter((pair) => pair.primary.kind === "file");
   // Each file is read in full on both drives.
   const totalBytes = files.reduce((total, pair) => total + 2 * pair.primary.size, 0);
   /** Bytes of the files already verified, whether or not they could be read in full. */
@@ -255,7 +255,7 @@ async function verifyContents(
       continue;
     }
     if (replicaSum.status === "rejected") {
-      // The backup itself is damaged: what Deep verify is for. Left to the owner's choice, like any
+      // The Replica's copy itself is damaged: what Deep verify is for. Left to the owner's choice, like any
       // other copy whose contents do not match, rather than stopping the comparison.
       const why = readFailure(replicaSum.reason as NodeJS.ErrnoException);
       contentMismatch.push({ path: pair.primary.path, size: pair.primary.size, replicaUnreadable: why });
