@@ -53,3 +53,11 @@ If your output contradicts an existing ADR, surface it explicitly rather than si
 ## When a ticket and an ADR disagree, the ADR wins
 
 Tickets are written up front; ADRs record decisions settled later, so an ADR overrides older ticket text. Build what the ADR says and name the conflict in the PR. If following the ADR changes what the ticket asks for, ask the owner before building.
+
+## ADRs are a record: never rewrite them
+
+An ADR records what was decided, when, and why, given what was known then. Once merged, leave its text as written, even when a later decision changes it or a term it uses (a command, a flag) no longer exists. Don't edit or delete its notes about what holds "until" a later ticket either: they are dated by their own wording and stay true as history.
+
+A later decision goes in a new ADR, which says which earlier ADRs it changes and what their old terms now mean (as ADR 0009 does for ADR 0004 and ADR 0008).
+
+When a ticket says nothing should refer to something any more, that means the living docs: `README.md`, `GLOSSARY.md`, code comments and messages. ADRs are out of scope; name the ADRs that still mention it in the PR.
