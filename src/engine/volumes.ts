@@ -12,6 +12,8 @@ export interface Volume {
 export interface CandidateDrive extends Volume {
   /** The drive's capacity in bytes, so the owner can tell drives apart. */
   size: number;
+  /** Whether the drive is mounted so that it can be written to, as the Replica must be. */
+  writable: boolean;
 }
 
 /**
@@ -24,8 +26,8 @@ export interface VolumeIdentity {
   /** Every drive currently connected. */
   connected(): Promise<Volume[]>;
   /**
-   * The connected drives that could be paired: external drives and mounted disk images, never the
-   * Mac's internal disk or its system volumes.
+   * The connected drives that could be paired: external and removable drives and disk images mounted
+   * in /Volumes, never the Mac's own disk or its system volumes (ADR 0020).
    */
   candidates(): Promise<CandidateDrive[]>;
 }

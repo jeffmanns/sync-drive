@@ -98,7 +98,7 @@ describe("app flow: Pairing", () => {
 
     mac.volumes.connect(photos, "PHOTOS-ID", 2_000_000_000_000);
     await flow.drivesChanged();
-    assert.deepEqual(stateOf(flow).drives, [{ id: "PHOTOS-ID", name: basename(photos), mountPoint: photos, size: 2_000_000_000_000 }]);
+    assert.deepEqual(stateOf(flow).drives, [{ id: "PHOTOS-ID", name: basename(photos), mountPoint: photos, size: 2_000_000_000_000, writable: true }]);
     assert.match(stateOf(flow).waiting, new RegExp(`Only one drive is connected: "${basename(photos)}"\\. Connect the other one too\\.`));
 
     mac.volumes.connect(backup, "BACKUP-ID", 4_000_000_000_000);
@@ -181,6 +181,27 @@ describe("app flow: Pairing", () => {
     assert.equal((await mac.open()).state.step, "pairing");
   });
 
+  it("will not save a drive that cannot be written to as the Replica, but will as the Primary", async () => {
+    const mac = await testMac();
+    const photos = await makePrimary();
+    const installer = await makeTree();
+    mac.volumes.connect(photos, "PHOTOS-ID");
+    mac.volumes.connect(installer, "INSTALLER-ID", 0, { writable: false });
+    const flow = await mac.open();
+
+    flow.choosePrimary("PHOTOS-ID");
+    await flow.pair();
+
+    assert.equal(stateOf(flow).summary?.replica.id, "INSTALLER-ID");
+    assert.equal(stateOf(flow).summaryProblem, `"${basename(installer)}" cannot be written to, so it cannot be the Replica.`);
+    assert.equal((await mac.open()).state.step, "pairing", "nothing saved");
+
+    flow.choosePrimary("INSTALLER-ID");
+    assert.equal(stateOf(flow).summaryProblem, undefined);
+    await flow.pair();
+    assert.equal(stateOf(flow).step, "start");
+  });
+
   it("keeps the summary when the same two drives are listed again", async () => {
     const mac = await testMac();
     mac.volumes.connect(await makeTree(), "PHOTOS-ID");
@@ -195,12 +216,20 @@ describe("app flow: Pairing", () => {
 
   it("explains that only the Primary and the Replica should be connected when more drives are", async () => {
     const mac = await testMac();
-    for (const [index, id] of ["A-ID", "B-ID", "C-ID"].entries()) mac.volumes.connect(await makeTree(), id, index);
+    const names: string[] = [];
+    for (const [index, id] of ["A-ID", "B-ID", "C-ID"].entries()) {
+      const drive = await makeTree();
+      names.push(basename(drive));
+      mac.volumes.connect(drive, id, index);
+    }
 
     const flow = await mac.open();
 
     assert.equal(stateOf(flow).drives.length, 3);
-    assert.match(stateOf(flow).waiting, /3 drives are connected\. Eject or disconnect all but the Primary and the Replica\./);
+    assert.equal(
+      stateOf(flow).waiting,
+      `3 drives are connected: "${names[0]}", "${names[1]}" and "${names[2]}". Eject or disconnect all but the Primary and the Replica.`,
+    );
   });
 
   it("explains that two drives with the same volume ID cannot be paired", async () => {

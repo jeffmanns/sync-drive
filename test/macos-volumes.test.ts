@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
 import { MacItemCounter } from "../src/macos/item-counter.ts";
-import { MacVolumes } from "../src/macos/volume-identity.ts";
+import { couldBePaired, MacVolumes } from "../src/macos/volume-identity.ts";
 import { makeDiskImageTree, makeTree, removeTrees } from "./helpers/trees.ts";
 
 after(removeTrees);
@@ -42,21 +42,37 @@ describe("Volume identity on macOS", () => {
     assert.notEqual((await volumes.volumeAt(second)).id, before.id);
   });
 
-  it("offers mounted disk images for Pairing, with their size, but never the Mac's own disk or its system volumes", async () => {
-    const drive = await makeDiskImageTree({}, { name: "Rehearsal", size: "40m" });
+  it("offers disk images mounted in /Volumes for Pairing, with their size and whether they can be written to", async () => {
+    const drive = await makeDiskImageTree({}, { name: "Rehearsal", size: "40m", inVolumes: true });
+    const installer = await makeDiskImageTree({}, { name: "Installer", inVolumes: true, readOnly: true });
+    const hidden = await makeDiskImageTree({}, { name: "Hidden" });
     const volumes = new MacVolumes();
-    const image = await volumes.volumeAt(drive);
+    const [image, readOnly, elsewhere] = await Promise.all([drive, installer, hidden].map((path) => volumes.volumeAt(path)));
 
     const candidates = await volumes.candidates();
 
-    const offered = candidates.find((candidate) => candidate.id === image.id);
-    assert.deepEqual(offered && { ...offered, size: undefined }, { ...image, size: undefined });
+    const offered = candidates.find((candidate) => candidate.id === image!.id);
+    assert.deepEqual(offered && { ...offered, size: undefined }, { ...image, size: undefined, writable: true });
     assert.ok(offered!.size > 30_000_000 && offered!.size <= 42_000_000, `size ${offered!.size}`);
+    assert.equal(candidates.find((candidate) => candidate.id === readOnly!.id)?.writable, false);
+    assert.equal(candidates.find((candidate) => candidate.id === elsewhere!.id), undefined, "mounted outside /Volumes");
     const own = await volumes.volumeAt("/");
     assert.equal(candidates.find((candidate) => candidate.id === own.id), undefined);
-    for (const candidate of candidates) {
-      assert.ok(candidate.mountPoint !== "/" && !candidate.mountPoint.startsWith("/System/Volumes/"), candidate.mountPoint);
-    }
+    for (const candidate of candidates) assert.ok(candidate.mountPoint.startsWith("/Volumes/"), candidate.mountPoint);
+  });
+
+  it("offers external and removable drives, never fixed internal or system volumes, as diskutil describes them", () => {
+    const external = { Internal: false, Ejectable: true, RemovableMedia: false, MountPoint: "/Volumes/Photos" };
+    const sdCardInBuiltInReader = { Internal: true, Ejectable: true, RemovableMedia: true, MountPoint: "/Volumes/SD" };
+    const extraVolumeOnTheMacsDisk = { Internal: true, Ejectable: false, RemovableMedia: false, MountPoint: "/Volumes/Projects" };
+
+    assert.equal(couldBePaired(external), true);
+    assert.equal(couldBePaired(sdCardInBuiltInReader), true);
+    assert.equal(couldBePaired(extraVolumeOnTheMacsDisk), false);
+    assert.equal(couldBePaired({ ...extraVolumeOnTheMacsDisk, MountPoint: "/" }), false);
+    assert.equal(couldBePaired({ ...extraVolumeOnTheMacsDisk, MountPoint: "/System/Volumes/Data" }), false);
+    assert.equal(couldBePaired({ ...external, MountPoint: "/Library/Developer/CoreSimulator/Volumes/iOS_22A" }), false);
+    assert.equal(couldBePaired({ ...sdCardInBuiltInReader, MountPoint: "/System/Volumes/Update" }), false);
   });
 
   it("refuses a folder that is not the top level of a drive", async () => {

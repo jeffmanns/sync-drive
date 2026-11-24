@@ -37,6 +37,7 @@ import {
   totalsOfFiles,
   totalsOfMoves,
   whyCannotPair,
+  whyNotReplica,
   writesAnything,
   type AnomaliesState,
   type CopiesState,
@@ -209,8 +210,8 @@ export class Flow {
     if (state.step !== "pairing" || state.waiting !== undefined) return;
     const summary = summaryFor(state.drives, id);
     if (summary === undefined) return;
-    const { error: _, ...rest } = state;
-    this.#set({ ...rest, summary });
+    const { error: _, summaryProblem: __, ...rest } = state;
+    this.#set({ ...rest, ...withSummary(state.drives, summary) });
   }
 
   /** On Start: the deliberate Re-pair, e.g. after replacing a drive. Nothing changes until it is confirmed. */
@@ -250,8 +251,12 @@ export class Flow {
     if (this.#state !== state) return;
     const now = withDrives(state, listed);
     if (now.summary === undefined || !samePairing(now.summary, state.summary)) {
-      const { summary: _, ...rest } = now;
+      const { summary: _, summaryProblem: __, ...rest } = now;
       this.#set({ ...rest, error: "The drives connected have changed since the summary was shown. Check the drives listed and pick the Primary again." });
+      return;
+    }
+    if (now.summaryProblem !== undefined) {
+      this.#set(now);
       return;
     }
     try {
@@ -814,13 +819,21 @@ function summaryOf(review: Review): SummaryState {
  * same roles: a different Replica is never put in front of the owner's confirmation unasked.
  */
 function withDrives(state: PairingState, listed: CandidateDrive[] | Error): PairingState {
-  const { waiting: _, summary, ...rest } = state;
+  const { waiting: _, summary, summaryProblem: __, ...rest } = state;
   const drives = listed instanceof Error ? [] : listed;
   const waiting = listed instanceof Error ? listed.message : whyCannotPair(drives);
   if (waiting !== undefined) return { ...rest, drives, waiting };
   const refreshed = summary === undefined ? undefined : summaryFor(drives, summary.primary.id);
   const kept = refreshed !== undefined && samePairing(refreshed, summary!) ? refreshed : undefined;
-  return { ...rest, drives, ...(kept === undefined ? {} : { summary: kept }) };
+  return { ...rest, drives, ...withSummary(drives, kept) };
+}
+
+/** `summary`, if any, of a Pairing of two of `drives`, with why it cannot be saved, if it cannot. */
+function withSummary(drives: CandidateDrive[], summary: Pairing | undefined): Pick<PairingState, "summary" | "summaryProblem"> {
+  if (summary === undefined) return {};
+  const replica = drives.find((drive) => drive.id === summary.replica.id);
+  const summaryProblem = replica === undefined ? undefined : whyNotReplica(replica);
+  return { summary, ...(summaryProblem === undefined ? {} : { summaryProblem }) };
 }
 
 /**

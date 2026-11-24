@@ -97,7 +97,7 @@ interface ScreenProps<S> {
 
 function PairingScreen({ state, send, busy }: ScreenProps<PairingState>) {
   const { replacing, summary, waiting } = state;
-  const ready = summary !== undefined && (replacing === undefined || replacing.confirmed);
+  const ready = summary !== undefined && state.summaryProblem === undefined && (replacing === undefined || replacing.confirmed);
   return (
     <>
       <h1>{replacing === undefined ? "Pair the drives" : "Re-pair the drives"}</h1>
@@ -121,7 +121,7 @@ function PairingScreen({ state, send, busy }: ScreenProps<PairingState>) {
                 )}
                 <span className="name">"{drive.name}"</span>
                 <span className="size">{formatSize(drive.size)}</span>
-                <span className="note">volume ID {drive.id}</span>
+                <span className="note">volume ID {drive.id}{drive.writable ? "" : ". Cannot be written to."}</span>
               </label>
             </li>
           ))}
@@ -141,6 +141,7 @@ function PairingScreen({ state, send, busy }: ScreenProps<PairingState>) {
               "{summary.replica.name}" <span className="note">volume ID {summary.replica.id}. Updates make it an exact copy of the Primary.</span>
             </dd>
           </dl>
+          <Problem text={state.summaryProblem} />
         </>
       )}
       {replacing !== undefined && (

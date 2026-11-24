@@ -39,22 +39,45 @@ export async function makeCaseSensitiveTree(spec: TreeSpec): Promise<string> {
 /**
  * Builds a tree on a freshly mounted disk image (via `hdiutil`): a real drive with its own
  * volume ID and name. Returns the volume's path. Some file systems (exFAT) need more than the
- * default size.
+ * default size. It is mounted in a temporary folder, unless `inVolumes` mounts it in /Volumes as a
+ * connected drive is; `readOnly` mounts an empty image read-only.
  */
 export async function makeDiskImageTree(
   spec: TreeSpec = {},
-  { fileSystem = "APFS", name = "sync-drive-test", size = "8m" }: { fileSystem?: string; name?: string; size?: string } = {},
+  {
+    fileSystem = "APFS",
+    name = "sync-drive-test",
+    size = "8m",
+    inVolumes = false,
+    readOnly = false,
+  }: { fileSystem?: string; name?: string; size?: string; inVolumes?: boolean; readOnly?: boolean } = {},
 ): Promise<string> {
+  if (readOnly && Object.keys(spec).length > 0) throw new Error("A read-only disk image is made empty");
   const dir = await makeTree();
   const image = join(dir, "drive.dmg");
-  const mountPoint = join(dir, "volume");
   await withRetries(() => run("hdiutil", ["create", "-quiet", "-size", size, "-fs", fileSystem, "-volname", name, image]));
-  await mkdir(mountPoint);
-  const { stdout } = await withRetries(() =>
-    run("hdiutil", ["attach", "-nobrowse", "-mountpoint", mountPoint, image]),
-  );
-  mountedImages.push(deviceOf(stdout));
+  const attach = async (...where: string[]) => {
+    const { stdout } = await withRetries(() => run("hdiutil", ["attach", "-nobrowse", ...(readOnly ? ["-readonly"] : []), ...where, image]));
+    mountedImages.push(deviceOf(stdout));
+    return stdout;
+  };
+  let mountPoint: string;
+  if (inVolumes) {
+    // Where macOS mounts a drive that is connected: /Volumes/<name>, or "<name> 1" and so on if that is taken.
+    mountPoint = mountPointOf(await attach());
+  } else {
+    mountPoint = join(dir, "volume");
+    await mkdir(mountPoint);
+    await attach("-mountpoint", mountPoint);
+  }
   await writeTree(mountPoint, spec);
+  return mountPoint;
+}
+
+/** The mount point (e.g. `/Volumes/Photos`) in the output of `hdiutil attach`. */
+function mountPointOf(attachOutput: string): string {
+  const mountPoint = attachOutput.match(/\t(\/Volumes\/.+)$/m)?.[1]?.trim();
+  if (mountPoint === undefined) throw new Error(`hdiutil attach did not name a mount point:\n${attachOutput}`);
   return mountPoint;
 }
 

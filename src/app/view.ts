@@ -42,6 +42,8 @@ export interface PairingState {
    * Primary: the summary they confirm. Nothing is saved before then.
    */
   summary?: Pairing;
+  /** Why the summary cannot be saved as it stands, such as a Replica that cannot be written to. */
+  summaryProblem?: string;
   /** Set when re-pairing over a saved Pairing: it is replaced only once the owner confirms. */
   replacing?: { pairing?: Pairing; confirmed: boolean };
   /** Why the last attempt to pair did not work, or why a new Pairing is needed. */
@@ -415,7 +417,8 @@ export function whyCannotPair(drives: CandidateDrive[]): string | undefined {
   }
   if (drives.length === 1) return `Only one drive is connected: "${drives[0]!.name}". Connect the other one too.`;
   if (drives.length > 2) {
-    return `${drives.length} drives are connected. Eject or disconnect all but the Primary and the Replica.`;
+    const names = drives.map((drive) => `"${drive.name}"`);
+    return `${drives.length} drives are connected: ${names.slice(0, -1).join(", ")} and ${names.at(-1)}. Eject or disconnect all but the Primary and the Replica.`;
   }
   const [first, second] = drives as [CandidateDrive, CandidateDrive];
   if (first.id === second.id) {
@@ -425,6 +428,11 @@ export function whyCannotPair(drives: CandidateDrive[]): string | undefined {
     );
   }
   return undefined;
+}
+
+/** Why `drive` cannot be the Replica, or `undefined` if it can. */
+export function whyNotReplica(drive: CandidateDrive): string | undefined {
+  return drive.writable ? undefined : `"${drive.name}" cannot be written to, so it cannot be the Replica.`;
 }
 
 /** No files at all. */

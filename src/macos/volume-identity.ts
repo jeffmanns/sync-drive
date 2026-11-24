@@ -40,7 +40,7 @@ export class MacVolumes implements VolumeIdentity {
       (await this.connected()).map(async (volume) => {
         // A drive ejected since it was listed is simply not offered.
         const info = await diskutilPlist(["info", "-plist", volume.mountPoint]).catch(() => undefined);
-        return info === undefined || !couldBePaired(info) ? undefined : { ...volume, size: sizeOf(info) };
+        return info === undefined || !couldBePaired(info) ? undefined : { ...volume, size: sizeOf(info), writable: info.Writable === true };
       }),
     );
     return described.filter((drive) => drive !== undefined);
@@ -48,13 +48,16 @@ export class MacVolumes implements VolumeIdentity {
 }
 
 /**
- * Whether the volume diskutil describes as `info` could be paired: one on an external drive or a disk
- * image, which diskutil both reports as not internal. The Mac's own disk, and its system volumes
- * (the Data volume, Preboot, the VM volume and so on), never are.
+ * Whether the volume diskutil describes as `info` could be paired: one mounted in /Volumes, where
+ * macOS mounts the drives and disk images connected to it, on a drive that is external, or removable
+ * and ejectable (such as an SD card in the Mac's own reader). Disk images are external to diskutil.
+ * The Mac's own disk and its system volumes never are, nor are volumes macOS mounts out of sight
+ * (such as Xcode's simulators).
  */
-function couldBePaired(info: Record<string, unknown>): boolean {
-  const { Internal: internal, MountPoint: mountPoint } = info;
-  return internal === false && typeof mountPoint === "string" && mountPoint !== "/" && !mountPoint.startsWith("/System/Volumes/");
+export function couldBePaired(info: Record<string, unknown>): boolean {
+  const { Internal: internal, Ejectable: ejectable, RemovableMedia: removable, MountPoint: mountPoint } = info;
+  const external = internal === false || (ejectable === true && removable === true);
+  return external && typeof mountPoint === "string" && mountPoint.startsWith("/Volumes/");
 }
 
 /** The capacity, in bytes, of the volume diskutil describes as `info`, or 0 if it does not say. */
