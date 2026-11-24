@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import { promisify } from "node:util";
-import type { Volume, VolumeIdentity } from "../engine/index.ts";
+import type { CandidateDrive, Volume, VolumeIdentity } from "../engine/index.ts";
 
 const run = promisify(execFile);
 
@@ -34,6 +34,36 @@ export class MacVolumes implements VolumeIdentity {
     })((list as Record<string, unknown>).AllDisksAndPartitions);
     return [...volumes.values()];
   }
+
+  async candidates(): Promise<CandidateDrive[]> {
+    const described = await Promise.all(
+      (await this.connected()).map(async (volume) => {
+        // A drive ejected since it was listed is simply not offered.
+        const info = await diskutilPlist(["info", "-plist", volume.mountPoint]).catch(() => undefined);
+        return info === undefined || !couldBePaired(info) ? undefined : { ...volume, size: sizeOf(info), writable: info.Writable === true };
+      }),
+    );
+    return described.filter((drive) => drive !== undefined);
+  }
+}
+
+/**
+ * Whether the volume diskutil describes as `info` could be paired: one mounted in /Volumes, where
+ * macOS mounts the drives and disk images connected to it, on a drive that is external, or removable
+ * and ejectable (such as an SD card in the Mac's own reader). Disk images are external to diskutil.
+ * The Mac's own disk and its system volumes never are, nor are volumes macOS mounts out of sight
+ * (such as Xcode's simulators).
+ */
+export function couldBePaired(info: Record<string, unknown>): boolean {
+  const { Internal: internal, Ejectable: ejectable, RemovableMedia: removable, MountPoint: mountPoint } = info;
+  const external = internal === false || (ejectable === true && removable === true);
+  return external && typeof mountPoint === "string" && mountPoint.startsWith("/Volumes/");
+}
+
+/** The capacity, in bytes, of the volume diskutil describes as `info`, or 0 if it does not say. */
+function sizeOf(info: Record<string, unknown>): number {
+  const size = info.TotalSize ?? info.Size;
+  return typeof size === "number" ? size : 0;
 }
 
 /** A mounted volume described by diskutil, or `undefined` if `entry` is not one with a volume UUID. */

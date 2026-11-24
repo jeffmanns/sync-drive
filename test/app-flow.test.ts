@@ -86,36 +86,162 @@ describe("app flow: opening", () => {
 });
 
 describe("app flow: Pairing", () => {
-  it("pairs the chosen drives, saves the Pairing, and moves on to Start", async () => {
+  it("lists the connected drives and waits, saying what to do, until exactly two are connected", async () => {
     const mac = await testMac();
-    const primary = await makePrimary();
-    const replica = await makeTree();
-    mac.volumes.connect(primary, "PRIMARY-ID");
-    mac.volumes.connect(replica, "REPLICA-ID");
+    const photos = await makePrimary();
+    const backup = await makeTree();
     const flow = await mac.open();
 
-    flow.choose("primary", primary);
-    flow.choose("replica", replica);
-    await flow.pair();
+    assert.equal(stateOf(flow).step, "pairing");
+    assert.deepEqual(stateOf(flow).drives, []);
+    assert.match(stateOf(flow).waiting, /Connect the Primary and the Replica/);
 
-    const expected = { primary: { id: "PRIMARY-ID", name: basename(primary) }, replica: { id: "REPLICA-ID", name: basename(replica) } };
-    assert.deepEqual(flow.state, { step: "start", pairing: expected, exclusions: [], deep: false, lastUpdated: { known: true, folders: [] } });
-    assert.deepEqual((await mac.open()).state, { step: "start", pairing: expected, exclusions: [], deep: false, lastUpdated: { known: true, folders: [] } }, "remembered when the app opens again");
+    mac.volumes.connect(photos, "PHOTOS-ID", 2_000_000_000_000);
+    await flow.drivesChanged();
+    assert.deepEqual(stateOf(flow).drives, [{ id: "PHOTOS-ID", name: basename(photos), mountPoint: photos, size: 2_000_000_000_000, writable: true }]);
+    assert.match(stateOf(flow).waiting, new RegExp(`Only one drive is connected: "${basename(photos)}"\\. Connect the other one too\\.`));
+
+    mac.volumes.connect(backup, "BACKUP-ID", 4_000_000_000_000);
+    await flow.drivesChanged();
+    assert.deepEqual(stateOf(flow).drives.map((drive: { id: string }) => drive.id), ["PHOTOS-ID", "BACKUP-ID"]);
+    assert.equal(stateOf(flow).waiting, undefined);
   });
 
-  it("stays on Pairing, saying why and saving nothing, when both choices are the same drive", async () => {
+  it("pairs the drive the owner picks as the Primary with the other as the Replica, saving nothing until they confirm the summary", async () => {
     const mac = await testMac();
-    const drive = await makePrimary();
-    mac.volumes.connect(drive, "SAME-ID");
+    const photos = await makePrimary();
+    const backup = await makeTree();
+    mac.volumes.connect(photos, "PHOTOS-ID");
+    mac.volumes.connect(backup, "BACKUP-ID");
     const flow = await mac.open();
+    const photosSide = { id: "PHOTOS-ID", name: basename(photos) };
+    const backupSide = { id: "BACKUP-ID", name: basename(backup) };
 
-    flow.choose("primary", drive);
-    flow.choose("replica", drive);
+    flow.choosePrimary("BACKUP-ID");
+    assert.deepEqual(stateOf(flow).summary, { primary: backupSide, replica: photosSide });
+    flow.choosePrimary("PHOTOS-ID");
+    assert.deepEqual(stateOf(flow).summary, { primary: photosSide, replica: backupSide });
+    assert.equal((await mac.open()).state.step, "pairing", "nothing saved before the owner confirms");
+
     await flow.pair();
 
-    assert.equal(flow.state.step, "pairing");
-    assert.match(flow.state.step === "pairing" ? flow.state.error ?? "" : "", /same drive/);
+    const expected = { step: "start", pairing: { primary: photosSide, replica: backupSide }, exclusions: [], deep: false, lastUpdated: { known: true, folders: [] } };
+    assert.deepEqual(flow.state, expected);
+    assert.deepEqual((await mac.open()).state, expected, "remembered when the app opens again");
+  });
+
+  it("lets no Primary be picked, and saves nothing, until exactly two drives that can be paired are connected", async () => {
+    const mac = await testMac();
+    mac.volumes.connect(await makeTree(), "A-ID");
+    mac.volumes.connect(await makeTree(), "B-ID");
+    mac.volumes.connect(await makeTree(), "C-ID");
+    const flow = await mac.open();
+
+    flow.choosePrimary("A-ID");
+    await flow.pair();
+
+    assert.equal(stateOf(flow).summary, undefined);
     assert.equal((await mac.open()).state.step, "pairing");
+  });
+
+  it("drops the summary, saving nothing, when the drives change after it was shown", async () => {
+    const mac = await testMac();
+    const photos = await makePrimary();
+    const backup = await makeTree();
+    mac.volumes.connect(photos, "PHOTOS-ID");
+    mac.volumes.connect(backup, "BACKUP-ID");
+    const flow = await mac.open();
+    flow.choosePrimary("PHOTOS-ID");
+
+    // Swapped before the flow hears about it: Save must not pair a drive that has gone.
+    mac.volumes.disconnect(backup);
+    mac.volumes.connect(await makeTree(), "OTHER-ID");
+    await flow.pair();
+
+    assert.equal(stateOf(flow).step, "pairing");
+    assert.equal(stateOf(flow).summary, undefined);
+    assert.match(stateOf(flow).error, /drives connected have changed/);
+    assert.equal((await mac.open()).state.step, "pairing");
+  });
+
+  it("drops the summary when the other drive is swapped for another, rather than quietly making that one the Replica", async () => {
+    const mac = await testMac();
+    const backup = await makeTree();
+    mac.volumes.connect(await makeTree(), "PHOTOS-ID");
+    mac.volumes.connect(backup, "BACKUP-ID");
+    const flow = await mac.open();
+    flow.choosePrimary("PHOTOS-ID");
+
+    mac.volumes.disconnect(backup);
+    mac.volumes.connect(await makeTree(), "OTHER-ID");
+    await flow.drivesChanged();
+    await flow.pair();
+
+    assert.equal(stateOf(flow).summary, undefined);
+    assert.equal((await mac.open()).state.step, "pairing");
+  });
+
+  it("will not save a drive that cannot be written to as the Replica, but will as the Primary", async () => {
+    const mac = await testMac();
+    const photos = await makePrimary();
+    const installer = await makeTree();
+    mac.volumes.connect(photos, "PHOTOS-ID");
+    mac.volumes.connect(installer, "INSTALLER-ID", 0, { writable: false });
+    const flow = await mac.open();
+
+    flow.choosePrimary("PHOTOS-ID");
+    await flow.pair();
+
+    assert.equal(stateOf(flow).summary?.replica.id, "INSTALLER-ID");
+    assert.equal(stateOf(flow).summaryProblem, `"${basename(installer)}" cannot be written to, so it cannot be the Replica.`);
+    assert.equal((await mac.open()).state.step, "pairing", "nothing saved");
+
+    flow.choosePrimary("INSTALLER-ID");
+    assert.equal(stateOf(flow).summaryProblem, undefined);
+    await flow.pair();
+    assert.equal(stateOf(flow).step, "start");
+  });
+
+  it("keeps the summary when the same two drives are listed again", async () => {
+    const mac = await testMac();
+    mac.volumes.connect(await makeTree(), "PHOTOS-ID");
+    mac.volumes.connect(await makeTree(), "BACKUP-ID");
+    const flow = await mac.open();
+    flow.choosePrimary("BACKUP-ID");
+
+    await flow.drivesChanged();
+
+    assert.equal(stateOf(flow).summary?.primary.id, "BACKUP-ID");
+  });
+
+  it("explains that only the Primary and the Replica should be connected when more drives are", async () => {
+    const mac = await testMac();
+    const names: string[] = [];
+    for (const [index, id] of ["A-ID", "B-ID", "C-ID"].entries()) {
+      const drive = await makeTree();
+      names.push(basename(drive));
+      mac.volumes.connect(drive, id, index);
+    }
+
+    const flow = await mac.open();
+
+    assert.equal(stateOf(flow).drives.length, 3);
+    assert.equal(
+      stateOf(flow).waiting,
+      `3 drives are connected: "${names[0]}", "${names[1]}" and "${names[2]}". Eject or disconnect all but the Primary and the Replica.`,
+    );
+  });
+
+  it("explains that two drives with the same volume ID cannot be paired", async () => {
+    const mac = await testMac();
+    const drive = await makeTree();
+    const clone = await makeTree();
+    mac.volumes.connect(drive, "SAME-ID");
+    mac.volumes.connect(clone, "SAME-ID");
+
+    const flow = await mac.open();
+
+    assert.match(stateOf(flow).waiting, new RegExp(`"${basename(drive)}" and "${basename(clone)}" have the same volume ID \\(SAME-ID\\)`));
   });
 });
 
@@ -127,8 +253,7 @@ async function pairedMac(primarySpec: TreeSpec = {}, replicaSpec: TreeSpec = {},
   mac.volumes.connect(primary, "PRIMARY-ID");
   mac.volumes.connect(replica, "REPLICA-ID");
   const flow = await mac.open();
-  flow.choose("primary", primary);
-  flow.choose("replica", replica);
+  flow.choosePrimary("PRIMARY-ID");
   await flow.pair();
   assert.equal(flow.state.step, "start");
   return { ...mac, flow, primary, replica };
@@ -136,14 +261,14 @@ async function pairedMac(primarySpec: TreeSpec = {}, replicaSpec: TreeSpec = {},
 
 describe("app flow: Re-pair", () => {
   it("replaces the Pairing only after the extra confirmation", async () => {
-    const { flow, volumes, open, primary } = await pairedMac();
-    const newReplica = await makeTree();
-    volumes.connect(newReplica, "NEW-REPLICA-ID");
+    const { flow, volumes, open, replica } = await pairedMac();
+    volumes.disconnect(replica);
+    volumes.connect(await makeTree(), "NEW-REPLICA-ID");
 
-    flow.beginRepair();
+    await flow.beginRepair();
     assert.equal(flow.state.step, "pairing");
-    flow.choose("primary", primary);
-    flow.choose("replica", newReplica);
+    assert.deepEqual(stateOf(flow).drives.map((drive: { id: string }) => drive.id), ["PRIMARY-ID", "NEW-REPLICA-ID"]);
+    flow.choosePrimary("PRIMARY-ID");
     await flow.pair();
 
     assert.equal(flow.state.step, "pairing", "not replaced without the confirmation");
@@ -161,7 +286,7 @@ describe("app flow: Re-pair", () => {
   it("goes back to Start, keeping the Pairing, when Re-pair is cancelled", async () => {
     const { flow } = await pairedMac();
 
-    flow.beginRepair();
+    await flow.beginRepair();
     flow.cancelRepair();
 
     assert.equal(stateOf(flow).step, "start");
@@ -169,15 +294,14 @@ describe("app flow: Re-pair", () => {
   });
 
   it("opens on Pairing, as a replacement that needs confirming, when the saved Pairing is damaged", async () => {
-    const { pairingFile, open, primary, replica } = await pairedMac();
+    const { pairingFile, open } = await pairedMac();
     await writeFile(pairingFile, "{ not json");
 
     const flow = await open();
 
     assert.equal(flow.state.step, "pairing");
     assert.match(flow.state.step === "pairing" ? flow.state.error ?? "" : "", /damaged/);
-    flow.choose("primary", primary);
-    flow.choose("replica", replica);
+    flow.choosePrimary("PRIMARY-ID");
     await flow.pair();
     assert.equal(await readFile(pairingFile, "utf8"), "{ not json");
     flow.confirmReplace(true);
@@ -265,8 +389,7 @@ describe("app flow: Comparing and Copies", () => {
     const replicaBefore = await snapshotTree(replica);
     const flow = await mac.open();
 
-    flow.choose("primary", primary);
-    flow.choose("replica", replica);
+    flow.choosePrimary("PRIMARY-ID");
     await flow.pair();
     await flow.compare();
 
@@ -333,8 +456,7 @@ describe("app flow: progress", () => {
       return 10;
     };
     const flow = await mac.open();
-    flow.choose("primary", primary);
-    flow.choose("replica", replica);
+    flow.choosePrimary("PRIMARY-ID");
     await flow.pair();
 
     const comparing = flow.compare();
@@ -572,8 +694,7 @@ describe("app flow: refusals", () => {
     mac.volumes.connect(primary, "PRIMARY-ID");
     mac.volumes.connect(replica, "REPLICA-ID");
     const flow = await mac.open();
-    flow.choose("primary", primary);
-    flow.choose("replica", replica);
+    flow.choosePrimary("PRIMARY-ID");
     await flow.pair();
     return { ...mac, flow, primary, replica };
   }
@@ -1368,8 +1489,7 @@ describe("app flow: Exclusions", () => {
     mac.volumes.connect(primary, "PRIMARY-ID");
     mac.volumes.connect(replica, "REPLICA-ID");
     const first = await mac.open();
-    first.choose("primary", primary);
-    first.choose("replica", replica);
+    first.choosePrimary("PRIMARY-ID");
     await first.pair();
     await writeFile(mac.exclusionsFile, "{ not json");
 

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 import { _electron as electron } from "playwright-core";
-import { pair, writePairing } from "../src/engine/index.ts";
+import { pairDrives, writePairing } from "../src/engine/index.ts";
 import { formatDay } from "../src/format.ts";
 import { MacVolumes } from "../src/macos/volume-identity.ts";
 import { makeDiskImageTree, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
@@ -31,7 +31,9 @@ describe("the desktop app", () => {
       { name: "Smoke Replica" },
     );
     const pairingFile = join(await makeTree(), "pairing.json");
-    await writePairing(pairingFile, await pair(primary, replica, new MacVolumes()));
+    const volumes = new MacVolumes();
+    // The disk images are written straight into the Pairing: the guided Pairing needs exactly two drives that can be paired, and a Mac running the tests may have others.
+    await writePairing(pairingFile, pairDrives(await volumes.volumeAt(primary), await volumes.volumeAt(replica)));
     const primaryBefore = await primarySnapshot(primary);
     phase("disk images and Pairing");
     // Tests run with ELECTRON_RUN_AS_NODE; the app must not, or it would start as plain Node.
