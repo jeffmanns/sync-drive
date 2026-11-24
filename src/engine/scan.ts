@@ -4,7 +4,7 @@ import { isAlwaysSkipped } from "./always-skipped.ts";
 import type { ExclusionMatcher } from "./exclusions.ts";
 import { HOLDING_AREA } from "./holding-area.ts";
 import type { Unreadable } from "./report.ts";
-import { isSyncDriveFolder } from "./sync-drive-folders.ts";
+import { isSyncDriveItem } from "./sync-drive-items.ts";
 
 /**
  * What a file system entry is. Shortcuts (symbolic links) are never followed: their own
@@ -34,11 +34,11 @@ export interface Scanned {
 
 /**
  * Lists every file under the `role` drive's `root`, skipping macOS system files, what `isExcluded`
- * leaves out (an excluded folder is not read at all), and, on the Replica, sync-drive's own folders
- * (the Incoming folder and the Holding area), keyed by `matchKey` of its path relative to `root`. On the Primary, a folder or entry below the top level that cannot be read is
+ * leaves out (an excluded folder is not read at all), and, on the Replica, sync-drive's own items
+ * (the Incoming folder, the Holding area and the last-updated marker), keyed by `matchKey` of its path relative to `root`. On the Primary, a folder or entry below the top level that cannot be read is
  * listed in `unreadable` and the scan carries on; on the Replica it rejects. Shortcuts are never
  * followed. Reads only. Rejects if two paths differ only by letter case, or if the Primary holds a
- * top-level item with the name of one of sync-drive's own folders. Calls `onListed` with the number
+ * top-level item with the name of one of sync-drive's own items. Calls `onListed` with the number
  * of items (files plus folders, skipped or not) in each folder it lists, for progress. With
  * `startFolder` (a folder below `root`, as stored on the drive), lists only what is in it, still keyed by its path
  * from `root`; that folder failing to be read rejects, like the top level.
@@ -70,9 +70,9 @@ export async function scan(
       entries.map(async (entry) => {
         const path = prefix + entry.name;
         if (isAlwaysSkipped(path)) return;
-        // sync-drive's own folders: the Incoming folder and the Holding area. Checked before the
+        // sync-drive's own items: the Incoming folder, the Holding area and the last-updated marker. Checked before the
         // Exclusions, so the Primary still cannot hide such an item behind one (ADR 0007).
-        if (isSyncDriveFolder(path)) {
+        if (isSyncDriveItem(path)) {
           if (role === "Replica") return;
           // An Update would copy it into sync-drive's own folder on the Replica, where a later Update would
           // delete it, so a backup that looked made would be lost (ADR 0007).
@@ -81,7 +81,7 @@ export async function scan(
               ? `If you restored files by copying the whole Holding area, rename that folder on the Primary (e.g. to "Restored files"), then compare again.`
               : `Rename it on the Primary, then compare again.`;
           throw new Error(
-            `The Primary has an item named "${path}" at its top level. sync-drive keeps that name for its own folder ` +
+            `The Primary has an item named "${path}" at its top level. sync-drive keeps that name for its own use ` +
               `on the Replica, so it cannot back the item up. ${howToFix}`,
           );
         }

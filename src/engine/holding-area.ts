@@ -1,5 +1,6 @@
-import { lstat, readdir } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { formatDay } from "../format.ts";
 
 /**
  * The visible folder at the top level of the Replica where an Update moves files that are no
@@ -11,14 +12,9 @@ export const HOLDING_AREA = "sync-drive Holding Area";
 /** The note inside the Holding area that tells whoever opens it what it is. */
 export const HOLDING_AREA_README = "READ ME.txt";
 
-const MONTHS = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-] as const;
-
 /** The text of `READ ME.txt` for the Holding area last added to by the Update on `date`. */
 export function holdingAreaReadme(date: Date): string {
-  const day = `${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+  const day = formatDay(date);
   return [
     "sync-drive Holding Area",
     "",
@@ -39,11 +35,22 @@ export function holdingAreaReadme(date: Date): string {
 export interface HoldingAreaContents {
   count: number;
   totalSize: number;
+  /**
+   * The day the Holding area was last added to, as its `READ ME.txt` gives it ("24 November 2026").
+   * Absent when the `READ ME.txt` is missing or gives no date.
+   */
+  lastAddedOn?: string;
 }
 
 /**
- * What the Holding area at the top level of `replica` holds. Reads only; shortcuts are not
- * followed. An absent Holding area holds nothing.
+ * The day in a `READ ME.txt` written by `holdingAreaReadme`, or by an earlier sync-drive, which said
+ * "moved here by the sync-drive Update on <day>" before the Holding area also kept overwritten copies.
+ */
+const README_DAY = /(?:most recently by the Update on|by the sync-drive Update on) (\d{1,2} [A-Z][a-z]+ \d{4})/;
+
+/**
+ * What the Holding area at the top level of `replica` holds, and when it was last added to. Reads
+ * only; shortcuts are not followed. An absent Holding area holds nothing.
  */
 export async function readHoldingArea(replica: string): Promise<HoldingAreaContents> {
   const root = join(replica, HOLDING_AREA);
@@ -59,5 +66,7 @@ export async function readHoldingArea(replica: string): Promise<HoldingAreaConte
     contents.count += 1;
     contents.totalSize += (await lstat(full)).size;
   }
-  return contents;
+  const readme = await readFile(join(root, HOLDING_AREA_README), "utf8").catch(() => "");
+  const day = README_DAY.exec(readme)?.[1];
+  return day === undefined ? contents : { ...contents, lastAddedOn: day };
 }

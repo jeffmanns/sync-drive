@@ -9,6 +9,7 @@ import { MacItemCounter } from "../macos/item-counter.ts";
 import { MacRemounter } from "../macos/remounter.ts";
 import { MacVolumes } from "../macos/volume-identity.ts";
 import { Flow } from "./flow.ts";
+import { updateLogFolderBeside } from "./update-log.ts";
 import { throttleProgress } from "./throttle.ts";
 import { CHANNELS, type Action } from "./view.ts";
 
@@ -32,6 +33,7 @@ const flow = new Flow({
   volumes: new MacVolumes(),
   pairingFile: PAIRING_FILE,
   exclusionsFile: EXCLUSIONS_FILE,
+  updateLogFolder: updateLogFolderBeside(PAIRING_FILE),
   copier: new MacFileCopier(),
   remounter: new MacRemounter(),
   itemCounter: new MacItemCounter(),

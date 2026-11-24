@@ -233,8 +233,13 @@ describe("Quick compare", () => {
   });
 
   it("refuses to compare when the Primary has an item named like sync-drive's own", async () => {
-    for (const name of ["sync-drive Holding Area", "SYNC-DRIVE holding area", ".sync-drive-incoming"]) {
-      const primary = await makeTree({ [`${name}/mine.txt`]: "the user's own file" });
+    for (const [name, item] of [
+      ["sync-drive Holding Area", "sync-drive Holding Area/mine.txt"],
+      ["SYNC-DRIVE holding area", "SYNC-DRIVE holding area/mine.txt"],
+      [".sync-drive-incoming", ".sync-drive-incoming/mine.txt"],
+      [".sync-drive-last-updated", ".sync-drive-last-updated"],
+    ] as const) {
+      const primary = await makeTree({ [item]: "the user's own file" });
       const replica = await makeTree();
 
       const primaryBefore = await snapshotTree(primary);
@@ -242,6 +247,16 @@ describe("Quick compare", () => {
       await assert.rejects(compare(primary, replica), new RegExp(`Primary has an item named "${name}"`));
       assert.deepEqual(await snapshotTree(primary), primaryBefore);
     }
+  });
+
+  it("leaves the Replica's last-updated marker out of the comparison", async () => {
+    const primary = await makeTree({ "notes.txt": "hello" });
+    const replica = await makeTree({ "notes.txt": "hello", ".sync-drive-last-updated": '{"version":1,"wholeDrive":{"updated":"2026-01-01T12:00:00.000Z"},"folders":[]}' });
+
+    const report = await compare(primary, replica);
+
+    assert.equal(report.deleted.count, 0);
+    assert.deepEqual(report.replica, { count: 1, totalSize: 5 });
   });
 
   it("suggests renaming the folder when the whole Holding area was copied back to the Primary", async () => {

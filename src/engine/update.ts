@@ -8,10 +8,11 @@ import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { reporter, type UpdateProgress } from "./progress.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
+import { recordUpdate } from "./last-updated.ts";
 import { sameDate } from "./same-date.ts";
 import { checkFreeSpace, safetyStopApplies } from "./safety-stops.ts";
 import { matchKey, readFailure } from "./scan.ts";
-import { isSyncDriveFolder } from "./sync-drive-folders.ts";
+import { isSyncDriveItem } from "./sync-drive-items.ts";
 
 /** What the user has approved for an Update. Nothing is written without `update`. */
 export interface Approvals {
@@ -36,6 +37,12 @@ export interface Approvals {
    * the main approval.
    */
   overwrite?: readonly string[];
+  /**
+   * The content mismatches, by path, the owner chose to keep as they are on the Replica. They are left
+   * alone like every other mismatch not in `overwrite`, but count as done: only those with no choice
+   * made leave the Update partial in the last-updated marker (ADR 0019).
+   */
+  keep?: readonly string[];
   /**
    * The explicit override of the Safety stop, for this Update only. Without it, an Update whose
    * report has the Safety stop applying writes nothing (ADR 0008).
@@ -112,6 +119,17 @@ export interface UpdateResult {
   moved: FileEntry[];
   /** Deleted files left where they were on the Replica. */
   notMoved: FailedFile[];
+  /**
+   * Whether the Update emptied the Holding area, deleting for good what an earlier Update left there,
+   * before moving the deleted files in (ADR 0006).
+   */
+  emptiedHoldingArea: boolean;
+  /**
+   * Why the last-updated marker does not record this Update, though it finished, worded to follow
+   * "because": the folder it was limited to was gone from the Primary, or the marker could not be
+   * written (ADR 0019).
+   */
+  notRecorded?: string;
 }
 
 /** Why a special file (a named pipe, socket or device) is not copied: it holds no data to back up. */
@@ -150,7 +168,7 @@ export async function update(report: Report, approvals: Approvals, setup: Update
 
 /** The result of an Update that has done nothing yet. */
 export function nothingDone(): UpdateResult {
-  return { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [] };
+  return { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [], emptiedHoldingArea: false };
 }
 
 /**
@@ -233,6 +251,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     // good. Without that confirmation the Holding area is never emptied (ADR 0006).
     await rm(holdingArea, { recursive: true, force: true });
     await mkdir(holdingArea);
+    result.emptiedHoldingArea = true;
     await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
   }
   for (const file of toMove) {
@@ -350,7 +369,32 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     }
     progress();
   }
+  // Last, so only an Update that finished is recorded. One limited to a folder is recorded apart from
+  // the whole drive, which it did not bring up to date; one whose folder is gone brought nothing in
+  // it up to date, so is not recorded (ADR 0019).
+  const gone = only === undefined ? undefined : (folderGone ?? (await whyFolderGone(setup.primary, only)));
+  if (gone !== undefined) {
+    result.notRecorded = gone;
+  } else {
+    try {
+      await recordUpdate(setup.replica, incoming, setup.now ?? new Date(), leftUndone(result, report, approvals), only);
+    } catch (error) {
+      // Everything else was done, so the Update did not stop: Start goes on showing the earlier date.
+      result.notRecorded = `sync-drive could not write it there (${(error as Error).message})`;
+    }
+  }
   await rm(incoming, { recursive: true, force: true });
+}
+
+/**
+ * How many items an Update that finished left undone that the owner wanted done: files not copied,
+ * renamed or moved into the Holding area, content mismatches with no choice made, and items on the
+ * Primary that could not be read (ADR 0019).
+ */
+function leftUndone(result: UpdateResult, report: Report, approvals: Approvals): number {
+  const chosen = new Set([...(approvals.overwrite ?? []), ...(approvals.keep ?? [])]);
+  const noChoice = report.anomalies.contentMismatch.files.filter((file) => !chosen.has(file.path));
+  return result.failed.length + result.notRenamed.length + result.notMoved.length + noChoice.length + report.unreadable.length;
 }
 
 /**
@@ -546,14 +590,14 @@ function isWithin(folder: string, path: string): boolean {
 
 /**
  * Rejects a report path that is not plainly a path inside the drive, such as one with `..` in it,
- * or one inside sync-drive's own folders on the Replica.
+ * or one inside sync-drive's own items on the Replica.
  */
 function assertInsideDrive(path: string): void {
   const parts = path.split("/");
   if (isAbsolute(path) || parts.some((part) => part === "" || part === "." || part === "..")) {
     throw new Error(`"${path}" is not a path inside the drive; nothing was written`);
   }
-  if (isSyncDriveFolder(parts[0]!)) {
-    throw new Error(`"${path}" is inside sync-drive's own ${parts[0]} folder; nothing was written`);
+  if (isSyncDriveItem(parts[0]!)) {
+    throw new Error(`"${path}" is inside sync-drive's own "${parts[0]}"; nothing was written`);
   }
 }

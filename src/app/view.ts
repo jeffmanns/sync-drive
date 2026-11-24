@@ -7,7 +7,7 @@ import type { PairedDrives, Pairing } from "../engine/pairing.ts";
 import type { CompareProgress, FilesDone, UpdateProgress } from "../engine/progress.ts";
 import type { Anomalies, ContentMismatch, FileEntry, Move, MoveGroup, MovesSection, Section, Totals, Unreadable } from "../engine/report.ts";
 import { SAFETY_STOP_PERCENT } from "../engine/safety-stop-limits.ts";
-import { fileCount, formatSize } from "../format.ts";
+import { fileCount, formatDay, formatSize, howLongAgo, itemCount } from "../format.ts";
 
 /** Which screen the app is on. */
 export type Step = FlowState["step"];
@@ -55,12 +55,44 @@ export interface StartState {
    * full on both drives. Kept in memory only, until changed or the app quits.
    */
   deep: boolean;
+  /** When the Replica was last updated, as its last-updated marker says. Absent until it has been read. */
+  lastUpdated?: ReplicaLastUpdated;
   /** Why the last pattern was not added or removed, or why the saved Exclusions cannot be used. */
   exclusionProblem?: string;
   /** Why the last comparison did not happen or was discarded. */
   error?: string;
   /** Something worth knowing that is not a problem, such as the drives already matching. */
   notice?: string;
+}
+
+/**
+ * When the Replica was last updated, from its last-updated marker: of the whole drive, and of each
+ * folder updated on its own since (ADR 0019). Or, when that cannot be known, why.
+ */
+export type ReplicaLastUpdated =
+  | { known: true; wholeDrive?: Updated; folders: FolderUpdated[] }
+  | { known: false; reason: string };
+
+/**
+ * When an Update finished (an ISO 8601 date), and how many items it left undone if it was partial.
+ * The engine's `Updated`, restated so the screens need nothing from Node.
+ */
+export interface Updated {
+  updated: string;
+  leftUndone?: number;
+}
+
+/** When an Update limited to `folder` last finished. The engine's `FolderUpdated`, restated so the screens need nothing from Node. */
+export interface FolderUpdated extends Updated {
+  folder: string;
+}
+
+/**
+ * What the Holding area holds, not counting its `READ ME.txt`, and the day it was last added to as
+ * the `READ ME.txt` gives it. The engine's `HoldingAreaContents`, restated so the screens need nothing from Node.
+ */
+export interface HoldingArea extends Totals {
+  lastAddedOn?: string;
 }
 
 /** Comparing the drives. */
@@ -294,6 +326,22 @@ export interface ResultState {
    * them unless the deletions were approved, and any the Update stopped before reaching.
    */
   leftOnReplica: Totals;
+  /**
+   * What the Holding area on the Replica holds after the Update, from this Update or an earlier one,
+   * and when it was last added to. Absent if it could not be read.
+   */
+  holdingArea?: HoldingArea;
+  /** Why the Holding area could not be read after the Update, if it could not. */
+  holdingAreaProblem?: string;
+  /** Where on the Mac this Update is logged. */
+  updateLog?: string;
+  /** Why this Update could not be logged on the Mac, if it could not. */
+  updateLogProblem?: string;
+  /**
+   * Why the last-updated marker on the Replica does not record this Update, though it finished,
+   * worded to follow "because" (ADR 0019). Start then goes on showing the earlier date.
+   */
+  notRecorded?: string;
   /** Why the Update stopped before it finished, if it did. `copied`, `failed`, `moved` and `notMoved` still say what it did first. */
   error?: string;
   /** Why the Primary could not be remounted normally after the Update, if it could not. It is still read-only. */
@@ -400,6 +448,51 @@ export type ReviewStep = "copies" | "anomalies" | "moves" | "deletions" | "summa
  */
 export function canOverrideSafetyStop(state: RefusedState): state is RefusedState & { safetyStop: SafetyStopRefusal } {
   return state.safetyStop !== undefined && state.freeSpace === undefined;
+}
+
+/**
+ * What Start says about when the Replica was last updated, as of `now`: how long ago, and on which
+ * day. A folder updated on its own since is listed apart, as the rest of the Replica was not updated
+ * with it (ADR 0019).
+ */
+export function lastUpdatedLines(lastUpdated: ReplicaLastUpdated, now: Date): string[] {
+  if (!lastUpdated.known) return [lastUpdated.reason];
+  const when = ({ updated }: Updated) => `${howLongAgo(new Date(updated), now)}, on ${formatDay(new Date(updated))}.`;
+  const partly = ({ leftUndone }: Updated) => (leftUndone === undefined ? "" : "partly ");
+  const undone = ({ leftUndone }: Updated) =>
+    leftUndone === undefined ? "" : ` ${itemCount(leftUndone)} ${leftUndone === 1 ? "was" : "were"} left undone.`;
+  const { wholeDrive, folders } = lastUpdated;
+  const updates = [...(wholeDrive === undefined ? [] : [wholeDrive]), ...folders];
+  return [
+    wholeDrive === undefined ? "sync-drive has not updated the whole Replica yet." : `Replica last ${partly(wholeDrive)}updated ${when(wholeDrive)}${undone(wholeDrive)}`,
+    ...folders.map((entry) =>
+      `${wholeDrive === undefined ? "Only" : "Since then, only"} the folder "${entry.folder}" was ${partly(entry)}updated: ${when(entry)}${undone(entry)}`,
+    ),
+    ...(updates.some((entry) => entry.leftUndone !== undefined) ? ["Each Update's log on this Mac lists what it left undone, and why."] : []),
+  ];
+}
+
+/**
+ * What the Result and the Update log say when an Update finished but the last-updated marker does
+ * not record it, `because` saying why (ADR 0019).
+ */
+export function notRecordedWarning(because: string): string {
+  return `This Update finished, but its date was not saved on the Replica, because ${because}. Start will go on showing the date of the Update before it.`;
+}
+
+/**
+ * What the Result says about the Holding area: what it holds and when it was last added to, which may
+ * be by an earlier Update (ADR 0006), and how to restore a file from it.
+ */
+export function holdingAreaReminder(held: HoldingArea): string[] {
+  if (held.count === 0) return ["The Holding area on the Replica is empty."];
+  const when = held.lastAddedOn === undefined ? "" : `, last added to by the Update on ${held.lastAddedOn}`;
+  return [
+    `The Holding area on the Replica holds ${fileCount(held.count)} (${formatSize(held.totalSize)})${when}.`,
+    "They stay there until an Update whose deletions you approve, which deletes them for good.",
+    "To restore a file, copy it from the Holding area back to the Primary, into its original folder. " +
+      "Do not move it back on the Replica: the next Update would treat it as deleted again.",
+  ];
 }
 
 /**
