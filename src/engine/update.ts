@@ -124,9 +124,10 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * that folder. If
  * `approvals.moves` is given, renames the report's moved files on the Replica to their new paths,
  * each only if it and its Primary file still match by size and date. Then copies
- * the new and changed files, and the content mismatches in `approvals.overwrite`, from the Primary, checking each copy against its Primary file by
- * checksum before renaming it into place; a copy that does not match is discarded and listed as
- * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
+ * the new and changed files, and the content mismatches in `approvals.overwrite`, from the
+ * Primary, checking each copy against its Primary file by checksum before renaming it into place; a
+ * copy that does not match is discarded and listed as failed. A content mismatch is overwritten only
+ * if its Primary file and Replica copy still match by size and date, as when they were compared. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
  * having written nothing, when the report holds a path `setup.exclusions` leave out, when the
  * Safety stop applies to the report's deletions (counted again here, not read from
  * `report.safetyStop`) without `approvals.overrideSafetyStop`, when it holds a path outside
@@ -168,7 +169,8 @@ export class UpdateStoppedError extends Error {
 /** Does the Update for `update()`, recording each file copied, moved or not as it goes into `result`. */
 async function updateInto(result: UpdateResult, report: Report, approvals: Approvals, setup: UpdateSetup): Promise<void> {
   await assertSeparate(setup.primary, setup.replica);
-  const files = [...report.new.files, ...report.changed.files, ...mismatchesToOverwrite(report, approvals.overwrite ?? [])];
+  const overwrites = new Set(mismatchesToOverwrite(report, approvals.overwrite ?? []));
+  const files = [...report.new.files, ...report.changed.files, ...overwrites];
   const deletions = approvals.deletions ? report.deleted.files : [];
   const moves = approvals.moves ? report.moves.moves : [];
   for (const file of [...files, ...deletions]) assertInsideDrive(file.path);
@@ -306,6 +308,9 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       if (primarySum !== copySum) {
         throw new Error(before.isSymbolicLink() ? "the copy points somewhere other than the Primary's shortcut" : "the copy's checksum does not match the Primary's");
       }
+      // The owner chose to overwrite this Replica copy as it was when compared, when it matched its
+      // Primary file by size and date. Looked at last, just before it is replaced for good.
+      if (overwrites.has(file)) await assertStillAsCompared(before, destination);
       await makeReplicaFolders(setup.replica, dirname(file.path));
       await rename(temporary, destination);
       result.copied.push(file);
@@ -318,6 +323,18 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     progress();
   }
   await rm(incoming, { recursive: true, force: true });
+}
+
+/**
+ * Rejects unless the Replica copy at `destination` is still a regular file matching the Primary file
+ * `primary` by size and date, as a content mismatch did when compared. Otherwise one of them has
+ * changed since, so the choice to overwrite was made about other contents.
+ */
+async function assertStillAsCompared(primary: BigIntStats, destination: string): Promise<void> {
+  const replica = await lstat(destination, { bigint: true }).catch(() => undefined);
+  if (replica === undefined || !primary.isFile() || !replica.isFile() || primary.size !== replica.size || !sameDate(primary.mtimeNs, replica.mtimeNs)) {
+    throw new Error("it changed on the Primary or the Replica since the comparison");
+  }
 }
 
 /**

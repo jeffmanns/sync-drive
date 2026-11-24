@@ -33,10 +33,10 @@ export interface Section<F extends FileEntry = FileEntry> extends Totals {
  */
 export interface ContentMismatch extends FileEntry {
   /**
-   * Set when the Replica's copy could not be read in full, so its contents could not be confirmed:
-   * why, e.g. "the drive could not read it (EIO)".
+   * Set when the drive could not read the Replica's copy in full (EIO), so its contents could not be
+   * confirmed: why, e.g. "the drive could not read it (EIO)".
    */
-  replicaUnreadable?: string;
+  replicaReadFailure?: string;
 }
 
 /**

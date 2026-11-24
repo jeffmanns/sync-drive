@@ -5,7 +5,7 @@ import { exclusionMatcher } from "./exclusions.ts";
 import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { findMoveCandidates } from "./moves.ts";
 import { reporter, type CompareProgress } from "./progress.ts";
-import { makeMovesSection, makeSection, type ContentMismatch, type FileEntry, type Report, type Unreadable } from "./report.ts";
+import { makeMovesSection, makeSection, type ContentMismatch, type FileEntry, type Report } from "./report.ts";
 import { sameDate } from "./same-date.ts";
 import { safetyStopApplies } from "./safety-stops.ts";
 import { checkOnlyFolder, findOnlyFolder } from "./only-folder.ts";
@@ -47,14 +47,15 @@ export interface CompareOptions {
  * match. With `options.deep` (Deep verify), files the Quick compare judges equal are also read in full
  * on both drives: those whose checksums differ are content mismatches, reported only in
  * `anomalies.contentMismatch`. A Primary file that cannot be read in full then is unreadable; a
- * Replica copy that cannot be read in full is a content mismatch, saying why. Changed files whose
- * Replica copy is newer are also flagged in `anomalies.replicaNewer`, by either kind of comparison. Files moved on the Primary are reported as moves once their contents are confirmed
+ * Replica copy the drive cannot read (EIO) is a content mismatch, saying why. Changed files whose
+ * Replica copy is newer are also flagged in `anomalies.replicaNewer`, by either kind of comparison.
+ * Files moved on the Primary are reported as moves once their contents are confirmed
  * identical by checksum; that reads both copies of each in full. Shortcuts are compared as
  * shortcuts, never followed. What cannot be read on the Primary is listed in `unreadable` and left
  * out, and its Replica copies are never reported as deleted. With `options.only`, compares that
  * folder alone (ADR 0017). Reads both drives; writes nothing to
  * either. Rejects if either folder is missing or is not a folder, if
- * anything on the Replica cannot be read, or if `options.only` cannot be compared on its own (see
+ * anything else on the Replica cannot be read, or if `options.only` cannot be compared on its own (see
  * `findOnlyFolder`). Reports its progress to `options.onProgress`: items
  * scanned out of both drives' item counts, then with Deep verify bytes read to verify contents, then
  * bytes read to confirm moves.
@@ -113,7 +114,14 @@ export async function compare(
   const hasher = options.hasher ?? new Sha256Hasher();
   const contentMismatch: ContentMismatch[] = [];
   if (options.deep === true) {
-    await verifyContents(quickEqualPairs, { primary, replica, hasher, tellProgress, changed, contentMismatch, cannotRead, unreadable });
+    const verified = await verifyContents(quickEqualPairs, { primary, replica, hasher, tellProgress });
+    // Read in full just now, so these need no access check like the changed files above.
+    changed.push(...verified.changedWhileRead);
+    contentMismatch.push(...verified.contentMismatch);
+    for (const { file, reason } of verified.unreadable) {
+      cannotRead.add(file);
+      unreadable.push({ path: file.path, folder: false, reason });
+    }
   }
   // A Replica file at or under a path that could not be read on the Primary may still be there: it is
   // never treated as deleted, nor as one end of a move.
@@ -205,27 +213,31 @@ export async function compare(
   };
 }
 
+/** What a Deep verify found among the files a Quick compare judges equal. */
+interface Verified {
+  /** Files whose size or date changed on either drive while they were read: a Quick compare would now call them changed. */
+  changedWhileRead: ScannedFile[];
+  contentMismatch: ContentMismatch[];
+  /** Primary files that could not be read in full, and why. */
+  unreadable: Array<{ file: ScannedFile; reason: string }>;
+}
+
 /**
- * Deep verify: reads each pair in `quickEqualPairs` (files a Quick compare judges equal) in full on both drives,
- * one pair at a time, and adds to `contentMismatch` each regular file whose checksums differ.
+ * Deep verify: reads each pair in `quickEqualPairs` (files a Quick compare judges equal) in full on
+ * both drives, one pair at a time, and reports each regular file whose checksums differ as a content
+ * mismatch. A Replica copy the drive could not read (EIO) is a content mismatch too, saying why.
+ * Rejects on any other failure to read a Replica copy, as for anything else on the Replica (ADR 0015).
  */
 async function verifyContents(
-  quickEqualPairs: Array<{ primary: ScannedFile; replica: ScannedFile }>,
-  { primary, replica, hasher, tellProgress, changed, contentMismatch, cannotRead, unreadable }: {
+  quickEqualPairs: ReadonlyArray<{ primary: ScannedFile; replica: ScannedFile }>,
+  { primary, replica, hasher, tellProgress }: {
     primary: string;
     replica: string;
     hasher: Hasher;
     tellProgress: (progress: CompareProgress) => void;
-    /** Where a file that changed on either drive while it was read goes: a Quick compare would now call it changed. */
-    changed: ScannedFile[];
-    /** Where the content mismatches go. */
-    contentMismatch: ContentMismatch[];
-    /** Where a Primary file that cannot be read in full goes, so its lookalikes on the Replica are kept. */
-    cannotRead: Set<ScannedFile>;
-    /** Where a Primary file that cannot be read in full is listed. */
-    unreadable: Unreadable[];
   },
-): Promise<void> {
+): Promise<Verified> {
+  const verified: Verified = { changedWhileRead: [], contentMismatch: [], unreadable: [] };
   const files = quickEqualPairs.filter((pair) => pair.primary.kind === "file");
   // Each file is read in full on both drives.
   const totalBytes = files.reduce((total, pair) => total + 2 * pair.primary.size, 0);
@@ -248,27 +260,35 @@ async function verifyContents(
     ]);
     checkedBefore += bytes;
     if (read !== bytes) tellProgress({ phase: "verifying", checkedBytes: checkedBefore, totalBytes });
+    if (replicaSum.status === "rejected") {
+      const error = replicaSum.reason as NodeJS.ErrnoException;
+      // Anything but the drive failing to read it (a missing file, no permission, a lost drive) stops
+      // the comparison, as on the rest of the Replica (ADR 0015): it says nothing about the copy.
+      if (error.code !== "EIO") {
+        throw new Error(`The Replica's copy of ${pair.replica.path} could not be read (${readFailure(error)})`, { cause: error });
+      }
+    }
     if (primarySum.status === "rejected") {
       // Damage a Quick compare cannot see: skipped like anything else unreadable (ADR 0015).
-      cannotRead.add(pair.primary);
-      unreadable.push({ path: pair.primary.path, folder: false, reason: readFailure(primarySum.reason as NodeJS.ErrnoException) });
+      verified.unreadable.push({ file: pair.primary, reason: readFailure(primarySum.reason as NodeJS.ErrnoException) });
       continue;
     }
     if (replicaSum.status === "rejected") {
       // The Replica's copy itself is damaged: what Deep verify is for. Left to the owner's choice, like any
-      // other copy whose contents do not match, rather than stopping the comparison.
-      const why = readFailure(replicaSum.reason as NodeJS.ErrnoException);
-      contentMismatch.push({ path: pair.primary.path, size: pair.primary.size, replicaUnreadable: why });
+      // other copy whose contents do not match.
+      const replicaReadFailure = readFailure(replicaSum.reason as NodeJS.ErrnoException);
+      verified.contentMismatch.push({ path: pair.primary.path, size: pair.primary.size, replicaReadFailure });
       continue;
     }
     if (primarySum.value === replicaSum.value) continue;
     // Looked at after reading, so an edit made meanwhile is not taken for damage.
     if (!(await unchanged(primary, pair.primary)) || !(await unchanged(replica, pair.replica))) {
-      changed.push(pair.primary);
+      verified.changedWhileRead.push(pair.primary);
       continue;
     }
-    contentMismatch.push({ path: pair.primary.path, size: pair.primary.size });
+    verified.contentMismatch.push({ path: pair.primary.path, size: pair.primary.size });
   }
+  return verified;
 }
 
 /**

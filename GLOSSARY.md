@@ -81,5 +81,5 @@ A difference that should not occur if the Replica is only ever changed by update
 _Avoid_: conflict, error, warning
 
 **Content mismatch**:
-A file with the same size and modification date on both drives whose contents, read in full by a Deep verify, differ. It is also one whose Replica copy could not be read in full. It is left out of the Update until the owner chooses, for that file, to keep the Replica's copy or overwrite it with the Primary's. That choice is not an Approval (ADR 0018).
+A file with the same size and modification date on both drives whose contents, read in full by a Deep verify, differ. It is also one whose Replica copy the drive could not read in full (EIO). It is left out of the Update until the owner chooses, for that file, to keep the Replica's copy or overwrite it with the Primary's. That choice is not an Approval (ADR 0018).
 _Avoid_: corrupt file, hash mismatch, conflict

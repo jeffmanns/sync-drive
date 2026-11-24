@@ -221,9 +221,9 @@ export interface SummaryState {
     /** The content mismatches whose Replica copy Apply overwrites with the Primary's, as chosen. */
     overwrite: Totals;
     /** The content mismatches whose Replica copy Apply keeps, as chosen. */
-    keepMismatched: Totals;
+    keep: Totals;
     /** The content mismatches with no choice, which Apply leaves as they are. */
-    undecided: Totals;
+    leaveUndecided: Totals;
     /** The moved files Apply renames on the Replica: none unless the moves are approved. */
     renameOnReplica: Totals;
     /** The moved files Apply leaves at their old paths on the Replica: all of them unless the moves are approved. */
@@ -360,6 +360,16 @@ export function totalsOf(...parts: Totals[]): Totals {
 /** How many `moves` there are, and their total size. */
 export function totalsOfMoves(moves: Move[]): Totals {
   return { count: moves.length, totalSize: moves.reduce((total, move) => total + move.size, 0) };
+}
+
+/** The content mismatches in `review` the owner gave `choice`, or no choice when it is `undefined`. */
+export function mismatchesChosen(review: Review, choice: MismatchChoice | undefined): ContentMismatch[] {
+  return review.anomalies.contentMismatch.files.filter((file) => review.mismatchChoices[file.path] === choice);
+}
+
+/** Whether Apply, as the Summary shows it, would write anything to the Replica. */
+export function writesAnything(apply: SummaryState["apply"]): boolean {
+  return apply.copy.count + apply.overwrite.count + apply.renameOnReplica.count + apply.moveToHoldingArea.count > 0;
 }
 
 /** How many `files` there are, and their total size. */

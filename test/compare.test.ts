@@ -1019,9 +1019,23 @@ describe("Deep verify", () => {
     const report = await compare(primary, replica, { deep: true, hasher: damaged });
 
     assert.deepEqual(report.anomalies.contentMismatch.files, [
-      { path: "a.txt", size: 4, replicaUnreadable: "the drive could not read it (EIO)" },
+      { path: "a.txt", size: 4, replicaReadFailure: "the drive could not read it (EIO)" },
     ]);
     assert.deepEqual(report.unreadable, []);
+  });
+
+  it("stops when a Replica copy cannot be read for any reason but damage, rather than call it a content mismatch", async () => {
+    const primary = await makeTree({ "a.txt": "aaaa", "b.txt": "bbbb" });
+    const replica = await makeTree({ "a.txt": "aaaa", "b.txt": "bbbb" });
+    const sha256 = new Sha256Hasher();
+    for (const code of ["ENOENT", "EACCES", "ENXIO"]) {
+      const failing: Hasher = {
+        checksum: (path) =>
+          path === join(replica, "a.txt") ? Promise.reject(Object.assign(new Error(`${code}: failed`), { code })) : sha256.checksum(path),
+      };
+
+      await assert.rejects(compare(primary, replica, { deep: true, hasher: failing }), /The Replica's copy of a\.txt could not be read/, code);
+    }
   });
 
   it("reports a file edited on the Primary while it was being verified as changed, not as a content mismatch", async () => {

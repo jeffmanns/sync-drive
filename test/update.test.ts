@@ -1064,6 +1064,49 @@ describe("Overwriting content mismatches", () => {
     );
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
+
+  it("leaves a chosen content mismatch alone if its Replica copy changed since the comparison", async () => {
+    const { primary, replica, primaryBefore } = await mismatchedDrives();
+    const report = await compare(primary, replica, { deep: true });
+    // The owner fixes the Replica's copy by hand after comparing.
+    await writeFile(join(replica, "a.txt"), "fixed by hand");
+
+    const result = await update(report, { ...APPROVED, overwrite: ["a.txt"] }, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.failed, [{ path: "a.txt", size: 4, reason: "it changed on the Primary or the Replica since the comparison" }]);
+    assert.equal(await readFile(join(replica, "a.txt"), "utf8"), "fixed by hand");
+    assert.deepEqual(await snapshotTree(primary), primaryBefore);
+  });
+
+  it("leaves a chosen content mismatch alone if its Primary file changed since the comparison", async () => {
+    const { primary, replica } = await mismatchedDrives();
+    const report = await compare(primary, replica, { deep: true });
+    const later = Date.now() / 1000 + 60;
+    await utimes(join(primary, "a.txt"), later, later);
+
+    const result = await update(report, { ...APPROVED, overwrite: ["a.txt"] }, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.failed, [{ path: "a.txt", size: 4, reason: "it changed on the Primary or the Replica since the comparison" }]);
+    assert.equal(await readFile(join(replica, "a.txt"), "utf8"), "zzzz");
+  });
+
+  it("leaves a chosen content mismatch alone if its Replica copy changes while the Primary's is being copied", async () => {
+    const { primary, replica } = await mismatchedDrives();
+    const report = await compare(primary, replica, { deep: true });
+    const mac = new MacFileCopier();
+    const editsReplicaMeanwhile: FileCopier = {
+      copy: async (source, destination) => {
+        await mac.copy(source, destination);
+        if (source === join(primary, "a.txt")) await writeFile(join(replica, "a.txt"), "edited meanwhile");
+      },
+    };
+
+    const result = await update(report, { ...APPROVED, overwrite: ["a.txt"] }, { primary, replica, copier: editsReplicaMeanwhile });
+
+    assert.deepEqual(result.failed, [{ path: "a.txt", size: 4, reason: "it changed on the Primary or the Replica since the comparison" }]);
+    assert.equal(await readFile(join(replica, "a.txt"), "utf8"), "edited meanwhile");
+    assert.deepEqual(await readdir(replica), ["a.txt", "b.txt", "new.txt", "same.txt"]);
+  });
 });
 
 /** A Finder tags list holding the single tag "Red", as Finder stores it (a binary property list). */

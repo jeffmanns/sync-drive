@@ -420,8 +420,8 @@ describe("app flow: Approval, Summary and Apply", () => {
     assert.deepEqual(stateOf(flow).apply, {
       copy: { count: 3, totalSize: 1_500_013 },
       overwrite: { count: 0, totalSize: 0 },
-      keepMismatched: { count: 0, totalSize: 0 },
-      undecided: { count: 0, totalSize: 0 },
+      keep: { count: 0, totalSize: 0 },
+      leaveUndecided: { count: 0, totalSize: 0 },
       renameOnReplica: { count: 0, totalSize: 0 },
       leaveAtOldPaths: { count: 0, totalSize: 0 },
       moveToHoldingArea: { count: 0, totalSize: 0 },
@@ -839,8 +839,8 @@ describe("app flow: Deletions", () => {
     assert.deepEqual(stateOf(flow).apply, {
       copy: { count: 0, totalSize: 0 },
       overwrite: { count: 0, totalSize: 0 },
-      keepMismatched: { count: 0, totalSize: 0 },
-      undecided: { count: 0, totalSize: 0 },
+      keep: { count: 0, totalSize: 0 },
+      leaveUndecided: { count: 0, totalSize: 0 },
       renameOnReplica: { count: 0, totalSize: 0 },
       leaveAtOldPaths: { count: 0, totalSize: 0 },
       moveToHoldingArea: { count: 1, totalSize: 3 },
@@ -1053,8 +1053,8 @@ describe("app flow: Moves", () => {
     assert.deepEqual(stateOf(flow).apply, {
       copy: { count: 0, totalSize: 0 },
       overwrite: { count: 0, totalSize: 0 },
-      keepMismatched: { count: 0, totalSize: 0 },
-      undecided: { count: 0, totalSize: 0 },
+      keep: { count: 0, totalSize: 0 },
+      leaveUndecided: { count: 0, totalSize: 0 },
       renameOnReplica: { count: 2, totalSize: 6 },
       leaveAtOldPaths: { count: 0, totalSize: 0 },
       moveToHoldingArea: { count: 0, totalSize: 0 },
@@ -1620,8 +1620,8 @@ describe("app flow: Deep verify and Anomalies", () => {
     assert.equal(stateOf(flow).step, "summary");
     assert.deepEqual(stateOf(flow).review.mismatchChoices, { "a.txt": "overwrite", "b.txt": "keep" });
     assert.deepEqual(stateOf(flow).apply.overwrite, { count: 1, totalSize: 4 });
-    assert.deepEqual(stateOf(flow).apply.keepMismatched, { count: 1, totalSize: 4 });
-    assert.deepEqual(stateOf(flow).apply.undecided, { count: 0, totalSize: 0 });
+    assert.deepEqual(stateOf(flow).apply.keep, { count: 1, totalSize: 4 });
+    assert.deepEqual(stateOf(flow).apply.leaveUndecided, { count: 0, totalSize: 0 });
   });
 
   it("leaves a content mismatch with no choice out of the Update, saying so on the Summary", async () => {
@@ -1632,7 +1632,7 @@ describe("app flow: Deep verify and Anomalies", () => {
     flow.next();
     flow.next();
 
-    assert.deepEqual(stateOf(flow).apply.undecided, { count: 1, totalSize: 4 });
+    assert.deepEqual(stateOf(flow).apply.leaveUndecided, { count: 1, totalSize: 4 });
     await flow.apply();
 
     assert.deepEqual(stateOf(flow).copied, [{ path: "a.txt", size: 4 }]);

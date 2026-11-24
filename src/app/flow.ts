@@ -27,11 +27,13 @@ import {
 } from "../engine/index.ts";
 import {
   canOverrideSafetyStop,
+  mismatchesChosen,
   NO_FILES,
   reviewSteps,
   totalsOf,
   totalsOfFiles,
   totalsOfMoves,
+  writesAnything,
   type AnomaliesState,
   type CopiesState,
   type DeletionsState,
@@ -523,7 +525,7 @@ export class Flow {
     const report = this.#report;
     if (state.step !== "summary" || report === undefined) return;
     const { review, apply } = state;
-    if (apply.copy.count + apply.overwrite.count + apply.renameOnReplica.count + apply.moveToHoldingArea.count === 0) return;
+    if (!writesAnything(apply)) return;
     // Apply writes only to the drives that were compared: check they are still the ones connected.
     const gone = await this.#whyDrivesGone(review.pairing, review.drives);
     if (this.#state !== state) return;
@@ -553,6 +555,7 @@ export class Flow {
       moving: apply.moveToHoldingArea,
     } as const;
     const overwrite = overwriteChosen(review);
+    const chosenToOverwrite = new Set(overwrite);
     // Read-only first, so that even a bug cannot write to the Primary: macOS itself refuses.
     this.#set({ ...updating, primary: "remounting read-only" });
     let primary: Volume;
@@ -606,7 +609,7 @@ export class Flow {
       ...(review.only === undefined ? {} : { only: review.only }),
       unreadable: review.unreadable,
       copied: done.copied,
-      overwritten: done.copied.filter((file) => overwrite.includes(file.path)),
+      overwritten: done.copied.filter((file) => chosenToOverwrite.has(file.path)),
       failed: done.failed,
       renamed: done.renamed,
       notRenamed: done.notRenamed,
@@ -673,15 +676,14 @@ function isReviewing(state: FlowState): state is CopiesState | AnomaliesState | 
 
 /** The paths of the content mismatches the owner chose to overwrite with the Primary's copy. */
 function overwriteChosen(review: Review): string[] {
-  return review.anomalies.contentMismatch.files.filter((file) => review.mismatchChoices[file.path] === "overwrite").map((file) => file.path);
+  return mismatchesChosen(review, "overwrite").map((file) => file.path);
 }
 
 /** The Summary for the decisions in `review`. */
 function summaryOf(review: Review): SummaryState {
   const copy = review.copiesApproved ? totalsOf(review.new, review.changed) : NO_FILES;
-  const mismatches = review.anomalies.contentMismatch.files;
-  const chosen = (choice: MismatchChoice | undefined) => totalsOfFiles(mismatches.filter((file) => review.mismatchChoices[file.path] === choice));
-  const anomalies = { overwrite: chosen("overwrite"), keepMismatched: chosen("keep"), undecided: chosen(undefined) };
+  const chosen = (choice: MismatchChoice | undefined) => totalsOfFiles(mismatchesChosen(review, choice));
+  const anomalies = { overwrite: chosen("overwrite"), keep: chosen("keep"), leaveUndecided: chosen(undefined) };
   const moves = totalsOf(review.moves);
   const renames = review.movesApproved
     ? { renameOnReplica: moves, leaveAtOldPaths: NO_FILES }

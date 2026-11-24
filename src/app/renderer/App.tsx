@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines } from "../view.ts";
+import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines, writesAnything } from "../view.ts";
 import type {
   Action,
   AnomaliesState,
@@ -384,7 +384,7 @@ function MismatchRow({ file, choice, send, busy }: { file: ContentMismatch; choi
     <li>
       <span className="name">{file.path}</span>
       <span className="size">{formatSize(file.size)}</span>
-      {file.replicaUnreadable !== undefined && <span className="reason">The Replica's copy could not be read: {file.replicaUnreadable}</span>}
+      {file.replicaReadFailure !== undefined && <span className="reason">The Replica's copy could not be read: {file.replicaReadFailure}</span>}
       <span className="choice">
         {option("keep", "Keep the Replica's copy")} {option("overwrite", "Overwrite with the Primary's")}
       </span>
@@ -528,8 +528,8 @@ function FileList({ files, inFolder }: { files: (FileEntry | FailedFile)[]; inFo
 }
 
 function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
-  const { copy, overwrite, keepMismatched, undecided, renameOnReplica, leaveAtOldPaths, moveToHoldingArea, deleteFromHoldingArea, leaveOnReplica } = state.apply;
-  const canApply = copy.count + overwrite.count + renameOnReplica.count + moveToHoldingArea.count > 0;
+  const { copy, overwrite, keep, leaveUndecided, renameOnReplica, leaveAtOldPaths, moveToHoldingArea, deleteFromHoldingArea, leaveOnReplica } = state.apply;
+  const canApply = writesAnything(state.apply);
   const { anomalies, mismatchChoices } = state.review;
   const hasCopies = totalsOf(state.review.new, state.review.changed).count > 0;
   return (
@@ -543,8 +543,8 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
           ? <li>Copy {describe(copy)} from the Primary to the Replica.</li>
           : hasCopies && <li>Copy nothing: the copies are not approved.</li>}
         {overwrite.count > 0 && <li className="warning">Overwrite {describe(overwrite)} with a content mismatch on the Replica with the Primary's copy, as you chose.</li>}
-        {keepMismatched.count > 0 && <li>Keep the Replica's copy of {describe(keepMismatched)} with a content mismatch, as you chose.</li>}
-        {undecided.count > 0 && <li>Leave {describe(undecided)} with a content mismatch as they are on the Replica: no choice was made for them.</li>}
+        {keep.count > 0 && <li>Keep the Replica's copy of {describe(keep)} with a content mismatch, as you chose.</li>}
+        {leaveUndecided.count > 0 && <li>Leave {describe(leaveUndecided)} with a content mismatch as they are on the Replica: no choice was made for them.</li>}
         {renameOnReplica.count > 0 && <li>Rename {describe(renameOnReplica)} moved on the Primary to their new paths on the Replica.</li>}
         {leaveAtOldPaths.count > 0 && <li>Leave the moved files at their old paths on the Replica: {describe(leaveAtOldPaths)}. The moves are not approved.</li>}
         {deleteFromHoldingArea.count > 0 && (
