@@ -164,6 +164,23 @@ describe("app flow: Pairing", () => {
     assert.equal((await mac.open()).state.step, "pairing");
   });
 
+  it("drops the summary when the other drive is swapped for another, rather than quietly making that one the Replica", async () => {
+    const mac = await testMac();
+    const backup = await makeTree();
+    mac.volumes.connect(await makeTree(), "PHOTOS-ID");
+    mac.volumes.connect(backup, "BACKUP-ID");
+    const flow = await mac.open();
+    flow.choosePrimary("PHOTOS-ID");
+
+    mac.volumes.disconnect(backup);
+    mac.volumes.connect(await makeTree(), "OTHER-ID");
+    await flow.drivesChanged();
+    await flow.pair();
+
+    assert.equal(stateOf(flow).summary, undefined);
+    assert.equal((await mac.open()).state.step, "pairing");
+  });
+
   it("keeps the summary when the same two drives are listed again", async () => {
     const mac = await testMac();
     mac.volumes.connect(await makeTree(), "PHOTOS-ID");

@@ -810,14 +810,16 @@ function summaryOf(review: Review): SummaryState {
 
 /**
  * `state` with `listed` as the drives connected now (or why they could not be listed). The summary is
- * kept, refreshed, only while the drive it names as the Primary can still be paired.
+ * kept, with the drives' names as they are now, only while it still pairs the same two drives in the
+ * same roles: a different Replica is never put in front of the owner's confirmation unasked.
  */
 function withDrives(state: PairingState, listed: CandidateDrive[] | Error): PairingState {
   const { waiting: _, summary, ...rest } = state;
   const drives = listed instanceof Error ? [] : listed;
   const waiting = listed instanceof Error ? listed.message : whyCannotPair(drives);
   if (waiting !== undefined) return { ...rest, drives, waiting };
-  const kept = summary === undefined ? undefined : summaryFor(drives, summary.primary.id);
+  const refreshed = summary === undefined ? undefined : summaryFor(drives, summary.primary.id);
+  const kept = refreshed !== undefined && samePairing(refreshed, summary!) ? refreshed : undefined;
   return { ...rest, drives, ...(kept === undefined ? {} : { summary: kept }) };
 }
 

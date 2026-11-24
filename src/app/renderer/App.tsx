@@ -134,7 +134,7 @@ function PairingScreen({ state, send, busy }: ScreenProps<PairingState>) {
           <dl className="drives">
             <dt>Primary</dt>
             <dd>
-              "{summary.primary.name}" <span className="note">volume ID {summary.primary.id}. The everyday drive: sync-drive only ever reads it.</span>
+              "{summary.primary.name}" <span className="note">volume ID {summary.primary.id}. sync-drive only ever reads it.</span>
             </dd>
             <dt>Replica</dt>
             <dd>
