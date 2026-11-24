@@ -18,14 +18,15 @@ after(async () => {
 const PROJECT = fileURLToPath(new URL("..", import.meta.url));
 
 describe("the desktop app", () => {
-  it("launches and runs an Update with copies and deletions from Start to Result", async (t) => {
+  it("launches and runs a Deep verify and an Update with copies, an overwritten content mismatch and deletions from Start to Result", async (t) => {
     const phase = phaseTimer(t);
     const primary = await makeDiskImageTree(
-      { "Photos/a.jpg": "new photo", "readme.txt": "changed!", "Photos/scratch.tmp": "excluded" },
+      { "Photos/a.jpg": "new photo", "readme.txt": "changed!", "Photos/scratch.tmp": "excluded", "notes.txt": "AAAA" },
       { name: "Smoke Primary" },
     );
     const replica = await makeDiskImageTree(
-      { "readme.txt": "old", "old.txt": "only here", "sync-drive Holding Area/earlier.txt": "held" },
+      // notes.txt matches by size and date, but not by contents: only a Deep verify finds it.
+      { "readme.txt": "old", "old.txt": "only here", "sync-drive Holding Area/earlier.txt": "held", "notes.txt": "zzzz" },
       { name: "Smoke Replica" },
     );
     const pairingFile = join(await makeTree(), "pairing.json");
@@ -54,6 +55,8 @@ describe("the desktop app", () => {
       await window.getByLabel("Exclude:").fill("*.tmp");
       await window.getByRole("button", { name: "Add" }).click();
       await window.getByRole("button", { name: "Remove *.tmp" }).waitFor();
+      await window.getByLabel(/^Deep verify/).click();
+      await window.locator("input[type=checkbox]:checked").waitFor();
       await window.getByRole("button", { name: "Compare" }).click();
       await window.getByRole("heading", { name: "Copies" }).waitFor({ timeout: 30_000 });
       phase("compare");
@@ -63,6 +66,11 @@ describe("the desktop app", () => {
       // The tick shows once the flow in the main process has the Approval, so wait for it.
       await window.getByLabel("Copy all 2 files").click();
       await window.locator("input[type=checkbox]:checked").waitFor();
+      await window.getByRole("button", { name: "Next" }).click();
+      await window.getByRole("heading", { name: "Anomalies" }).waitFor();
+      await window.getByText("notes.txt").waitFor();
+      await window.getByLabel("Overwrite with the Primary's").click();
+      await window.locator("input[type=radio]:checked").waitFor();
       await window.getByRole("button", { name: "Next" }).click();
       await window.getByRole("heading", { name: "Deletions" }).waitFor();
       await window.getByRole("button", { name: /top level/ }).click();
@@ -74,13 +82,15 @@ describe("the desktop app", () => {
       await window.locator("input[type=checkbox]:checked").waitFor();
       await window.getByRole("button", { name: "Next" }).click();
       await window.getByText("Copy 2 files (17 B) from the Primary to the Replica.").waitFor();
+      await window.getByText("Overwrite 1 file (4 B) with a content mismatch on the Replica with the Primary's copy, as you chose.").waitFor();
       await window.getByText("Move 1 file (9 B) no longer on the Primary into the Holding area.").waitFor();
       await window.getByText("Permanently delete the 1 file (4 B) in the Holding area from an earlier Update.").waitFor();
       phase("review steps");
       await window.getByRole("button", { name: "Apply" }).click();
       await window.getByRole("heading", { name: "Update done" }).waitFor({ timeout: 30_000 });
       phase("Update, including remounting the Primary");
-      await window.getByText("Copied: 2 files (17 B)").waitFor();
+      await window.getByText("Copied: 3 files (21 B)").waitFor();
+      await window.getByText("Content mismatches overwritten with the Primary's copy: 1 file (4 B)").waitFor();
       await window.getByText("Moved into the Holding area: 1 file (9 B)").waitFor();
     } finally {
       await app.close();
@@ -89,6 +99,7 @@ describe("the desktop app", () => {
 
     assert.equal(await readFile(join(replica, "Photos", "a.jpg"), "utf8"), "new photo");
     assert.equal(await readFile(join(replica, "readme.txt"), "utf8"), "changed!");
+    assert.equal(await readFile(join(replica, "notes.txt"), "utf8"), "AAAA", "the content mismatch is overwritten, as chosen");
     assert.equal(await readdir(join(replica, "Photos")).then((names) => names.includes("scratch.tmp")), false, "the Exclusion is never copied");
     assert.equal(await readFile(join(replica, "sync-drive Holding Area", "old.txt"), "utf8"), "only here");
     assert.equal(await readdir(join(replica, "sync-drive Holding Area")).then((names) => names.includes("earlier.txt")), false);

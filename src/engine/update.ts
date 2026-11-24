@@ -29,6 +29,14 @@ export interface Approvals {
    */
   deletions: boolean;
   /**
+   * The owner's per-file choices on the report's content mismatches (Anomalies, from a Deep verify):
+   * the paths, exactly as in \`report.anomalies.contentMismatch\`, whose Replica copy is overwritten
+   * with the Primary's, copied and confirmed like a changed file. These are choices, not an Approval:
+   * they need no copies Approval. Every other content mismatch is left alone. Has no effect without
+   * the main approval.
+   */
+  overwrite?: readonly string[];
+  /**
    * The explicit override of the Safety stop, for this Update only. Without it, an Update whose
    * report has the Safety stop applying writes nothing (ADR 0008).
    */
@@ -89,8 +97,8 @@ export interface FailedMove extends Move {
 }
 
 /**
- * What an Update did. Every new and changed file in the report ends up in exactly one of `copied`
- * and `failed`; with deletions confirmed, every deleted file ends up in exactly one of `moved` and
+ * What an Update did. Every new and changed file in the report, and every content mismatch chosen to
+ * be overwritten, ends up in exactly one of `copied` and `failed`; with deletions confirmed, every deleted file ends up in exactly one of `moved` and
  * `notMoved`; with moves approved, every move ends up in exactly one of `renamed` and `notRenamed`.
  */
 export interface UpdateResult {
@@ -116,13 +124,16 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * that folder. If
  * `approvals.moves` is given, renames the report's moved files on the Replica to their new paths,
  * each only if it and its Primary file still match by size and date. Then copies
- * the new and changed files from the Primary, checking each copy against its Primary file by
- * checksum before renaming it into place; a copy that does not match is discarded and listed as
- * failed. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
+ * the new and changed files, and the content mismatches in `approvals.overwrite`, from the
+ * Primary, checking each copy against its Primary file by checksum before renaming it into place; a
+ * copy that does not match is discarded and listed as failed. A content mismatch is overwritten only
+ * if its Primary file and Replica copy still match by size and date, as when they were compared, and
+ * its Replica copy is first moved into the Holding area, which is added to and never emptied for it. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
  * having written nothing, when the report holds a path `setup.exclusions` leave out, when the
  * Safety stop applies to the report's deletions (counted again here, not read from
  * `report.safetyStop`) without `approvals.overrideSafetyStop`, when it holds a path outside
- * `setup.only`, or when the Replica lacks the free space for the copies (ADR 0008). Every rejection is an
+ * `setup.only`, when `approvals.overwrite` names a file that is not a content mismatch in the
+ * report, or when the Replica lacks the free space for the copies (ADR 0008). Every rejection is an
  * `UpdateStoppedError` saying what had been done before it stopped. Reports its progress to
  * `setup.onProgress`: deleted files and moves dealt with, then bytes copied out of the total.
  */
@@ -159,7 +170,8 @@ export class UpdateStoppedError extends Error {
 /** Does the Update for `update()`, recording each file copied, moved or not as it goes into `result`. */
 async function updateInto(result: UpdateResult, report: Report, approvals: Approvals, setup: UpdateSetup): Promise<void> {
   await assertSeparate(setup.primary, setup.replica);
-  const files = [...report.new.files, ...report.changed.files];
+  const overwrites = new Set(mismatchesToOverwrite(report, approvals.overwrite ?? []));
+  const files = [...report.new.files, ...report.changed.files, ...overwrites];
   const deletions = approvals.deletions ? report.deleted.files : [];
   const moves = approvals.moves ? report.moves.moves : [];
   for (const file of [...files, ...deletions]) assertInsideDrive(file.path);
@@ -171,7 +183,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   // with others, so none of it can be trusted to leave alone what the owner excluded.
   const isExcluded = exclusionMatcher(setup.exclusions ?? []);
   const reportPaths = [
-    ...[...report.new.files, ...report.changed.files, ...report.deleted.files].map((file) => file.path),
+    ...[...report.new.files, ...report.changed.files, ...report.anomalies.contentMismatch.files, ...report.deleted.files].map((file) => file.path),
     ...report.moves.moves.flatMap((move) => [move.from, move.to]),
   ];
   const excluded = reportPaths.find(isExcluded);
@@ -189,7 +201,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   if (safetyStopApplies(report.deleted, report.replica) && !approvals.overrideSafetyStop) {
     throw new Error("The Safety stop applies and was not overridden; nothing was written");
   }
-  const space = await checkFreeSpace(report, setup.replica);
+  const space = await checkFreeSpace(files, setup.replica);
   if (!space.enough) {
     throw new Error(
       `The Replica has ${space.free} bytes free but the copies need ${space.needed}; nothing was written`,
@@ -218,7 +230,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   // Deletions first, so a path that changed between a file and a folder is free before copying.
   if (toMove.length > 0) {
     // New deletions are confirmed, so the files kept from the previous Update are now deleted for
-    // good. Without that confirmation the Holding area is left untouched (ADR 0006).
+    // good. Without that confirmation the Holding area is never emptied (ADR 0006).
     await rm(holdingArea, { recursive: true, force: true });
     await mkdir(holdingArea);
     await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
@@ -270,6 +282,23 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     progress();
   }
   for (const move of result.renamed) await removeEmptiedFolders(move.from, setup);
+  let holdingAreaReadmeWritten = toMove.length > 0;
+  /**
+   * Moves the Replica's copy of a content mismatch at `path` into the Holding area, at the same path,
+   * rather than destroying it: the owner may have chosen wrongly, and either drive's copy may be the
+   * damaged one. Adds to whatever the Holding area holds; only confirmed deletions empty it (ADR 0006).
+   */
+  const moveToHoldingArea = async (path: string) => {
+    await makeReplicaFolders(setup.replica, join(HOLDING_AREA, dirname(path)));
+    const kept = join(holdingArea, path);
+    // rename replaces whatever is at the destination, so make sure nothing is.
+    if (await exists(kept)) throw new Error("the Holding area already holds a file at that path");
+    await rename(join(setup.replica, path), kept);
+    if (!holdingAreaReadmeWritten) {
+      await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
+      holdingAreaReadmeWritten = true;
+    }
+  };
   const hasher = setup.hasher ?? new Sha256Hasher();
   const incoming = join(setup.replica, INCOMING_FOLDER);
   // Anything already here is a temporary copy left by an interrupted Update.
@@ -297,8 +326,21 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       if (primarySum !== copySum) {
         throw new Error(before.isSymbolicLink() ? "the copy points somewhere other than the Primary's shortcut" : "the copy's checksum does not match the Primary's");
       }
+      // The owner chose to overwrite this Replica copy as it was when compared, when it matched its
+      // Primary file by size and date. Looked at last, just before it is replaced for good.
+      const overwriting = overwrites.has(file);
+      if (overwriting) {
+        await assertStillAsCompared(before, destination);
+        await moveToHoldingArea(file.path);
+      }
       await makeReplicaFolders(setup.replica, dirname(file.path));
-      await rename(temporary, destination);
+      try {
+        await rename(temporary, destination);
+      } catch (error) {
+        // Put the Replica's copy back where it was, so a failed overwrite changes nothing.
+        if (overwriting) await rename(join(holdingArea, file.path), destination);
+        throw error;
+      }
       result.copied.push(file);
       copies.copiedBytes += file.size;
     } catch (error) {
@@ -309,6 +351,31 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     progress();
   }
   await rm(incoming, { recursive: true, force: true });
+}
+
+/**
+ * Rejects unless the Replica copy at `destination` is still a regular file matching the Primary file
+ * `primary` by size and date, as a content mismatch did when compared. Otherwise one of them has
+ * changed since, so the choice to overwrite was made about other contents.
+ */
+async function assertStillAsCompared(primary: BigIntStats, destination: string): Promise<void> {
+  const replica = await lstat(destination, { bigint: true }).catch(() => undefined);
+  if (replica === undefined || !primary.isFile() || !replica.isFile() || primary.size !== replica.size || !sameDate(primary.mtimeNs, replica.mtimeNs)) {
+    throw new Error("it changed on the Primary or the Replica since the comparison");
+  }
+}
+
+/**
+ * The content mismatches in `report` named by `paths`, for copying over their Replica copies. Rejects
+ * if a path is not one of them, as the choice was then made on another comparison.
+ */
+function mismatchesToOverwrite(report: Report, paths: readonly string[]): FileEntry[] {
+  const mismatches = new Map(report.anomalies.contentMismatch.files.map((file) => [file.path, file]));
+  return paths.map((path) => {
+    const file = mismatches.get(path);
+    if (file === undefined) throw new Error(`"${path}" is not a content mismatch in the Report; nothing was written`);
+    return { path: file.path, size: file.size };
+  });
 }
 
 /**

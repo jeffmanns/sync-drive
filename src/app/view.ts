@@ -5,7 +5,7 @@
  */
 import type { PairedDrives, Pairing } from "../engine/pairing.ts";
 import type { CompareProgress, FilesDone, UpdateProgress } from "../engine/progress.ts";
-import type { FileEntry, Move, MoveGroup, MovesSection, Section, Totals, Unreadable } from "../engine/report.ts";
+import type { Anomalies, ContentMismatch, FileEntry, Move, MoveGroup, MovesSection, Section, Totals, Unreadable } from "../engine/report.ts";
 import { SAFETY_STOP_PERCENT } from "../engine/safety-stop-limits.ts";
 import { fileCount, formatSize } from "../format.ts";
 
@@ -19,6 +19,7 @@ export type FlowState =
   | ComparingState
   | RefusedState
   | CopiesState
+  | AnomaliesState
   | MovesState
   | DeletionsState
   | SummaryState
@@ -49,6 +50,11 @@ export interface StartState {
    * using `/`), or none for the whole drive. Kept in memory only, until changed or the app quits.
    */
   only?: string;
+  /**
+   * Whether the next comparison is a Deep verify, reading every file the Quick compare judges equal in
+   * full on both drives. Kept in memory only, until changed or the app quits.
+   */
+  deep: boolean;
   /** Why the last pattern was not added or removed, or why the saved Exclusions cannot be used. */
   exclusionProblem?: string;
   /** Why the last comparison did not happen or was discarded. */
@@ -61,6 +67,8 @@ export interface StartState {
 export interface ComparingState {
   step: "comparing";
   pairing: Pairing;
+  /** Whether it is a Deep verify, which has a checksum phase. */
+  deep: boolean;
   /** How far the comparison has got. Absent until it has read the drives' item counts. */
   progress?: CompareProgress;
 }
@@ -118,10 +126,22 @@ export interface Review {
   exclusions: string[];
   /** The folder the comparison was limited to, if any, which Apply is held to. */
   only?: string;
+  /** Whether the comparison was a Deep verify, which compared contents by checksum. */
+  deep: boolean;
   /** Files on the Primary that are not on the Replica. */
   new: Section;
   /** Files on both drives that a Quick compare judges different. */
   changed: Section;
+  /**
+   * Anomalies: changed files whose Replica copy is newer (also in `changed`, so the copies Approval
+   * replaces them), and content mismatches (in no other section), which only a per-file choice changes.
+   */
+  anomalies: Anomalies;
+  /**
+   * The owner's per-file choices on the content mismatches, by path: keep the Replica's copy, or
+   * overwrite it with the Primary's. A mismatch with no choice is left alone. These are not Approvals.
+   */
+  mismatchChoices: Record<string, MismatchChoice>;
   /** Files only on the Replica, which the deletions Approval moves into the Holding area. */
   deleted: Section;
   /** Files moved or renamed on the Primary, confirmed by checksum, which the moves Approval renames on the Replica. */
@@ -161,6 +181,18 @@ export interface CopiesState {
   review: Review;
 }
 
+/** What the owner chose for one content mismatch: keep the Replica's copy, or overwrite it with the Primary's. */
+export type MismatchChoice = "keep" | "overwrite";
+
+/**
+ * Choosing, file by file, what to do with the content mismatches a Deep verify found. Comes after
+ * Copies and before Moves, and only when there are content mismatches.
+ */
+export interface AnomaliesState {
+  step: "anomalies";
+  review: Review;
+}
+
 /**
  * Reviewing the files moved on the Primary, and approving their renames on the Replica. Comes after
  * Copies, and only when something was moved.
@@ -186,6 +218,12 @@ export interface SummaryState {
   apply: {
     /** The files Apply copies to the Replica: none unless the copies are approved. */
     copy: Totals;
+    /** The content mismatches whose Replica copy Apply overwrites with the Primary's, as chosen. */
+    overwrite: Totals;
+    /** The content mismatches whose Replica copy Apply keeps, as chosen. */
+    keep: Totals;
+    /** The content mismatches with no choice, which Apply leaves as they are. */
+    leaveUndecided: Totals;
     /** The moved files Apply renames on the Replica: none unless the moves are approved. */
     renameOnReplica: Totals;
     /** The moved files Apply leaves at their old paths on the Replica: all of them unless the moves are approved. */
@@ -206,6 +244,8 @@ export interface SummaryState {
 export interface UpdatingState {
   step: "updating";
   copying: Totals;
+  /** The content mismatches whose Replica copy is being overwritten with the Primary's, as chosen. */
+  overwriting: Totals;
   /** The moved files being renamed on the Replica: none unless the moves are approved. */
   renaming: Totals;
   /** The deleted files being moved into the Holding area: none unless the deletions are approved. */
@@ -230,7 +270,10 @@ export interface ResultState {
   only?: string;
   /** What could not be read on the Primary when compared, and so was skipped. What the Replica holds there was left alone. */
   unreadable: Unreadable[];
+  /** Every file copied, including the content mismatches overwritten. */
   copied: FileEntry[];
+  /** The content mismatches whose Replica copy was overwritten with the Primary's: also in `copied`. */
+  overwritten: FileEntry[];
   /** Every file that was not copied, and why. The Replica keeps its earlier version of each, if any. */
   failed: FailedFile[];
   /** Moved files renamed to their new paths on the Replica. */
@@ -284,10 +327,14 @@ export type Action =
   | { type: "chooseOnlyFolder" }
   /** On Start: compares the whole drive again. */
   | { type: "wholeDrive" }
+  /** On Start: chooses a Deep verify, or a Quick compare, for the next comparison. */
+  | { type: "deepVerify"; on: boolean }
   /** On the refusal screen: the number of deletions as the owner typed it. */
   | { type: "overrideSafetyStop"; typed: string }
   | { type: "approveCopies"; approved: boolean }
   | { type: "approveMoves"; approved: boolean }
+  /** On Anomalies: the owner's choice for one content mismatch. */
+  | { type: "chooseForMismatch"; path: string; choice: MismatchChoice }
   | { type: "approveDeletions"; approved: boolean }
   | { type: "next" }
   | { type: "back" }
@@ -315,15 +362,29 @@ export function totalsOfMoves(moves: Move[]): Totals {
   return { count: moves.length, totalSize: moves.reduce((total, move) => total + move.size, 0) };
 }
 
+/** The content mismatches in `review` the owner gave `choice`, or no choice when it is `undefined`. */
+export function mismatchesChosen(review: Review, choice: MismatchChoice | undefined): ContentMismatch[] {
+  return review.anomalies.contentMismatch.files.filter((file) => review.mismatchChoices[file.path] === choice);
+}
+
+/** Whether Apply, as the Summary shows it, would write anything to the Replica. */
+export function writesAnything(apply: SummaryState["apply"]): boolean {
+  return apply.copy.count + apply.overwrite.count + apply.renameOnReplica.count + apply.moveToHoldingArea.count > 0;
+}
+
 /** How many `files` there are, and their total size. */
 export function totalsOfFiles(files: FileEntry[]): Totals {
   return { count: files.length, totalSize: files.reduce((total, file) => total + file.size, 0) };
 }
 
-/** The review steps for `review`, in order: Moves and Deletions only when there is something to move or delete. */
+/**
+ * The review steps for `review`, in order: Anomalies only when there are content mismatches, Moves and
+ * Deletions only when there is something to move or delete.
+ */
 export function reviewSteps(review: Review): ReviewStep[] {
   return [
     "copies",
+    ...(review.anomalies.contentMismatch.count > 0 ? (["anomalies"] as const) : []),
     ...(review.moves.count > 0 ? (["moves"] as const) : []),
     ...(review.deleted.count > 0 ? (["deletions"] as const) : []),
     "summary",
@@ -331,7 +392,7 @@ export function reviewSteps(review: Review): ReviewStep[] {
 }
 
 /** The steps on which the owner reviews the comparison and makes the decisions. */
-export type ReviewStep = "copies" | "moves" | "deletions" | "summary";
+export type ReviewStep = "copies" | "anomalies" | "moves" | "deletions" | "summary";
 
 /**
  * Whether the refusal can be overridden: only when the Safety stop is the sole refusal. The
@@ -412,18 +473,21 @@ export interface ProgressBar {
 const COMPARING_MOST = 0.99;
 
 /**
- * The Comparing bar: items scanned out of the drives' item counts, then bytes read to confirm
- * moves. A moving bar when a drive has no usable count, or before the counts are read. Its label
- * names the stage, so the bar starting again for the moves does not look like going backwards.
+ * The Comparing bar: items scanned out of the drives' item counts, then with Deep verify (`deep`)
+ * bytes read to verify contents, then bytes read to confirm moves. A moving bar when a drive has no
+ * usable count, or before the counts are read. Its label names the stage, so the bar starting again
+ * for a later stage does not look like going backwards.
  */
-export function comparingBar(progress: CompareProgress | undefined): ProgressBar {
+export function comparingBar(progress: CompareProgress | undefined, deep = false): ProgressBar {
   const capped = (part: number, whole: number) => (whole > 0 ? { fraction: Math.min(part / whole, COMPARING_MOST) } : {});
-  const reading = "Step 1 of 2, reading both drives";
+  const stages = deep ? 3 : 2;
+  const reading = `Step 1 of ${stages}, reading both drives`;
   if (progress === undefined) return { label: `${reading}: counting their items` };
-  if (progress.phase === "checking moves") {
+  if (progress.phase === "verifying" || progress.phase === "checking moves") {
+    const [stage, what] = progress.phase === "verifying" ? [2, "verifying contents by checksum"] : [stages, "confirming moved files by checksum"];
     return {
       ...capped(progress.checkedBytes, progress.totalBytes),
-      label: `Step 2 of 2, confirming moved files by checksum: ${formatSize(progress.checkedBytes)} of ${formatSize(progress.totalBytes)}`,
+      label: `Step ${stage} of ${stages}, ${what}: ${formatSize(progress.checkedBytes)} of ${formatSize(progress.totalBytes)}`,
     };
   }
   const scanned = progress.scanned.toLocaleString("en-US");
@@ -463,4 +527,4 @@ function percent(part: number, whole: number): string {
 export const CHANNELS = { state: "flow:state", action: "flow:action" } as const;
 
 export type { CompareProgress, UpdateProgress };
-export type { FileEntry, Move, MoveGroup, MovesSection, PairedDrives, Pairing, Section, Totals, Unreadable };
+export type { Anomalies, ContentMismatch, FileEntry, Move, MoveGroup, MovesSection, PairedDrives, Pairing, Section, Totals, Unreadable };

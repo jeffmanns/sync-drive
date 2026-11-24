@@ -7,8 +7,8 @@ const PAIRING = {
   primary: { id: "P", name: "Primary" },
   replica: { id: "R", name: "Replica" },
 };
-const comparing = (scanned: number): FlowState => ({ step: "comparing", pairing: PAIRING, progress: { phase: "scanning", scanned } });
-const start: FlowState = { step: "start", pairing: PAIRING, exclusions: [] };
+const comparing = (scanned: number): FlowState => ({ step: "comparing", pairing: PAIRING, deep: false, progress: { phase: "scanning", scanned } });
+const start = { step: "start", pairing: PAIRING, exclusions: [], deep: false } as const satisfies FlowState;
 
 /** Sends through a throttle every 100 ms, recording what reaches the screens. */
 function screens(t: TestContext) {

@@ -5,7 +5,7 @@
  */
 
 /** How far a comparison has got. */
-export type CompareProgress = ScanningProgress | CheckingMovesProgress;
+export type CompareProgress = ScanningProgress | VerifyingProgress | CheckingMovesProgress;
 
 /** Reading both drives' folders. */
 export interface ScanningProgress {
@@ -18,6 +18,18 @@ export interface ScanningProgress {
    * `scanned` can stop short of it, or pass it.
    */
   total?: number;
+}
+
+/**
+ * Deep verify: reading the files a Quick compare judges equal in full on both drives, to compare their
+ * checksums. Comes after scanning and before checking moves, and only with Deep verify.
+ */
+export interface VerifyingProgress {
+  phase: "verifying";
+  /** Bytes read so far, on both drives together. */
+  checkedBytes: number;
+  /** Bytes to read: each file's size, once on each drive. */
+  totalBytes: number;
 }
 
 /** Reading move candidates on both drives in full, to confirm them by checksum (ADR 0011). Comes after scanning, and only when there are candidates. */

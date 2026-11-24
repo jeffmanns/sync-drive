@@ -1,14 +1,17 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines } from "../view.ts";
+import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines, writesAnything } from "../view.ts";
 import type {
   Action,
+  AnomaliesState,
+  ContentMismatch,
   CopiesState,
   DeletionsState,
   FailedFile,
   FailedMove,
   FileEntry,
   FlowState,
+  MismatchChoice,
   Move,
   MovesSection,
   MovesState,
@@ -57,14 +60,19 @@ export function App() {
           case "comparing":
             return (
               <>
-                <Waiting title="Comparing…" detail="Reading both drives. Nothing is written to either." />
-                <Bar bar={comparingBar(state.progress)} />
+                <Waiting
+                  title={state.deep ? "Comparing, with Deep verify…" : "Comparing…"}
+                  detail={state.deep ? "Reading both drives, every file in full. Nothing is written to either." : "Reading both drives. Nothing is written to either."}
+                />
+                <Bar bar={comparingBar(state.progress, state.deep)} />
               </>
             );
           case "refused":
             return <RefusedScreen state={state} {...props} />;
           case "copies":
             return <CopiesScreen state={state} {...props} />;
+          case "anomalies":
+            return <AnomaliesScreen state={state} {...props} />;
           case "moves":
             return <MovesScreen state={state} {...props} />;
           case "deletions":
@@ -140,6 +148,17 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
         <dd>"{replica.name}" <span className="note">volume ID {replica.id}</span></dd>
       </dl>
       <OnlyFolder state={state} send={send} busy={busy} />
+      <section className="deep-verify">
+        <h2>How to compare</h2>
+        <label className="confirm">
+          <input type="checkbox" checked={state.deep} disabled={busy} onChange={(event) => send({ type: "deepVerify", on: event.target.checked })} />
+          Deep verify: also read every file in full on both drives, and compare their checksums.
+        </label>
+        <p className="note">
+          Catches damage on the Replica that sizes and dates do not show. It reads both drives in full, so it takes much longer than a Quick
+          compare, which judges files by size and date alone.
+        </p>
+      </section>
       <ExclusionsList state={state} send={send} busy={busy} />
       <Problem text={state.error} />
       {state.notice !== undefined && <p className="notice">{state.notice}</p>}
@@ -286,6 +305,17 @@ function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
       <UnreadableList unreadable={review.unreadable} />
       <SectionList title="New" section={review.new} />
       <SectionList title="Changed" section={review.changed} />
+      {review.anomalies.replicaNewer.count > 0 && (
+        <section>
+          <h2 className="warning">Anomaly, newer on the Replica: {describe(review.anomalies.replicaNewer)}</h2>
+          <p className="warning">
+            These changed files are newer on the Replica than on the Primary, which an Update never does: something else changed them there.
+            Approving the copies replaces each with the Primary's version, as the Primary always wins. To keep a Replica version, copy it to
+            the Primary first, then compare again.
+          </p>
+          <FileList files={review.anomalies.replicaNewer.files} />
+        </section>
+      )}
       {copies.count > 0 ? (
         <label className="confirm">
           <input type="checkbox" checked={review.copiesApproved} disabled={busy} onChange={(event) => send({ type: "approveCopies", approved: event.target.checked })} />
@@ -299,6 +329,67 @@ function CopiesScreen({ state, send, busy }: ScreenProps<CopiesState>) {
         <button className="primary" onClick={() => send({ type: "next" })} disabled={busy}>Next</button>
       </Buttons>
     </>
+  );
+}
+
+/**
+ * The content mismatches a Deep verify found, each with its own choice: keep the Replica's copy, or
+ * overwrite it with the Primary's. A file with no choice is left as it is.
+ */
+function AnomaliesScreen({ state, send, busy }: ScreenProps<AnomaliesState>) {
+  const { review } = state;
+  const mismatches = review.anomalies.contentMismatch;
+  return (
+    <>
+      <Steps current="anomalies" review={review} />
+      <h1>Anomalies</h1>
+      <OnlyFolderNote only={state.review.only} />
+      <p>
+        These files have the same size and date on both drives, but Deep verify found their contents differ. That should not happen when only
+        Updates change the Replica: its copy may be damaged, or was changed by something else. Choose for each file whether to keep the
+        Replica's copy or overwrite it with the Primary's. An overwritten copy is moved into the Holding area, not destroyed. A file with no
+        choice is left as it is.
+      </p>
+      <section>
+        <h2 className="warning">Content mismatches: {describe(mismatches)}</h2>
+        <ul className="files mismatches">
+          {mismatches.files.map((file) => (
+            <MismatchRow key={file.path} file={file} choice={review.mismatchChoices[file.path]} send={send} busy={busy} />
+          ))}
+        </ul>
+      </section>
+      <Buttons>
+        <button onClick={() => send({ type: "restart" })} disabled={busy}>Start over</button>
+        <button onClick={() => send({ type: "back" })} disabled={busy}>Back</button>
+        <button className="primary" onClick={() => send({ type: "next" })} disabled={busy}>Next</button>
+      </Buttons>
+    </>
+  );
+}
+
+/** One content mismatch, with its keep-or-overwrite choice. */
+function MismatchRow({ file, choice, send, busy }: { file: ContentMismatch; choice: MismatchChoice | undefined; send(action: Action): void; busy: boolean }) {
+  const option = (value: MismatchChoice, label: string) => (
+    <label>
+      <input
+        type="radio"
+        name={`mismatch:${file.path}`}
+        checked={choice === value}
+        disabled={busy}
+        onChange={() => send({ type: "chooseForMismatch", path: file.path, choice: value })}
+      />
+      {label}
+    </label>
+  );
+  return (
+    <li>
+      <span className="name">{file.path}</span>
+      <span className="size">{formatSize(file.size)}</span>
+      {file.replicaReadFailure !== undefined && <span className="reason">The Replica's copy could not be read: {file.replicaReadFailure}</span>}
+      <span className="choice">
+        {option("keep", "Keep the Replica's copy")} {option("overwrite", "Overwrite with the Primary's")}
+      </span>
+    </li>
   );
 }
 
@@ -438,8 +529,9 @@ function FileList({ files, inFolder }: { files: (FileEntry | FailedFile)[]; inFo
 }
 
 function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
-  const { copy, renameOnReplica, leaveAtOldPaths, moveToHoldingArea, deleteFromHoldingArea, leaveOnReplica } = state.apply;
-  const canApply = copy.count + renameOnReplica.count + moveToHoldingArea.count > 0;
+  const { copy, overwrite, keep, leaveUndecided, renameOnReplica, leaveAtOldPaths, moveToHoldingArea, deleteFromHoldingArea, leaveOnReplica } = state.apply;
+  const canApply = writesAnything(state.apply);
+  const { anomalies, mismatchChoices } = state.review;
   const hasCopies = totalsOf(state.review.new, state.review.changed).count > 0;
   return (
     <>
@@ -451,6 +543,9 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
         {copy.count > 0
           ? <li>Copy {describe(copy)} from the Primary to the Replica.</li>
           : hasCopies && <li>Copy nothing: the copies are not approved.</li>}
+        {overwrite.count > 0 && <li className="warning">Overwrite {describe(overwrite)} with a content mismatch on the Replica with the Primary's copy, as you chose. The Replica's copies are moved into the Holding area.</li>}
+        {keep.count > 0 && <li>Keep the Replica's copy of {describe(keep)} with a content mismatch, as you chose.</li>}
+        {leaveUndecided.count > 0 && <li>Leave {describe(leaveUndecided)} with a content mismatch as they are on the Replica: no choice was made for them.</li>}
         {renameOnReplica.count > 0 && <li>Rename {describe(renameOnReplica)} moved on the Primary to their new paths on the Replica.</li>}
         {leaveAtOldPaths.count > 0 && <li>Leave the moved files at their old paths on the Replica: {describe(leaveAtOldPaths)}. The moves are not approved.</li>}
         {deleteFromHoldingArea.count > 0 && (
@@ -465,6 +560,19 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
         )}
         <li>Write nothing to the Primary.</li>
       </ul>
+      {anomalies.contentMismatch.count > 0 && (
+        <Expandable label="Your choice for each content mismatch" totals={anomalies.contentMismatch}>
+          <ul className="files">
+            {anomalies.contentMismatch.files.map((file) => (
+              <li key={file.path}>
+                <span className="name">{file.path}</span>
+                <span className="size">{formatSize(file.size)}</span>
+                <span className="choice">{CHOICE_LABELS[mismatchChoices[file.path] ?? "none"]}</span>
+              </li>
+            ))}
+          </ul>
+        </Expandable>
+      )}
       {state.review.safetyStopOverridden && (
         <p className="warning">The Safety stop is overridden for this Update, as you typed on the refusal screen.</p>
       )}
@@ -478,13 +586,21 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
   );
 }
 
+/** What the Summary says each content mismatch's choice does. */
+const CHOICE_LABELS: Record<MismatchChoice | "none", string> = {
+  keep: "Keep the Replica's copy",
+  overwrite: "Overwrite with the Primary's",
+  none: "No choice: left as it is",
+};
+
 function UpdatingScreen({ state }: { state: UpdatingState }) {
-  const { moving, renaming, copying } = state;
+  const { moving, renaming, copying, overwriting } = state;
   // In the order Apply does them: deletions, then moves, then copies (see update()).
   const work = [
     ...(moving.count > 0 ? [`moving ${describe(moving)} into the Holding area`] : []),
     ...(renaming.count > 0 ? [`renaming ${describe(renaming)} moved on the Primary`] : []),
     ...(copying.count > 0 ? [`copying ${describe(copying)} to the Replica`] : []),
+    ...(overwriting.count > 0 ? [`overwriting ${describe(overwriting)} on the Replica with the Primary's`] : []),
   ].join(", then ");
   const bar = updatingBar(state.progress);
   return (
@@ -525,6 +641,13 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
           </Expandable>
         )}
       </section>
+      {state.overwritten.length > 0 && (
+        <section>
+          <h2>Content mismatches overwritten with the Primary's copy: {describe(totalsOfFiles(state.overwritten))}</h2>
+          <p>The Replica's previous copies are in the Holding area.</p>
+          <FileList files={state.overwritten} />
+        </section>
+      )}
       {state.failed.length > 0 && (
         <section>
           <h2 className="problem">Not copied: {fileCount(state.failed.length)}</h2>
@@ -626,9 +749,12 @@ function Bar({ bar }: { bar: ProgressBar }) {
   );
 }
 
-const STEP_LABELS: Record<ReviewStep, string> = { copies: "Copies", moves: "Moves", deletions: "Deletions", summary: "Summary" };
+const STEP_LABELS: Record<ReviewStep, string> = { copies: "Copies", anomalies: "Anomalies", moves: "Moves", deletions: "Deletions", summary: "Summary" };
 
-/** Where the review is, among the steps up to Apply. Moves and Deletions are there only when there is something to move or delete. */
+/**
+ * Where the review is, among the steps up to Apply. Anomalies is there only when there are content
+ * mismatches, Moves and Deletions only when there is something to move or delete.
+ */
 function Steps({ current, review }: { current: ReviewStep; review: Review }) {
   return (
     <ol className="steps">

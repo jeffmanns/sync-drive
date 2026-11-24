@@ -27,14 +27,18 @@ import {
 } from "../engine/index.ts";
 import {
   canOverrideSafetyStop,
+  mismatchesChosen,
   NO_FILES,
   reviewSteps,
   totalsOf,
   totalsOfFiles,
   totalsOfMoves,
+  writesAnything,
+  type AnomaliesState,
   type CopiesState,
   type DeletionsState,
   type FlowState,
+  type MismatchChoice,
   type MovesState,
   type Review,
   type StartState,
@@ -77,6 +81,8 @@ export class Flow {
   #exclusions: string[] = [];
   /** The folder the next run is limited to, if any. In memory only. */
   #only: string | undefined;
+  /** Whether the next comparison is a Deep verify. In memory only. */
+  #deep = false;
   /** Why the saved Exclusions cannot be used, if they are damaged. Nothing is compared, or saved over them, until they are fixed. */
   #exclusionsDamaged: string | undefined;
 
@@ -107,6 +113,7 @@ export class Flow {
       pairing,
       exclusions: this.#exclusions,
       ...(this.#only === undefined ? {} : { only: this.#only }),
+      deep: this.#deep,
       ...(this.#exclusionsDamaged === undefined ? {} : { exclusionProblem: this.#exclusionsDamaged }),
       ...extra,
     };
@@ -269,6 +276,14 @@ export class Flow {
     this.#set(this.#start(state.pairing));
   }
 
+  /** On Start: chooses a Deep verify (`on`) or a Quick compare for the next comparison, and keeps that choice until changed. */
+  deepVerify(on: boolean): void {
+    const state = this.#state;
+    if (state.step !== "start") return;
+    this.#deep = on;
+    this.#set(this.#start(state.pairing));
+  }
+
   /** On Start: finds the paired drives and compares them, leaving out the Exclusions, then moves on to Copies. */
   async compare(): Promise<void> {
     const state = this.#state;
@@ -281,14 +296,16 @@ export class Flow {
     }
     const exclusions = this.#exclusions;
     const only = this.#only;
+    const deep = this.#deep;
     this.#discardComparison();
     const comparison = this.#comparisonGeneration;
-    this.#set({ step: "comparing", pairing });
+    this.#set({ step: "comparing", pairing, deep });
     try {
       const drives = await findPairedDrives(pairing, this.#deps.volumes);
       const report = await compare(drives.primary.mountPoint, drives.replica.mountPoint, {
         exclusions,
         ...(only === undefined ? {} : { only }),
+        deep,
         itemCounter: this.#deps.itemCounter,
         onProgress: (progress) => {
           // Only while still on Comparing for this comparison: a discarded one must not bring it back.
@@ -297,15 +314,15 @@ export class Flow {
         },
       });
       if (comparison !== this.#comparisonGeneration) return;
-      const { new: newFiles, changed, moves, deleted, unreadable } = report;
+      const { new: newFiles, changed, anomalies, moves, deleted, unreadable } = report;
       // Anything unreadable is shown in the review, even with nothing else to do: it was not compared.
-      if (newFiles.count + changed.count + moves.count + deleted.count + unreadable.length === 0) {
+      if (newFiles.count + changed.count + anomalies.contentMismatch.count + moves.count + deleted.count + unreadable.length === 0) {
         const what = only === undefined ? "The Replica" : `The folder "${only}" on the Replica`;
         this.#set(this.#start(pairing, { notice: `${what} matches the Primary. Nothing to update.` }));
         return;
       }
       // Both stops are checked before any Approval, so a refused Update asks nothing (ADR 0008).
-      const space = newFiles.count + changed.count > 0 ? await checkFreeSpace(report, drives.replica.mountPoint) : undefined;
+      const space = newFiles.count + changed.count > 0 ? await checkFreeSpace([...newFiles.files, ...changed.files], drives.replica.mountPoint) : undefined;
       // Read now, for the warning before the deletions Approval: approving them deletes these for good.
       // Also named when the Replica lacks room, as the space that deleting it would free.
       const noRoom = space?.enough === false;
@@ -317,8 +334,11 @@ export class Flow {
         drives,
         exclusions,
         ...(only === undefined ? {} : { only }),
+        deep,
         new: newFiles,
         changed,
+        anomalies,
+        mismatchChoices: {},
         moves,
         deleted,
         unreadable,
@@ -369,6 +389,18 @@ export class Flow {
     this.#set({ step: "copies", review: { ...state.review, copiesApproved: approved } });
   }
 
+  /**
+   * On Anomalies: the owner's choice for the content mismatch at `path`: keep the Replica's copy, or
+   * overwrite it with the Primary's. Not an Approval. A path that is not a content mismatch is ignored.
+   */
+  chooseForMismatch(path: string, choice: MismatchChoice): void {
+    const state = this.#state;
+    if (state.step !== "anomalies" || (choice !== "keep" && choice !== "overwrite")) return;
+    if (!state.review.anomalies.contentMismatch.files.some((file) => file.path === path)) return;
+    const mismatchChoices = { ...state.review.mismatchChoices, [path]: choice };
+    this.#set({ step: "anomalies", review: { ...state.review, mismatchChoices } });
+  }
+
   /** On Moves: gives or withdraws the one all-or-nothing Approval for renaming the moved files on the Replica. */
   approveMoves(approved: boolean): void {
     const state = this.#state;
@@ -384,8 +416,8 @@ export class Flow {
   }
 
   /**
-   * Moves on to the next review step, keeping the decisions made. Moves and Deletions are skipped
-   * when there is nothing to move or delete.
+   * Moves on to the next review step, keeping the decisions made. Anomalies is skipped when there are
+   * no content mismatches, Moves and Deletions when there is nothing to move or delete.
    */
   next(): void {
     this.#step(+1);
@@ -493,7 +525,7 @@ export class Flow {
     const report = this.#report;
     if (state.step !== "summary" || report === undefined) return;
     const { review, apply } = state;
-    if (apply.copy.count === 0 && apply.renameOnReplica.count === 0 && apply.moveToHoldingArea.count === 0) return;
+    if (!writesAnything(apply)) return;
     // Apply writes only to the drives that were compared: check they are still the ones connected.
     const gone = await this.#whyDrivesGone(review.pairing, review.drives);
     if (this.#state !== state) return;
@@ -515,7 +547,15 @@ export class Flow {
       }
     }
     this.#discardComparison();
-    const updating = { step: "updating", copying: apply.copy, renaming: apply.renameOnReplica, moving: apply.moveToHoldingArea } as const;
+    const updating = {
+      step: "updating",
+      copying: apply.copy,
+      overwriting: apply.overwrite,
+      renaming: apply.renameOnReplica,
+      moving: apply.moveToHoldingArea,
+    } as const;
+    const overwrite = overwriteChosen(review);
+    const chosenToOverwrite = new Set(overwrite);
     // Read-only first, so that even a bug cannot write to the Primary: macOS itself refuses.
     this.#set({ ...updating, primary: "remounting read-only" });
     let primary: Volume;
@@ -539,6 +579,7 @@ export class Flow {
           update: true,
           moves: review.movesApproved,
           deletions: review.deletionsApproved,
+          overwrite,
           overrideSafetyStop: review.safetyStopOverridden,
         }, {
         primary: primary.mountPoint,
@@ -568,6 +609,7 @@ export class Flow {
       ...(review.only === undefined ? {} : { only: review.only }),
       unreadable: review.unreadable,
       copied: done.copied,
+      overwritten: done.copied.filter((file) => chosenToOverwrite.has(file.path)),
       failed: done.failed,
       renamed: done.renamed,
       notRenamed: done.notRenamed,
@@ -628,20 +670,27 @@ function isNumberOfDeletions(typed: string, count: number): boolean {
 }
 
 /** Whether the app is on one of the review steps, where the owner makes the decisions. */
-function isReviewing(state: FlowState): state is CopiesState | MovesState | DeletionsState | SummaryState {
-  return state.step === "copies" || state.step === "moves" || state.step === "deletions" || state.step === "summary";
+function isReviewing(state: FlowState): state is CopiesState | AnomaliesState | MovesState | DeletionsState | SummaryState {
+  return state.step === "copies" || state.step === "anomalies" || state.step === "moves" || state.step === "deletions" || state.step === "summary";
+}
+
+/** The paths of the content mismatches the owner chose to overwrite with the Primary's copy. */
+function overwriteChosen(review: Review): string[] {
+  return mismatchesChosen(review, "overwrite").map((file) => file.path);
 }
 
 /** The Summary for the decisions in `review`. */
 function summaryOf(review: Review): SummaryState {
   const copy = review.copiesApproved ? totalsOf(review.new, review.changed) : NO_FILES;
+  const chosen = (choice: MismatchChoice | undefined) => totalsOfFiles(mismatchesChosen(review, choice));
+  const anomalies = { overwrite: chosen("overwrite"), keep: chosen("keep"), leaveUndecided: chosen(undefined) };
   const moves = totalsOf(review.moves);
   const renames = review.movesApproved
     ? { renameOnReplica: moves, leaveAtOldPaths: NO_FILES }
     : { renameOnReplica: NO_FILES, leaveAtOldPaths: moves };
   const deleted = totalsOf(review.deleted);
   const apply = review.deletionsApproved
-    ? { copy, ...renames, moveToHoldingArea: deleted, deleteFromHoldingArea: review.holdingArea, leaveOnReplica: NO_FILES }
-    : { copy, ...renames, moveToHoldingArea: NO_FILES, deleteFromHoldingArea: NO_FILES, leaveOnReplica: deleted };
+    ? { copy, ...anomalies, ...renames, moveToHoldingArea: deleted, deleteFromHoldingArea: review.holdingArea, leaveOnReplica: NO_FILES }
+    : { copy, ...anomalies, ...renames, moveToHoldingArea: NO_FILES, deleteFromHoldingArea: NO_FILES, leaveOnReplica: deleted };
   return { step: "summary", review, apply };
 }

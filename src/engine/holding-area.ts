@@ -16,14 +16,16 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ] as const;
 
-/** The text of `READ ME.txt` for the Holding area filled by the Update on `date`. */
+/** The text of `READ ME.txt` for the Holding area last added to by the Update on `date`. */
 export function holdingAreaReadme(date: Date): string {
   const day = `${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
   return [
     "sync-drive Holding Area",
     "",
-    `These files were moved here by the sync-drive Update on ${day}, because they`,
-    "were no longer on the Primary drive. They keep their original folder paths.",
+    `These files were moved here by sync-drive, most recently by the Update on ${day}.`,
+    "Each was either no longer on the Primary drive, or the Replica's copy of a file",
+    "whose contents differed, which you chose to overwrite with the Primary's copy.",
+    "They keep their original folder paths.",
     "",
     "They will be permanently deleted at the next Update whose deletions you confirm.",
     "",

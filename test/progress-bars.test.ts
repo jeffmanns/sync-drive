@@ -30,6 +30,25 @@ describe("The Comparing bar", () => {
   });
 });
 
+describe("The Comparing bar for a Deep verify", () => {
+  it("shows bytes read to verify contents as the second of three labelled stages, then the moves as the third", () => {
+    assert.deepEqual(comparingBar({ phase: "scanning", scanned: 250, total: 1000 }, true), {
+      fraction: 0.25,
+      label: "Step 1 of 3, reading both drives: 250 of about 1,000 items",
+    });
+    assert.deepEqual(comparingBar({ phase: "verifying", checkedBytes: 500_000, totalBytes: 2_000_000 }, true), {
+      fraction: 0.25,
+      label: "Step 2 of 3, verifying contents by checksum: 500.0 KB of 2.0 MB",
+    });
+    assert.equal(comparingBar({ phase: "verifying", checkedBytes: 2_000_000, totalBytes: 2_000_000 }, true).fraction, 0.99);
+    assert.deepEqual(comparingBar({ phase: "checking moves", checkedBytes: 500_000, totalBytes: 2_000_000 }, true), {
+      fraction: 0.25,
+      label: "Step 3 of 3, confirming moved files by checksum: 500.0 KB of 2.0 MB",
+    });
+    assert.deepEqual(comparingBar(undefined, true), { label: "Step 1 of 3, reading both drives: counting their items" });
+  });
+});
+
 describe("The Updating bar", () => {
   const progress = (copies: { copiedBytes: number; notCopiedBytes: number; totalBytes: number }) => ({
     deletions: { done: 0, total: 0 },

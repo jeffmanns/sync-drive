@@ -5,12 +5,12 @@ export interface FileEntry {
 }
 
 /** The files of a section that sit directly in one folder. */
-export interface FolderGroup {
+export interface FolderGroup<F extends FileEntry = FileEntry> {
   /** Folder path relative to the drive root, using `/`. `""` is the top level of the drive. */
   folder: string;
   count: number;
   totalSize: number;
-  files: FileEntry[];
+  files: F[];
 }
 
 /** How many files, and their total size in bytes. */
@@ -20,11 +20,39 @@ export interface Totals {
 }
 
 /** One kind of difference, e.g. new files. */
-export interface Section extends Totals {
+export interface Section<F extends FileEntry = FileEntry> extends Totals {
   /** Every file in the section, in path order. */
-  files: FileEntry[];
+  files: F[];
   /** The same files grouped by the folder they sit directly in, in folder order. */
-  folders: FolderGroup[];
+  folders: FolderGroup<F>[];
+}
+
+/**
+ * A file whose size and date match on both drives but whose contents, read in full by a Deep
+ * verify, do not. Sizes are the Primary's.
+ */
+export interface ContentMismatch extends FileEntry {
+  /**
+   * Set when the drive could not read the Replica's copy in full (EIO), so its contents could not be
+   * confirmed: why, e.g. "the drive could not read it (EIO)".
+   */
+  replicaReadFailure?: string;
+}
+
+/**
+ * Anomalies: differences that should not occur if the Replica is only ever changed by Updates.
+ */
+export interface Anomalies {
+  /**
+   * Changed files whose Replica copy is newer than the Primary's. Each is also in \`changed\`, so the
+   * copies Approval replaces it with the Primary's: the Primary still wins. Sizes are the Primary's.
+   */
+  replicaNewer: Section;
+  /**
+   * Content mismatches, found only by a Deep verify. They are in no other section: an Update leaves
+   * each alone unless the owner chooses, for that file, to overwrite the Replica's copy.
+   */
+  contentMismatch: Section<ContentMismatch>;
 }
 
 /** Something on the Primary that could not be read, so it was left out of the comparison. */
@@ -43,6 +71,8 @@ export interface Report {
   new: Section;
   /** Files on both drives that a Quick compare judges different. Sizes are the Primary's. */
   changed: Section;
+  /** Anomalies: Replica copies newer than the Primary's, and (with Deep verify) content mismatches. */
+  anomalies: Anomalies;
   /**
    * Files moved or renamed on the Primary, confirmed by checksum: an Update with the moves Approval
    * renames them on the Replica. They are in neither \`new\` nor \`deleted\`.
@@ -62,9 +92,9 @@ export interface Report {
 }
 
 /** Builds a section from its files, in any order. */
-export function makeSection(files: FileEntry[]): Section {
+export function makeSection<F extends FileEntry>(files: F[]): Section<F> {
   const sorted = [...files].sort((a, b) => byCodeUnit(a.path, b.path));
-  const groups = new Map<string, FolderGroup>();
+  const groups = new Map<string, FolderGroup<F>>();
   for (const file of sorted) {
     const folder = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
     let group = groups.get(folder);

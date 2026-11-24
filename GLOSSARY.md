@@ -15,7 +15,7 @@ The backup drive meant to be an exact copy of the Primary as of its last update;
 _Avoid_: backup, target, destination, mirror
 
 **Holding area**:
-The visible `sync-drive Holding Area` folder at the top level of the Replica, where an Update moves files no longer on the Primary (after their own Approval) rather than destroying them. They keep their folder paths and stay until the next Update whose deletions are approved, which deletes them for good (ADR 0006). Its `READ ME.txt` says when it was filled and how to restore a file (copy it back to the Primary). It is not part of the Replica's contents for comparison. Not the Incoming folder.
+The visible `sync-drive Holding Area` folder at the top level of the Replica, where an Update moves files no longer on the Primary (after their own Approval), and the Replica's copies of content mismatches it overwrites, rather than destroying them. They keep their folder paths and stay until the next Update whose deletions are approved, which deletes them for good (ADR 0006). Its `READ ME.txt` says when it was last added to and how to restore a file (copy it back to the Primary). It is not part of the Replica's contents for comparison. Not the Incoming folder.
 _Avoid_: trash, recycle bin, archive
 
 **Incoming folder**:
@@ -57,7 +57,7 @@ A comparison that judges files equal by size and modification date alone (dates 
 _Avoid_: fast scan, shallow compare
 
 **Deep verify**:
-An opt-in comparison that judges files equal by a checksum of their full contents, catching silent corruption on the Replica.
+An opt-in comparison that judges files equal by a checksum of their full contents, catching silent corruption on the Replica. It reads in full only the files a Quick compare would judge equal. The others differ already. Chosen on the Start screen.
 _Avoid_: full scan, integrity check, hash compare
 
 **Exclusion**:
@@ -77,5 +77,9 @@ Something on the Primary that a comparison could not read: a folder it could not
 _Avoid_: corrupt, missing, failed
 
 **Anomaly**:
-A difference that should not occur if the Replica is only ever changed by updates, such as a Replica copy newer than its Primary counterpart. Flagged in the report for the user's attention.
+A difference that should not occur if the Replica is only ever changed by updates. There are two kinds (ADR 0018). A Replica copy newer than its Primary counterpart is flagged in the Copies step, by every comparison, and the copies Approval still replaces it. A **Content mismatch** is found only by a Deep verify.
 _Avoid_: conflict, error, warning
+
+**Content mismatch**:
+A file with the same size and modification date on both drives whose contents, read in full by a Deep verify, differ. It is also one whose Replica copy the drive could not read in full (EIO). It is left out of the Update until the owner chooses, for that file, to keep the Replica's copy or overwrite it with the Primary's. That choice is not an Approval (ADR 0018).
+_Avoid_: corrupt file, hash mismatch, conflict
