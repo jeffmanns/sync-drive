@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { after, describe, it } from "node:test";
 import { _electron as electron } from "playwright-core";
 import { pair, writePairing } from "../src/engine/index.ts";
+import { formatDay } from "../src/format.ts";
 import { MacVolumes } from "../src/macos/volume-identity.ts";
 import { makeDiskImageTree, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
@@ -51,6 +52,7 @@ describe("the desktop app", () => {
       window.setDefaultTimeout(30_000);
       phase("first window");
       await window.getByText('"Smoke Primary"').waitFor();
+      await window.getByText("sync-drive has not updated the whole Replica yet.").waitFor();
       phase("Start screen");
       await window.getByLabel("Exclude:").fill("*.tmp");
       await window.getByRole("button", { name: "Add" }).click();
@@ -92,6 +94,11 @@ describe("the desktop app", () => {
       await window.getByText("Copied: 3 files (21 B)").waitFor();
       await window.getByText("Content mismatches overwritten with the Primary's copy: 1 file (4 B)").waitFor();
       await window.getByText("Moved into the Holding area: 1 file (9 B)").waitFor();
+      // The deleted file and the overwritten content mismatch's Replica copy.
+      await window.getByText(`The Holding area on the Replica holds 2 files (13 B), last added to by the Update on ${formatDay(new Date())}.`).waitFor();
+      await window.getByText(/^This Update is logged on this Mac in .* Update\.txt$/).waitFor();
+      await window.getByRole("button", { name: "Done" }).click();
+      await window.getByText("Replica last updated today, on " + formatDay(new Date()) + ".").waitFor();
     } finally {
       await app.close();
       phase("close");

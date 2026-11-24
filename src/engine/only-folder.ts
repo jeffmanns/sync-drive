@@ -4,11 +4,11 @@ import { isAbsolute, join } from "node:path";
 import { isAlwaysSkipped } from "./always-skipped.ts";
 import type { ExclusionMatcher } from "./exclusions.ts";
 import { matchKey, readFailure } from "./scan.ts";
-import { isSyncDriveFolder } from "./sync-drive-folders.ts";
+import { isSyncDriveItem } from "./sync-drive-items.ts";
 
 /**
  * Rejects, saying why, a folder to limit a run to that is not plainly a folder inside the drive
- * (relative, using `/`, with no empty, `.` or `..` name), is inside sync-drive's own folders or the
+ * (relative, using `/`, with no empty, `.` or `..` name), is inside sync-drive's own items or the
  * macOS system files, or is left out by the Exclusions, as nothing in it would ever be compared.
  */
 export function checkOnlyFolder(only: string, isExcluded: ExclusionMatcher): void {
@@ -16,8 +16,8 @@ export function checkOnlyFolder(only: string, isExcluded: ExclusionMatcher): voi
   if (isAbsolute(only) || names.some((name) => name === "" || name === "." || name === "..")) {
     throw new Error(`"${only}" is not a folder inside the drive, so the comparison cannot be limited to it.`);
   }
-  if (isSyncDriveFolder(names[0]!)) {
-    throw new Error(`"${only}" is inside sync-drive's own ${names[0]} folder, which is never compared.`);
+  if (isSyncDriveItem(names[0]!)) {
+    throw new Error(`"${only}" is inside sync-drive's own "${names[0]}", which is never compared.`);
   }
   if (names.some((_, i) => isAlwaysSkipped(names.slice(0, i + 1).join("/")))) {
     throw new Error(`"${only}" is among the macOS system files, which are never compared.`);

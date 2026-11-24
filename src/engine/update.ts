@@ -8,10 +8,11 @@ import { Sha256Hasher, type Hasher } from "./hashing.ts";
 import { reporter, type UpdateProgress } from "./progress.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
+import { recordUpdate } from "./last-updated.ts";
 import { sameDate } from "./same-date.ts";
 import { checkFreeSpace, safetyStopApplies } from "./safety-stops.ts";
 import { matchKey, readFailure } from "./scan.ts";
-import { isSyncDriveFolder } from "./sync-drive-folders.ts";
+import { isSyncDriveItem } from "./sync-drive-items.ts";
 
 /** What the user has approved for an Update. Nothing is written without `update`. */
 export interface Approvals {
@@ -112,6 +113,11 @@ export interface UpdateResult {
   moved: FileEntry[];
   /** Deleted files left where they were on the Replica. */
   notMoved: FailedFile[];
+  /**
+   * Whether the Update emptied the Holding area, deleting for good what an earlier Update left there,
+   * before moving the deleted files in (ADR 0006).
+   */
+  emptiedHoldingArea: boolean;
 }
 
 /** Why a special file (a named pipe, socket or device) is not copied: it holds no data to back up. */
@@ -150,7 +156,7 @@ export async function update(report: Report, approvals: Approvals, setup: Update
 
 /** The result of an Update that has done nothing yet. */
 export function nothingDone(): UpdateResult {
-  return { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [] };
+  return { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [], emptiedHoldingArea: false };
 }
 
 /**
@@ -231,6 +237,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   if (toMove.length > 0) {
     // New deletions are confirmed, so the files kept from the previous Update are now deleted for
     // good. Without that confirmation the Holding area is never emptied (ADR 0006).
+    result.emptiedHoldingArea = true;
     await rm(holdingArea, { recursive: true, force: true });
     await mkdir(holdingArea);
     await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
@@ -349,6 +356,13 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       copies.notCopiedBytes += file.size;
     }
     progress();
+  }
+  // Last, so only an Update that finished is recorded. One limited to a folder is recorded apart from
+  // the whole drive, which it did not bring up to date (ADR 0019).
+  try {
+    await recordUpdate(setup.replica, incoming, setup.now ?? new Date(), only);
+  } catch (error) {
+    throw new Error(`Everything else was done, but when this Update finished could not be recorded on the Replica: ${(error as Error).message}`, { cause: error });
   }
   await rm(incoming, { recursive: true, force: true });
 }
@@ -546,14 +560,14 @@ function isWithin(folder: string, path: string): boolean {
 
 /**
  * Rejects a report path that is not plainly a path inside the drive, such as one with `..` in it,
- * or one inside sync-drive's own folders on the Replica.
+ * or one inside sync-drive's own items on the Replica.
  */
 function assertInsideDrive(path: string): void {
   const parts = path.split("/");
   if (isAbsolute(path) || parts.some((part) => part === "" || part === "." || part === "..")) {
     throw new Error(`"${path}" is not a path inside the drive; nothing was written`);
   }
-  if (isSyncDriveFolder(parts[0]!)) {
-    throw new Error(`"${path}" is inside sync-drive's own ${parts[0]} folder; nothing was written`);
+  if (isSyncDriveItem(parts[0]!)) {
+    throw new Error(`"${path}" is inside sync-drive's own "${parts[0]}"; nothing was written`);
   }
 }

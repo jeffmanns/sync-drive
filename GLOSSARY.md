@@ -22,6 +22,14 @@ _Avoid_: trash, recycle bin, archive
 The hidden `.sync-drive-incoming` folder at the top level of the Replica, where an Update writes each copy under a temporary name before renaming it into place. Anything left in it is an interrupted copy, never a file the user wants; the next Update empties it. It is not part of the Replica's contents for comparison. Not the Holding area: it never holds files deleted from the Primary.
 _Avoid_: temp folder, staging area
 
+**Last-updated marker**:
+The hidden `.sync-drive-last-updated` file at the top level of the Replica that records when the last Update of the whole drive finished, and each folder updated on its own since (ADR 0019). Start shows it before comparing. It is not part of the Replica's contents for comparison.
+_Avoid_: timestamp, sync marker
+
+**Update log**:
+The plain-text record of one Update, kept on the Mac in the `Update logs` folder beside the Pairing: what it copied, overwrote, renamed and moved into the Holding area, and what it did not, with the reasons (ADR 0019).
+_Avoid_: history, report (a Report is a comparison's result)
+
 **Pairing**:
 The remembered designation of one specific volume as the Primary and another as the Replica, identified by each volume's **Volume ID** rather than its name.
 _Avoid_: setup, profile, link

@@ -3,6 +3,7 @@ export { exclusionsFileBeside, readExclusions, writeExclusions } from "./exclusi
 export { checkExclusion, exclusionMatcher, sameExclusion, type ExclusionMatcher } from "./exclusions.ts";
 export { Sha256Hasher, type Hasher } from "./hashing.ts";
 export { readHoldingArea, type HoldingAreaContents } from "./holding-area.ts";
+export { readLastUpdated, type FolderUpdated, type LastUpdated } from "./last-updated.ts";
 export {
   findPairedDrives,
   pair,

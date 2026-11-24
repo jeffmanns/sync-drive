@@ -9,6 +9,7 @@ import {
   pair,
   readHoldingArea,
   readExclusions,
+  readLastUpdated,
   readPairing,
   sameExclusion,
   update,
@@ -40,10 +41,13 @@ import {
   type FlowState,
   type MismatchChoice,
   type MovesState,
+  type ReplicaLastUpdated,
+  type ResultState,
   type Review,
   type StartState,
   type SummaryState,
 } from "./view.ts";
+import { writeUpdateLog, type MismatchLeft } from "./update-log.ts";
 
 /** What the flow needs from the Mac it runs on. */
 export interface FlowDeps {
@@ -52,6 +56,8 @@ export interface FlowDeps {
   pairingFile: string;
   /** Where the Exclusions are stored, beside the Pairing. */
   exclusionsFile: string;
+  /** The folder on the Mac where each Update is logged. */
+  updateLogFolder: string;
   /** Copies files to the Replica with all their metadata. */
   copier: FileCopier;
   /** Remounts the Primary read-only for each Update, and normally afterwards. */
@@ -85,6 +91,8 @@ export class Flow {
   #deep = false;
   /** Why the saved Exclusions cannot be used, if they are damaged. Nothing is compared, or saved over them, until they are fixed. */
   #exclusionsDamaged: string | undefined;
+  /** When the paired Replica was last updated, as last read for Start. */
+  #lastUpdated: ReplicaLastUpdated | undefined;
 
   constructor(deps: FlowDeps) {
     this.#deps = deps;
@@ -114,6 +122,7 @@ export class Flow {
       exclusions: this.#exclusions,
       ...(this.#only === undefined ? {} : { only: this.#only }),
       deep: this.#deep,
+      ...(this.#lastUpdated === undefined ? {} : { lastUpdated: this.#lastUpdated }),
       ...(this.#exclusionsDamaged === undefined ? {} : { exclusionProblem: this.#exclusionsDamaged }),
       ...extra,
     };
@@ -138,7 +147,36 @@ export class Flow {
       });
       return;
     }
-    this.#set(pairing === undefined ? { step: "pairing" } : this.#start(pairing));
+    if (pairing === undefined) {
+      this.#set({ step: "pairing" });
+      return;
+    }
+    this.#set(this.#start(pairing));
+    await this.#readLastUpdated(pairing);
+  }
+
+  /**
+   * Reads when the paired Replica was last updated from its last-updated marker, and shows it if the
+   * app is still on Start for `pairing`. Reads only.
+   */
+  async #readLastUpdated(pairing: Pairing): Promise<void> {
+    const lastUpdated = await this.#lastUpdatedOf(pairing);
+    const state = this.#state;
+    if (state.step !== "start" || state.pairing !== pairing) return;
+    this.#lastUpdated = lastUpdated;
+    this.#set({ ...state, lastUpdated });
+  }
+
+  /** When the Replica of `pairing` was last updated, or why that cannot be known. */
+  async #lastUpdatedOf(pairing: Pairing): Promise<ReplicaLastUpdated> {
+    try {
+      const replicas = (await this.#deps.volumes.connected()).filter((volume) => volume.id === pairing.replica.id);
+      // Two drives with its volume ID: either could be the wrong one, as when comparing.
+      if (replicas.length !== 1) return { known: false, reason: "Connect the Replica to see when it was last updated." };
+      return { known: true, folders: [], ...(await readLastUpdated(replicas[0]!.mountPoint)) };
+    } catch (error) {
+      return { known: false, reason: (error as Error).message };
+    }
   }
 
   /** On Start: the deliberate Re-pair, e.g. after replacing a drive. Nothing changes until it is confirmed. */
@@ -182,7 +220,9 @@ export class Flow {
     try {
       const pairing = await pair(state.primary, state.replica, this.#deps.volumes);
       await writePairing(this.#deps.pairingFile, pairing);
+      this.#lastUpdated = undefined;
       this.#set(this.#start(pairing));
+      await this.#readLastUpdated(pairing);
     } catch (error) {
       this.#set({ ...state, error: (error as Error).message });
     }
@@ -443,24 +483,32 @@ export class Flow {
    * From a review step or the Result: back to Start, discarding the comparison and its decisions.
    * Not during Comparing or Updating.
    */
-  restart(): void {
+  async restart(): Promise<void> {
     const state = this.#state;
+    let pairing: Pairing;
     if (isReviewing(state) || state.step === "refused") {
       this.#discardComparison();
-      this.#set(this.#start(state.review.pairing));
+      pairing = state.review.pairing;
     } else if (state.step === "result") {
-      this.#set(this.#start(state.pairing));
+      pairing = state.pairing;
+    } else {
+      return;
     }
+    this.#set(this.#start(pairing));
+    // Read again: an Update has just changed it, and Start shows it before the next comparison.
+    await this.#readLastUpdated(pairing);
   }
 
   /**
-   * Call when drives are connected or disconnected. While a comparison is running or under
-   * review, discards it and its decisions, back on Start, if a paired drive has gone.
+   * Call when drives are connected or disconnected. On Start, reads again when the Replica was last
+   * updated. While a comparison is running or under review, discards it and its decisions, back on
+   * Start, if a paired drive has gone.
    */
   async drivesChanged(): Promise<void> {
     const state = this.#state;
     let pairing: Pairing;
     let drives: PairedDrives | undefined;
+    if (state.step === "start") return this.#readLastUpdated(state.pairing);
     if (state.step === "comparing") pairing = state.pairing;
     else if (isReviewing(state) || state.step === "refused") ({ pairing, drives } = state.review);
     else return;
@@ -603,13 +651,50 @@ export class Flow {
     const leftOnReplica = { count: review.deleted.count - handled.count, totalSize: review.deleted.totalSize - handled.totalSize };
     const renamedOrNot = totalsOf(totalsOfMoves(done.renamed), totalsOfMoves(done.notRenamed));
     const movesLeftAtOldPaths = { count: review.moves.count - renamedOrNot.count, totalSize: review.moves.totalSize - renamedOrNot.totalSize };
+    const overwritten = done.copied.filter((file) => chosenToOverwrite.has(file.path));
+    let updateLog: Pick<ResultState, "updateLog" | "updateLogProblem">;
+    try {
+      const mismatchesLeft: MismatchLeft[] = [
+        ...mismatchesChosen(review, "keep").map(({ path, size }) => ({ path, size, why: "kept, as chosen" as const })),
+        ...mismatchesChosen(review, undefined).map(({ path, size }) => ({ path, size, why: "no choice was made" as const })),
+      ].sort((a, b) => (a.path < b.path ? -1 : 1));
+      const path = await writeUpdateLog(this.#deps.updateLogFolder, {
+        ended: new Date(),
+        pairing: review.pairing,
+        ...(review.only === undefined ? {} : { only: review.only }),
+        deep: review.deep,
+        copied: done.copied.filter((file) => !chosenToOverwrite.has(file.path)),
+        overwritten,
+        failed: done.failed,
+        mismatchesLeft,
+        renamed: done.renamed,
+        notRenamed: done.notRenamed,
+        movesLeftAtOldPaths,
+        // As read at compare time, and checked again just before the Update (ADR 0006).
+        deletedFromHoldingArea: done.emptiedHoldingArea ? review.holdingArea : NO_FILES,
+        moved: done.moved,
+        notMoved: done.notMoved,
+        leftOnReplica,
+        unreadable: review.unreadable,
+        ...(error === undefined ? {} : { error }),
+        ...(primaryStillReadOnly === undefined ? {} : { primaryStillReadOnly }),
+      });
+      updateLog = { updateLog: path };
+    } catch (problem) {
+      updateLog = { updateLogProblem: (problem as Error).message };
+    }
+    // Read again: it may hold files from an earlier Update as well as this one's (ADR 0006).
+    const holdingArea = await readHoldingArea(review.drives.replica.mountPoint).then(
+      (held) => ({ holdingArea: held }),
+      (problem: Error) => ({ holdingAreaProblem: problem.message }),
+    );
     this.#set({
       step: "result",
       pairing: review.pairing,
       ...(review.only === undefined ? {} : { only: review.only }),
       unreadable: review.unreadable,
       copied: done.copied,
-      overwritten: done.copied.filter((file) => chosenToOverwrite.has(file.path)),
+      overwritten,
       failed: done.failed,
       renamed: done.renamed,
       notRenamed: done.notRenamed,
@@ -617,6 +702,8 @@ export class Flow {
       moved: done.moved,
       notMoved: done.notMoved,
       leftOnReplica,
+      ...holdingArea,
+      ...updateLog,
       ...(error === undefined ? {} : { error }),
       ...(primaryStillReadOnly === undefined ? {} : { primaryStillReadOnly }),
     });

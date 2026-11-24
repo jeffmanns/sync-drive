@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { after, afterEach, describe, it } from "node:test";
@@ -8,6 +8,8 @@ import { Flow } from "../src/app/flow.ts";
 import type { FlowState } from "../src/app/view.ts";
 import { freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, safetyStopExplanation } from "../src/app/view.ts";
 import { compare, type FileCopier } from "../src/engine/index.ts";
+import { holdingAreaReadme } from "../src/engine/holding-area.ts";
+import { formatDay } from "../src/format.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
 import { FakeItemCounter } from "./helpers/fake-item-counter.ts";
 import { FakeRemounter } from "./helpers/fake-remounter.ts";
@@ -45,12 +47,18 @@ async function testMac(copier: FileCopier = new MacFileCopier()) {
   const itemCounter = new FakeItemCounter();
   const pairingFile = join(await makeTree(), "sync-drive", "pairing.json");
   const exclusionsFile = join(dirname(pairingFile), "exclusions.json");
+  const updateLogFolder = join(dirname(pairingFile), "Update logs");
   const open = async () => {
-    const flow = new Flow({ volumes, pairingFile, exclusionsFile, copier, remounter, itemCounter });
+    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, remounter, itemCounter });
     await flow.open();
     return flow;
   };
-  return { volumes, remounter, itemCounter, pairingFile, exclusionsFile, open };
+  /** The text of every Update log written on this Mac, oldest first. */
+  const updateLogs = async () => {
+    const names = (await readdir(updateLogFolder).catch(() => [])).sort();
+    return Promise.all(names.map((name) => readFile(join(updateLogFolder, name), "utf8")));
+  };
+  return { volumes, remounter, itemCounter, pairingFile, exclusionsFile, updateLogFolder, updateLogs, open };
 }
 
 /**
@@ -91,8 +99,8 @@ describe("app flow: Pairing", () => {
     await flow.pair();
 
     const expected = { primary: { id: "PRIMARY-ID", name: basename(primary) }, replica: { id: "REPLICA-ID", name: basename(replica) } };
-    assert.deepEqual(flow.state, { step: "start", pairing: expected, exclusions: [], deep: false });
-    assert.deepEqual((await mac.open()).state, { step: "start", pairing: expected, exclusions: [], deep: false }, "remembered when the app opens again");
+    assert.deepEqual(flow.state, { step: "start", pairing: expected, exclusions: [], deep: false, lastUpdated: { known: true, folders: [] } });
+    assert.deepEqual((await mac.open()).state, { step: "start", pairing: expected, exclusions: [], deep: false, lastUpdated: { known: true, folders: [] } }, "remembered when the app opens again");
   });
 
   it("stays on Pairing, saying why and saving nothing, when both choices are the same drive", async () => {
@@ -1071,7 +1079,7 @@ describe("app flow: Moves", () => {
     assert.deepEqual(stateOf(flow).notRenamed, []);
     assert.deepEqual(stateOf(flow).copied, []);
     assert.deepEqual(stateOf(flow).moved, []);
-    assert.deepEqual((await readdir(replica)).sort(), ["Photos", "gone.txt"], "no Holding area");
+    assert.deepEqual((await readdir(replica)).sort(), [".sync-drive-last-updated", "Photos", "gone.txt"], "no Holding area");
     const after = await compare(primary, replica);
     assert.equal(after.moves.count, 0);
     assert.deepEqual(after.new.files, [{ path: "new.txt", size: 3 }]);
@@ -1344,6 +1352,7 @@ describe("app flow: Exclusions", () => {
     assert.deepEqual(stateOf(flow).failed, []);
     const files = (await readdir(replica, { recursive: true, withFileTypes: true })).filter((entry) => !entry.isDirectory());
     assert.deepEqual(files.map((entry) => join(entry.parentPath, entry.name).slice(replica.length + 1)).sort(), [
+      ".sync-drive-last-updated",
       "New/photo.jpg",
       "Old/photo.jpg",
       "Scratch/old.txt",
@@ -1377,7 +1386,7 @@ describe("app flow: Exclusions", () => {
 
 describe("app flow: limiting a run to one folder", () => {
   it("compares and updates only the folder chosen on Start, leaving everything outside it alone", async () => {
-    const { flow, primary, replica } = await pairedMac(
+    const { flow, primary, replica, updateLogs } = await pairedMac(
       { "Photos/2019/new.jpg": "n", "Photos/2019/Iceland/moved.jpg": "m", "Photos/2020/new.jpg": "n", "Elsewhere/arrived.jpg": "a" },
       { "Photos/2019/moved.jpg": "m", "Photos/2019/arrived.jpg": "a", "Photos/2020/gone.jpg": "g", "old.txt": "o" },
     );
@@ -1403,6 +1412,7 @@ describe("app flow: limiting a run to one folder", () => {
     assert.equal(stateOf(flow).only, "Photos/2019");
     const files = (await readdir(replica, { recursive: true, withFileTypes: true })).filter((entry) => !entry.isDirectory());
     assert.deepEqual(files.map((entry) => join(entry.parentPath, entry.name).slice(replica.length + 1)).sort(), [
+      ".sync-drive-last-updated",
       "Photos/2019/Iceland/moved.jpg",
       "Photos/2019/new.jpg",
       "Photos/2020/gone.jpg",
@@ -1410,8 +1420,13 @@ describe("app flow: limiting a run to one folder", () => {
       "sync-drive Holding Area/Photos/2019/arrived.jpg",
       "sync-drive Holding Area/READ ME.txt",
     ]);
-    flow.restart();
+    const [log] = await updateLogs();
+    assert.match(log!, /^Limited to the folder: "Photos\/2019"$/m);
+    await flow.restart();
     assert.equal(stateOf(flow).only, "Photos/2019", "kept on Start until changed");
+    const { lastUpdated } = stateOf(flow);
+    assert.equal(lastUpdated.wholeDrive, undefined, "the whole drive was not updated");
+    assert.deepEqual(lastUpdated.folders.map((entry: { folder: string }) => entry.folder), ["Photos/2019"]);
   });
 
   it("goes back to the whole drive when asked, or when the top of the Primary is chosen", async () => {
@@ -1640,6 +1655,53 @@ describe("app flow: Deep verify and Anomalies", () => {
     assert.equal(await readFile(join(replica, "b.txt"), "utf8"), "yyyy");
   });
 
+  it("logs on the Mac everything the Update did and left, with the reasons", async () => {
+    const { flow, replica, updateLogs } = await deepVerified();
+    flow.approveCopies(true);
+    flow.next();
+    flow.chooseForMismatch("a.txt", "overwrite");
+    flow.next();
+    flow.approveMoves(true);
+    flow.next();
+    flow.approveDeletions(true);
+    flow.next();
+    // Something the Update cannot do: a folder where the moved file goes.
+    await mkdir(join(replica, "Photos/2026/x.jpg"), { recursive: true });
+
+    await flow.apply();
+
+    const logs = await updateLogs();
+    assert.equal(logs.length, 1);
+    assert.equal(stateOf(flow).updateLog.endsWith(" Update.txt"), true);
+    const [heading, finished, ...rest] = logs[0]!.split("\n");
+    assert.equal(heading, "sync-drive Update log");
+    assert.match(finished!, /^Finished: \d{1,2} [A-Z][a-z]+ \d{4} at \d{2}:\d{2}:\d{2}$/);
+    const { pairing } = stateOf(flow);
+    assert.deepEqual(rest, [
+      `Primary: "${pairing.primary.name}" (volume ID PRIMARY-ID)`,
+      `Replica: "${pairing.replica.name}" (volume ID REPLICA-ID)`,
+      "Compared by: Deep verify",
+      "",
+      "Copied: 1 file (7 B)",
+      "  old.txt (7 B)",
+      "",
+      "Content mismatches overwritten with the Primary's copy: 1 file (4 B)",
+      "  a.txt (4 B)",
+      "",
+      "Content mismatches left as they are: 1 file (4 B)",
+      "  b.txt (4 B): no choice was made",
+      "",
+      "Renamed: none",
+      "",
+      "Not renamed: 1 file",
+      "  Photos/x.jpg → Photos/2026/x.jpg: the Replica already has a file at its new path",
+      "",
+      "Moved into the Holding area: 1 file (4 B)",
+      "  gone.txt (4 B)",
+      "",
+    ]);
+  });
+
   it("honours each choice on Apply, with no Approval given: overwrites the chosen Replica copies and keeps the others", async () => {
     const { flow, primary, replica } = await deepVerified();
     flow.next();
@@ -1677,3 +1739,78 @@ describe("app flow: Deep verify and Anomalies", () => {
   });
 });
 
+
+describe("app flow: the Holding area on the Result", () => {
+  it("shows what the Holding area holds after the Update, and when it was last added to", async () => {
+    const { flow } = await pairedMac({ "a.txt": "same" }, { "a.txt": "same", "Docs/gone.txt": "12345" });
+    await flow.compare();
+    toSummaryApprovingDeletions(flow);
+
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).holdingArea, { count: 1, totalSize: 5, lastAddedOn: formatDay(new Date()) });
+  });
+
+  it("counts what an earlier Update left there too, even when this one added nothing", async () => {
+    const { flow } = await pairedMac(
+      { "a.txt": "same", "new.txt": "new" },
+      { "a.txt": "same", "sync-drive Holding Area/old.txt": "held", "sync-drive Holding Area/READ ME.txt": holdingAreaReadme(new Date(2026, 5, 3)) },
+    );
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).holdingArea, { count: 1, totalSize: 4, lastAddedOn: "3 June 2026" });
+  });
+});
+
+describe("app flow: when the Replica was last updated", () => {
+  it("shows on Start that sync-drive has never updated a fresh Replica", async () => {
+    const { flow } = await pairedMac();
+
+    assert.deepEqual(stateOf(flow).lastUpdated, { known: true, folders: [] });
+  });
+
+  it("shows on Start, after the Update and when the app opens again, that the whole drive was just updated", async () => {
+    const { flow, open } = await pairedMac(EXAMPLE_PRIMARY, EXAMPLE_REPLICA);
+    const before = Date.now();
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+    await flow.apply();
+
+    await flow.restart();
+
+    assert.equal(stateOf(flow).step, "start");
+    const { known, wholeDrive, folders } = stateOf(flow).lastUpdated;
+    assert.equal(known, true);
+    assert.ok(Date.parse(wholeDrive) >= before && Date.parse(wholeDrive) <= Date.now(), "the date of this Update");
+    assert.deepEqual(folders, []);
+    assert.deepEqual(stateOf(await open()).lastUpdated, stateOf(flow).lastUpdated);
+  });
+
+  it("says the Replica must be connected to know, and reads it once it is", async () => {
+    const { flow, volumes, replica, open } = await pairedMac({}, { ".sync-drive-last-updated": '{"wholeDrive":"2026-08-20T10:00:00.000Z","folders":[]}' });
+    volumes.disconnect(replica);
+    const reopened = await open();
+
+    assert.deepEqual(stateOf(reopened).lastUpdated, { known: false, reason: "Connect the Replica to see when it was last updated." });
+
+    volumes.connect(replica, "REPLICA-ID");
+    await reopened.drivesChanged();
+
+    assert.deepEqual(stateOf(reopened).lastUpdated, { known: true, wholeDrive: "2026-08-20T10:00:00.000Z", folders: [] });
+    assert.equal(stateOf(flow).step, "start");
+  });
+
+  it("says when the marker is damaged, and still compares", async () => {
+    const { flow } = await pairedMac({ "a.txt": "a" }, { ".sync-drive-last-updated": "garbage" });
+
+    assert.equal(stateOf(flow).lastUpdated.known, false);
+    assert.match(stateOf(flow).lastUpdated.reason, /damaged/);
+    await flow.compare();
+    assert.equal(stateOf(flow).step, "copies");
+  });
+});

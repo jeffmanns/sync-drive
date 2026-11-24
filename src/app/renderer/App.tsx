@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fileCount, formatSize } from "../../format.ts";
-import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines, writesAnything } from "../view.ts";
+import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, holdingAreaReminder, lastUpdatedLines, onlyFolderDeletionsWarning, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines, writesAnything } from "../view.ts";
 import type {
   Action,
   AnomaliesState,
@@ -147,6 +147,11 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
         <dt>Replica</dt>
         <dd>"{replica.name}" <span className="note">volume ID {replica.id}</span></dd>
       </dl>
+      {state.lastUpdated !== undefined && (
+        <section className="last-updated">
+          {lastUpdatedLines(state.lastUpdated, new Date()).map((line) => <p key={line}>{line}</p>)}
+        </section>
+      )}
       <OnlyFolder state={state} send={send} busy={busy} />
       <section className="deep-verify">
         <h2>How to compare</h2>
@@ -677,7 +682,6 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
           <Expandable label="Every moved file" totals={moved}>
             <FileList files={state.moved} />
           </Expandable>
-          <p className="note">To restore one, copy it from the Holding area back to the Primary, into its original folder.</p>
         </section>
       )}
       {state.notMoved.length > 0 && (
@@ -688,6 +692,13 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
         </section>
       )}
       {state.leftOnReplica.count > 0 && <p className="note">Left where they were, only on the Replica: {describe(state.leftOnReplica)}.</p>}
+      <section className="holding-area">
+        <h2>The Holding area</h2>
+        {state.holdingArea !== undefined && holdingAreaReminder(state.holdingArea).map((line) => <p key={line}>{line}</p>)}
+        <Problem text={state.holdingAreaProblem === undefined ? undefined : `The Holding area could not be read: ${state.holdingAreaProblem}`} />
+      </section>
+      {state.updateLog !== undefined && <p className="note">This Update is logged on this Mac in {state.updateLog}</p>}
+      <Problem text={state.updateLogProblem === undefined ? undefined : `This Update could not be logged on this Mac: ${state.updateLogProblem}`} />
       <Buttons>
         <button className="primary" onClick={() => send({ type: "restart" })} disabled={busy}>Done</button>
       </Buttons>
