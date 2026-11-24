@@ -172,7 +172,7 @@ export async function compare(
       // A file that grew since it was scanned must not take the bar past this candidate.
       tellProgress({ phase: "checking moves", checkedBytes: checkedBefore + Math.min(read, bytes), totalBytes });
     };
-    // One at a time: reading many files at once makes a spinning drive seek back and forth.
+    // One at a time, which suits any drive; reading several at once per drive type is #12's.
     const [primarySum, replicaSum] = await Promise.allSettled([
       hasher.checksum(join(primary, candidate.primary.path), onRead),
       hasher.checksum(join(replica, candidate.replica.path), onRead),
@@ -252,8 +252,8 @@ async function verifyContents(
       // A file that grew since it was scanned must not take the bar past it.
       tellProgress({ phase: "verifying", checkedBytes: checkedBefore + Math.min(read, bytes), totalBytes });
     };
-    // One file at a time, the Primary and the Replica together: reading many files at once makes a
-    // spinning drive seek back and forth.
+    // One file at a time, the Primary and the Replica together, which suits any drive; reading
+    // several at once per drive type is #12's.
     const [primarySum, replicaSum] = await Promise.allSettled([
       hasher.checksum(join(primary, pair.primary.path), onRead),
       hasher.checksum(join(replica, pair.replica.path), onRead),
