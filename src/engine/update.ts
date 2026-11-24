@@ -127,7 +127,8 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * the new and changed files, and the content mismatches in `approvals.overwrite`, from the
  * Primary, checking each copy against its Primary file by checksum before renaming it into place; a
  * copy that does not match is discarded and listed as failed. A content mismatch is overwritten only
- * if its Primary file and Replica copy still match by size and date, as when they were compared. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
+ * if its Primary file and Replica copy still match by size and date, as when they were compared, and
+ * its Replica copy is first moved into the Holding area, which is added to and never emptied for it. Writes nothing unless `approvals.update` is given. Never writes to the Primary. Rejects,
  * having written nothing, when the report holds a path `setup.exclusions` leave out, when the
  * Safety stop applies to the report's deletions (counted again here, not read from
  * `report.safetyStop`) without `approvals.overrideSafetyStop`, when it holds a path outside
@@ -229,7 +230,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   // Deletions first, so a path that changed between a file and a folder is free before copying.
   if (toMove.length > 0) {
     // New deletions are confirmed, so the files kept from the previous Update are now deleted for
-    // good. Without that confirmation the Holding area is left untouched (ADR 0006).
+    // good. Without that confirmation the Holding area is never emptied (ADR 0006).
     await rm(holdingArea, { recursive: true, force: true });
     await mkdir(holdingArea);
     await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
@@ -281,6 +282,23 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     progress();
   }
   for (const move of result.renamed) await removeEmptiedFolders(move.from, setup);
+  let holdingAreaReadmeWritten = toMove.length > 0;
+  /**
+   * Moves the Replica's copy of a content mismatch at `path` into the Holding area, at the same path,
+   * rather than destroying it: the owner may have chosen wrongly, and either drive's copy may be the
+   * damaged one. Adds to whatever the Holding area holds; only confirmed deletions empty it (ADR 0006).
+   */
+  const moveToHoldingArea = async (path: string) => {
+    await makeReplicaFolders(setup.replica, join(HOLDING_AREA, dirname(path)));
+    const kept = join(holdingArea, path);
+    // rename replaces whatever is at the destination, so make sure nothing is.
+    if (await exists(kept)) throw new Error("the Holding area already holds a file at that path");
+    await rename(join(setup.replica, path), kept);
+    if (!holdingAreaReadmeWritten) {
+      await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
+      holdingAreaReadmeWritten = true;
+    }
+  };
   const hasher = setup.hasher ?? new Sha256Hasher();
   const incoming = join(setup.replica, INCOMING_FOLDER);
   // Anything already here is a temporary copy left by an interrupted Update.
@@ -310,9 +328,19 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       }
       // The owner chose to overwrite this Replica copy as it was when compared, when it matched its
       // Primary file by size and date. Looked at last, just before it is replaced for good.
-      if (overwrites.has(file)) await assertStillAsCompared(before, destination);
+      const overwriting = overwrites.has(file);
+      if (overwriting) {
+        await assertStillAsCompared(before, destination);
+        await moveToHoldingArea(file.path);
+      }
       await makeReplicaFolders(setup.replica, dirname(file.path));
-      await rename(temporary, destination);
+      try {
+        await rename(temporary, destination);
+      } catch (error) {
+        // Put the Replica's copy back where it was, so a failed overwrite changes nothing.
+        if (overwriting) await rename(join(holdingArea, file.path), destination);
+        throw error;
+      }
       result.copied.push(file);
       copies.copiedBytes += file.size;
     } catch (error) {

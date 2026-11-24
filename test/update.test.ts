@@ -1036,6 +1036,7 @@ describe("Overwriting content mismatches", () => {
     assert.deepEqual(result.failed, []);
     assert.equal(await readFile(join(replica, "a.txt"), "utf8"), "AAAA");
     assert.equal(await metadataOf(join(replica, "a.txt")), await metadataOf(join(primary, "a.txt")));
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "a.txt"), "utf8"), "zzzz", "the Replica's copy is kept, not destroyed");
     assert.equal(await readFile(join(replica, "b.txt"), "utf8"), "yyyy");
     const after = await compare(primary, replica, { deep: true });
     assert.deepEqual(after.anomalies.contentMismatch.files, [{ path: "b.txt", size: 4 }]);
@@ -1063,6 +1064,41 @@ describe("Overwriting content mismatches", () => {
       /"same.txt" is not a content mismatch in the Report; nothing was written/,
     );
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
+  });
+
+  it("moves the Replica's copy into the Holding area at its own path, adding to what it holds without emptying it", async () => {
+    const primary = await makeTree({ "Docs/a.txt": "AAAA" });
+    const replica = await makeTree({ "Docs/a.txt": "zzzz", "sync-drive Holding Area/earlier.txt": "held", "sync-drive Holding Area/READ ME.txt": "old" });
+    const report = await compare(primary, replica, { deep: true });
+
+    const result = await update(report, { ...APPROVED, overwrite: ["Docs/a.txt"] }, {
+      primary,
+      replica,
+      copier: new MacFileCopier(),
+      now: new Date(2026, 10, 23, 9, 0),
+    });
+
+    assert.deepEqual(result.copied, [{ path: "Docs/a.txt", size: 4 }]);
+    assert.equal(await readFile(join(replica, "Docs/a.txt"), "utf8"), "AAAA");
+    const holding = join(replica, "sync-drive Holding Area");
+    assert.equal(await readFile(join(holding, "Docs/a.txt"), "utf8"), "zzzz");
+    assert.equal(await readFile(join(holding, "earlier.txt"), "utf8"), "held");
+    const readme = await readFile(join(holding, "READ ME.txt"), "utf8");
+    assert.match(readme, /most recently by the Update on 23 November 2026/);
+    assert.match(readme, /chose to overwrite/);
+  });
+
+  it("leaves a chosen content mismatch alone if the Holding area already holds a file at its path", async () => {
+    const { primary, replica } = await mismatchedDrives();
+    await mkdir(join(replica, "sync-drive Holding Area"));
+    await writeFile(join(replica, "sync-drive Holding Area", "a.txt"), "from an earlier Update");
+    const report = await compare(primary, replica, { deep: true });
+
+    const result = await update(report, { ...APPROVED, overwrite: ["a.txt"] }, { primary, replica, copier: new MacFileCopier() });
+
+    assert.deepEqual(result.failed, [{ path: "a.txt", size: 4, reason: "the Holding area already holds a file at that path" }]);
+    assert.equal(await readFile(join(replica, "a.txt"), "utf8"), "zzzz");
+    assert.equal(await readFile(join(replica, "sync-drive Holding Area", "a.txt"), "utf8"), "from an earlier Update");
   });
 
   it("leaves a chosen content mismatch alone if its Replica copy changed since the comparison", async () => {

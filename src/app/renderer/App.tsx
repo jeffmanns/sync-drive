@@ -347,7 +347,8 @@ function AnomaliesScreen({ state, send, busy }: ScreenProps<AnomaliesState>) {
       <p>
         These files have the same size and date on both drives, but Deep verify found their contents differ. That should not happen when only
         Updates change the Replica: its copy may be damaged, or was changed by something else. Choose for each file whether to keep the
-        Replica's copy or overwrite it with the Primary's. A file with no choice is left as it is.
+        Replica's copy or overwrite it with the Primary's. An overwritten copy is moved into the Holding area, not destroyed. A file with no
+        choice is left as it is.
       </p>
       <section>
         <h2 className="warning">Content mismatches: {describe(mismatches)}</h2>
@@ -542,7 +543,7 @@ function SummaryScreen({ state, send, busy }: ScreenProps<SummaryState>) {
         {copy.count > 0
           ? <li>Copy {describe(copy)} from the Primary to the Replica.</li>
           : hasCopies && <li>Copy nothing: the copies are not approved.</li>}
-        {overwrite.count > 0 && <li className="warning">Overwrite {describe(overwrite)} with a content mismatch on the Replica with the Primary's copy, as you chose.</li>}
+        {overwrite.count > 0 && <li className="warning">Overwrite {describe(overwrite)} with a content mismatch on the Replica with the Primary's copy, as you chose. The Replica's copies are moved into the Holding area.</li>}
         {keep.count > 0 && <li>Keep the Replica's copy of {describe(keep)} with a content mismatch, as you chose.</li>}
         {leaveUndecided.count > 0 && <li>Leave {describe(leaveUndecided)} with a content mismatch as they are on the Replica: no choice was made for them.</li>}
         {renameOnReplica.count > 0 && <li>Rename {describe(renameOnReplica)} moved on the Primary to their new paths on the Replica.</li>}
@@ -643,6 +644,7 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
       {state.overwritten.length > 0 && (
         <section>
           <h2>Content mismatches overwritten with the Primary's copy: {describe(totalsOfFiles(state.overwritten))}</h2>
+          <p>The Replica's previous copies are in the Holding area.</p>
           <FileList files={state.overwritten} />
         </section>
       )}
