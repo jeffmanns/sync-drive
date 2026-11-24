@@ -7,7 +7,7 @@ import {
   findPairedReplica,
   makeSection,
   nothingDone,
-  pair,
+  pairDrives,
   readHoldingArea,
   readExclusions,
   readLastUpdated,
@@ -24,6 +24,7 @@ import {
   type Remounter,
   type Report,
   type UpdateResult,
+  type CandidateDrive,
   type Volume,
   type VolumeIdentity,
 } from "../engine/index.ts";
@@ -35,6 +36,7 @@ import {
   totalsOf,
   totalsOfFiles,
   totalsOfMoves,
+  whyCannotPair,
   writesAnything,
   type AnomaliesState,
   type CopiesState,
@@ -42,6 +44,7 @@ import {
   type FlowState,
   type MismatchChoice,
   type MovesState,
+  type PairingState,
   type ReplicaLastUpdated,
   type ResultState,
   type Review,
@@ -74,7 +77,7 @@ export interface FlowDeps {
  */
 export class Flow {
   readonly #deps: FlowDeps;
-  #state: FlowState = { step: "pairing" };
+  #state: FlowState = { step: "pairing", drives: [] };
   readonly #listeners = new Set<(state: FlowState) => void>();
   /** Counts comparisons, so the result of one that has since been discarded is ignored. */
   #comparisonGeneration = 0;
@@ -92,6 +95,8 @@ export class Flow {
   #deep = false;
   /** Why the saved Exclusions cannot be used, if they are damaged. Nothing is compared, or saved over them, until they are fixed. */
   #exclusionsDamaged: string | undefined;
+  /** Counts listings of the drives on Pairing, so a slower, older one never replaces a newer one. */
+  #listingGeneration = 0;
   /** When the paired Replica was last updated, as last read for Start. */
   #lastUpdated: ReplicaLastUpdated | undefined;
 
@@ -141,17 +146,12 @@ export class Flow {
       pairing = await readPairing(this.#deps.pairingFile);
     } catch {
       // A damaged Pairing is replaced like any other: only after the extra confirmation.
-      this.#set({
-        step: "pairing",
+      return this.#showPairing({
         replacing: { confirmed: false },
         error: "The saved Pairing is damaged. Choose the drives again to replace it.",
       });
-      return;
     }
-    if (pairing === undefined) {
-      this.#set({ step: "pairing" });
-      return;
-    }
+    if (pairing === undefined) return this.#showPairing();
     this.#set(this.#start(pairing));
     await this.#readLastUpdated(pairing);
   }
@@ -179,11 +179,45 @@ export class Flow {
     }
   }
 
+  /** Shows Pairing, with the drives connected now. */
+  async #showPairing(extra: Pick<PairingState, "replacing" | "error"> = {}): Promise<void> {
+    this.#set({ step: "pairing", drives: [], ...extra });
+    await this.#listDrives();
+  }
+
+  /** On Pairing: lists the connected drives that could be paired, and why they cannot be yet. */
+  async #listDrives(): Promise<void> {
+    const listing = ++this.#listingGeneration;
+    const listed = await this.#candidates();
+    const state = this.#state;
+    if (state.step !== "pairing" || listing !== this.#listingGeneration) return;
+    this.#set(withDrives(state, listed));
+  }
+
+  /** The connected drives that could be paired, or why they could not be listed. */
+  async #candidates(): Promise<CandidateDrive[] | Error> {
+    try {
+      return await this.#deps.volumes.candidates();
+    } catch (error) {
+      return new Error(`The connected drives could not be listed: ${(error as Error).message}`);
+    }
+  }
+
+  /** On Pairing: picks the drive with volume ID `id` as the Primary, and the other as the Replica, for the summary. Saves nothing. */
+  choosePrimary(id: string): void {
+    const state = this.#state;
+    if (state.step !== "pairing" || state.waiting !== undefined) return;
+    const summary = summaryFor(state.drives, id);
+    if (summary === undefined) return;
+    const { error: _, ...rest } = state;
+    this.#set({ ...rest, summary });
+  }
+
   /** On Start: the deliberate Re-pair, e.g. after replacing a drive. Nothing changes until it is confirmed. */
-  beginRepair(): void {
+  async beginRepair(): Promise<void> {
     const state = this.#state;
     if (state.step !== "start") return;
-    this.#set({ step: "pairing", replacing: { pairing: state.pairing, confirmed: false } });
+    await this.#showPairing({ replacing: { pairing: state.pairing, confirmed: false } });
   }
 
   /** On Pairing while re-pairing: the extra confirmation that the saved Pairing may be replaced. */
@@ -201,28 +235,30 @@ export class Flow {
     this.#set(this.#start(state.replacing.pairing));
   }
 
-  /** On Pairing: chooses the top level of the drive for one role. */
-  choose(role: "primary" | "replica", path: string): void {
-    const state = this.#state;
-    if (state.step !== "pairing") return;
-    const { error: _, ...rest } = state;
-    this.#set({ ...rest, [role]: path });
-  }
-
-  /** On Pairing: pairs the chosen drives and saves the Pairing, then moves on to Start. */
+  /**
+   * On Pairing: the owner's confirmation of the summary. Saves the Pairing it shows, then moves on to
+   * Start, but only if the same two drives are still the only ones connected.
+   */
   async pair(): Promise<void> {
     const state = this.#state;
-    if (state.step !== "pairing" || state.primary === undefined || state.replica === undefined) return;
+    if (state.step !== "pairing" || state.summary === undefined) return;
     if (state.replacing !== undefined && !state.replacing.confirmed) {
       this.#set({ ...state, error: "Confirm that the saved Pairing should be replaced." });
       return;
     }
+    const listed = await this.#candidates();
+    if (this.#state !== state) return;
+    const now = withDrives(state, listed);
+    if (now.summary === undefined || !samePairing(now.summary, state.summary)) {
+      const { summary: _, ...rest } = now;
+      this.#set({ ...rest, error: "The drives connected have changed since the summary was shown. Check the drives listed and pick the Primary again." });
+      return;
+    }
     try {
-      const pairing = await pair(state.primary, state.replica, this.#deps.volumes);
-      await writePairing(this.#deps.pairingFile, pairing);
+      await writePairing(this.#deps.pairingFile, now.summary);
       this.#lastUpdated = undefined;
-      this.#set(this.#start(pairing));
-      await this.#readLastUpdated(pairing);
+      this.#set(this.#start(now.summary));
+      await this.#readLastUpdated(now.summary);
     } catch (error) {
       this.#set({ ...state, error: (error as Error).message });
     }
@@ -501,14 +537,15 @@ export class Flow {
   }
 
   /**
-   * Call when drives are connected or disconnected. On Start, reads again when the Replica was last
-   * updated. While a comparison is running or under review, discards it and its decisions, back on
+   * Call when drives are connected or disconnected. On Pairing, lists the connected drives again. On
+   * Start, reads again when the Replica was last updated. While a comparison is running or under review, discards it and its decisions, back on
    * Start, if a paired drive has gone.
    */
   async drivesChanged(): Promise<void> {
     const state = this.#state;
     let pairing: Pairing;
     let drives: PairedDrives | undefined;
+    if (state.step === "pairing") return this.#listDrives();
     if (state.step === "start") return this.#readLastUpdated(state.pairing);
     if (state.step === "comparing") pairing = state.pairing;
     else if (isReviewing(state) || state.step === "refused") ({ pairing, drives } = state.review);
@@ -769,4 +806,33 @@ function summaryOf(review: Review): SummaryState {
     ? { copy, ...anomalies, ...renames, moveToHoldingArea: deleted, deleteFromHoldingArea: review.holdingArea, leaveOnReplica: NO_FILES }
     : { copy, ...anomalies, ...renames, moveToHoldingArea: NO_FILES, deleteFromHoldingArea: NO_FILES, leaveOnReplica: deleted };
   return { step: "summary", review, apply };
+}
+
+/**
+ * `state` with `listed` as the drives connected now (or why they could not be listed). The summary is
+ * kept, refreshed, only while the drive it names as the Primary can still be paired.
+ */
+function withDrives(state: PairingState, listed: CandidateDrive[] | Error): PairingState {
+  const { waiting: _, summary, ...rest } = state;
+  const drives = listed instanceof Error ? [] : listed;
+  const waiting = listed instanceof Error ? listed.message : whyCannotPair(drives);
+  if (waiting !== undefined) return { ...rest, drives, waiting };
+  const kept = summary === undefined ? undefined : summaryFor(drives, summary.primary.id);
+  return { ...rest, drives, ...(kept === undefined ? {} : { summary: kept }) };
+}
+
+/**
+ * The Pairing of the drive with volume ID `primaryId` as the Primary and the other of `drives` as the
+ * Replica, or `undefined` unless `drives` are exactly two different drives, one of them that one.
+ */
+function summaryFor(drives: CandidateDrive[], primaryId: string): Pairing | undefined {
+  if (whyCannotPair(drives) !== undefined) return undefined;
+  const primary = drives.find((drive) => drive.id === primaryId);
+  const replica = drives.find((drive) => drive.id !== primaryId);
+  return primary === undefined || replica === undefined ? undefined : pairDrives(primary, replica);
+}
+
+/** Whether `a` and `b` designate the same drives, by volume ID, in the same roles. */
+function samePairing(a: Pairing, b: Pairing): boolean {
+  return a.primary.id === b.primary.id && a.replica.id === b.replica.id;
 }

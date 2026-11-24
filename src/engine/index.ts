@@ -7,7 +7,7 @@ export { readLastUpdated, type FolderUpdated, type LastUpdated, type Updated } f
 export {
   findPairedDrives,
   findPairedReplica,
-  pair,
+  pairDrives,
   type PairedDrives,
   type PairedVolume,
   type Pairing,
@@ -45,4 +45,4 @@ export {
   type UpdateSetup,
 } from "./update.ts";
 export type { CheckingMovesProgress, CompareProgress, VerifyingProgress, FilesDone, ScanningProgress, UpdateProgress } from "./progress.ts";
-export type { ItemCounter, Remounter, Volume, VolumeIdentity } from "./volumes.ts";
+export type { CandidateDrive, ItemCounter, Remounter, Volume, VolumeIdentity } from "./volumes.ts";

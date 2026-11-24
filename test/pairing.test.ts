@@ -1,30 +1,27 @@
 import assert from "node:assert/strict";
 import { basename } from "node:path";
 import { after, describe, it } from "node:test";
-import { findPairedDrives, pair } from "../src/engine/index.ts";
+import { findPairedDrives, pairDrives } from "../src/engine/index.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
 import { makeTree, removeTrees } from "./helpers/trees.ts";
 
 after(removeTrees);
 
 describe("Pairing", () => {
-  it("records the Primary and the Replica by their volume IDs", async () => {
-    const primary = await makeTree();
-    const replica = await makeTree();
-    const volumes = new FakeVolumes({ [primary]: "PRIMARY-ID", [replica]: "REPLICA-ID" });
+  it("records the Primary and the Replica by their volume IDs", () => {
+    const pairing = pairDrives(
+      { id: "PRIMARY-ID", name: "Photos", mountPoint: "/Volumes/Photos" },
+      { id: "REPLICA-ID", name: "Backup", mountPoint: "/Volumes/Backup" },
+    );
 
-    const pairing = await pair(primary, replica, volumes);
-
-    assert.equal(pairing.primary.id, "PRIMARY-ID");
-    assert.equal(pairing.replica.id, "REPLICA-ID");
+    assert.deepEqual(pairing, { primary: { id: "PRIMARY-ID", name: "Photos" }, replica: { id: "REPLICA-ID", name: "Backup" } });
   });
 
-  it("refuses to pair a drive with itself", async () => {
-    const drive = await makeTree();
-    const sameDriveElsewhere = await makeTree();
-    const volumes = new FakeVolumes({ [drive]: "SAME-ID", [sameDriveElsewhere]: "SAME-ID" });
-
-    await assert.rejects(pair(drive, sameDriveElsewhere, volumes), /same drive/);
+  it("refuses to pair a drive with itself", () => {
+    assert.throws(
+      () => pairDrives({ id: "SAME-ID", name: "Photos", mountPoint: "/Volumes/Photos" }, { id: "SAME-ID", name: "Clone", mountPoint: "/Volumes/Clone" }),
+      /same volume ID/,
+    );
   });
 });
 
@@ -34,7 +31,7 @@ describe("Finding the paired drives", () => {
     const replica = await makeTree();
     const other = await makeTree();
     const volumes = new FakeVolumes({ [primary]: "PRIMARY-ID", [other]: "OTHER-ID", [replica]: "REPLICA-ID" });
-    const pairing = await pair(primary, replica, volumes);
+    const pairing = pairDrives(await volumes.volumeAt(primary), await volumes.volumeAt(replica));
     return { primary, replica, other, volumes, pairing };
   }
 

@@ -8,6 +8,12 @@ export interface Volume {
   mountPoint: string;
 }
 
+/** A connected drive that could be paired: an external drive or a mounted disk image. */
+export interface CandidateDrive extends Volume {
+  /** The drive's capacity in bytes, so the owner can tell drives apart. */
+  size: number;
+}
+
 /**
  * Tells the engine which drive is which. The engine asks this for volume IDs and never calls
  * macOS directly; tests substitute a fake.
@@ -17,6 +23,11 @@ export interface VolumeIdentity {
   volumeAt(path: string): Promise<Volume>;
   /** Every drive currently connected. */
   connected(): Promise<Volume[]>;
+  /**
+   * The connected drives that could be paired: external drives and mounted disk images, never the
+   * Mac's internal disk or its system volumes.
+   */
+  candidates(): Promise<CandidateDrive[]>;
 }
 
 /**

@@ -7,6 +7,7 @@ import type { PairedDrives, Pairing } from "../engine/pairing.ts";
 import type { CompareProgress, FilesDone, UpdateProgress } from "../engine/progress.ts";
 import type { Anomalies, ContentMismatch, FileEntry, Move, MoveGroup, MovesSection, Section, Totals, Unreadable } from "../engine/report.ts";
 import { SAFETY_STOP_PERCENT } from "../engine/safety-stop-limits.ts";
+import type { CandidateDrive } from "../engine/volumes.ts";
 import { fileCount, formatDay, formatSize, howLongAgo, itemCount } from "../format.ts";
 
 /** Which screen the app is on. */
@@ -26,13 +27,21 @@ export type FlowState =
   | UpdatingState
   | ResultState;
 
-/** Choosing the top level of each drive. Shown only when no Pairing is saved, or when re-pairing. */
+/**
+ * Choosing which connected drive is the Primary and which the Replica. Shown only when no Pairing is
+ * saved, or when re-pairing.
+ */
 export interface PairingState {
   step: "pairing";
-  /** The drive chosen as the Primary so far, by its top level. */
-  primary?: string;
-  /** The drive chosen as the Replica so far, by its top level. */
-  replica?: string;
+  /** The connected drives that could be paired, as last listed: external drives and mounted disk images. */
+  drives: CandidateDrive[];
+  /** Why the drives listed cannot be paired yet, and what to do about it. Absent once exactly two can be. */
+  waiting?: string;
+  /**
+   * The Pairing that Save would store, once the owner has picked which of the two drives is the
+   * Primary: the summary they confirm. Nothing is saved before then.
+   */
+  summary?: Pairing;
   /** Set when re-pairing over a saved Pairing: it is replaced only once the owner confirms. */
   replacing?: { pairing?: Pairing; confirmed: boolean };
   /** Why the last attempt to pair did not work, or why a new Pairing is needed. */
@@ -360,8 +369,10 @@ export interface FailedMove extends Move {
 
 /** Everything the screens can ask for. The main process carries each out on the flow. */
 export type Action =
-  /** Opens the folder chooser for one role on Pairing. */
-  | { type: "choose"; role: "primary" | "replica" }
+  /** On Pairing: the drive, by volume ID, the owner picked as the Primary. */
+  | { type: "choosePrimary"; id: string }
+  /** On Pairing: lists the connected drives again. */
+  | { type: "lookAgain" }
   | { type: "pair" }
   | { type: "beginRepair" }
   | { type: "confirmReplace"; confirmed: boolean }
@@ -395,6 +406,25 @@ export interface SyncDriveBridge {
   send(action: Action): Promise<void>;
   /** Calls `listener` with every new state. Returns a function that stops the calls. */
   onState(listener: (state: FlowState) => void): () => void;
+}
+
+/** Why `drives`, the connected drives that could be paired, cannot be paired yet, or `undefined` if they can. */
+export function whyCannotPair(drives: CandidateDrive[]): string | undefined {
+  if (drives.length === 0) {
+    return "Connect the Primary and the Replica. sync-drive lists external drives and mounted disk images, never the Mac's own disk.";
+  }
+  if (drives.length === 1) return `Only one drive is connected: "${drives[0]!.name}". Connect the other one too.`;
+  if (drives.length > 2) {
+    return `${drives.length} drives are connected. Eject or disconnect all but the Primary and the Replica.`;
+  }
+  const [first, second] = drives as [CandidateDrive, CandidateDrive];
+  if (first.id === second.id) {
+    return (
+      `"${first.name}" and "${second.name}" have the same volume ID (${first.id}), so sync-drive cannot tell them apart. ` +
+      "One is probably a block-level copy of the other. Connect a different drive in place of one of them."
+    );
+  }
+  return undefined;
 }
 
 /** No files at all. */

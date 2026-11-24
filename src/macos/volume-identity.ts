@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { realpath } from "node:fs/promises";
 import { basename } from "node:path";
 import { promisify } from "node:util";
-import type { Volume, VolumeIdentity } from "../engine/index.ts";
+import type { CandidateDrive, Volume, VolumeIdentity } from "../engine/index.ts";
 
 const run = promisify(execFile);
 
@@ -34,6 +34,33 @@ export class MacVolumes implements VolumeIdentity {
     })((list as Record<string, unknown>).AllDisksAndPartitions);
     return [...volumes.values()];
   }
+
+  async candidates(): Promise<CandidateDrive[]> {
+    const described = await Promise.all(
+      (await this.connected()).map(async (volume) => {
+        // A drive ejected since it was listed is simply not offered.
+        const info = await diskutilPlist(["info", "-plist", volume.mountPoint]).catch(() => undefined);
+        return info === undefined || !couldBePaired(info) ? undefined : { ...volume, size: sizeOf(info) };
+      }),
+    );
+    return described.filter((drive) => drive !== undefined);
+  }
+}
+
+/**
+ * Whether the volume diskutil describes as `info` could be paired: one on an external drive or a disk
+ * image, which diskutil both reports as not internal. The Mac's own disk, and its system volumes
+ * (the Data volume, Preboot, the VM volume and so on), never are.
+ */
+function couldBePaired(info: Record<string, unknown>): boolean {
+  const { Internal: internal, MountPoint: mountPoint } = info;
+  return internal === false && typeof mountPoint === "string" && mountPoint !== "/" && !mountPoint.startsWith("/System/Volumes/");
+}
+
+/** The capacity, in bytes, of the volume diskutil describes as `info`, or 0 if it does not say. */
+function sizeOf(info: Record<string, unknown>): number {
+  const size = info.TotalSize ?? info.Size;
+  return typeof size === "number" ? size : 0;
 }
 
 /** A mounted volume described by diskutil, or `undefined` if `entry` is not one with a volume UUID. */

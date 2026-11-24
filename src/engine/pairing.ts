@@ -14,13 +14,12 @@ export interface Pairing {
   replica: PairedVolume;
 }
 
-/** Pairs the drives whose top levels are `primary` and `replica`. Rejects if they are the same drive. */
-export async function pair(primary: string, replica: string, volumes: VolumeIdentity): Promise<Pairing> {
-  const [p, r] = await Promise.all([volumes.volumeAt(primary), volumes.volumeAt(replica)]);
-  if (p.id === r.id) {
-    throw new Error(`${primary} and ${replica} are the same drive (volume ID ${p.id}); the Primary and the Replica must be two different drives`);
+/** Pairs `primary` with `replica`, recording each by its volume ID. Throws if they are the same drive. */
+export function pairDrives(primary: Volume, replica: Volume): Pairing {
+  if (primary.id === replica.id) {
+    throw new Error(`"${primary.name}" and "${replica.name}" have the same volume ID (${primary.id}); the Primary and the Replica must be two different drives`);
   }
-  return { primary: { id: p.id, name: p.name }, replica: { id: r.id, name: r.name } };
+  return { primary: { id: primary.id, name: primary.name }, replica: { id: replica.id, name: replica.name } };
 }
 
 /** The connected drives that a Pairing designates. */

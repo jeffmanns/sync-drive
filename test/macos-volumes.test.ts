@@ -42,6 +42,23 @@ describe("Volume identity on macOS", () => {
     assert.notEqual((await volumes.volumeAt(second)).id, before.id);
   });
 
+  it("offers mounted disk images for Pairing, with their size, but never the Mac's own disk or its system volumes", async () => {
+    const drive = await makeDiskImageTree({}, { name: "Rehearsal", size: "40m" });
+    const volumes = new MacVolumes();
+    const image = await volumes.volumeAt(drive);
+
+    const candidates = await volumes.candidates();
+
+    const offered = candidates.find((candidate) => candidate.id === image.id);
+    assert.deepEqual(offered && { ...offered, size: undefined }, { ...image, size: undefined });
+    assert.ok(offered!.size > 30_000_000 && offered!.size <= 42_000_000, `size ${offered!.size}`);
+    const own = await volumes.volumeAt("/");
+    assert.equal(candidates.find((candidate) => candidate.id === own.id), undefined);
+    for (const candidate of candidates) {
+      assert.ok(candidate.mountPoint !== "/" && !candidate.mountPoint.startsWith("/System/Volumes/"), candidate.mountPoint);
+    }
+  });
+
   it("refuses a folder that is not the top level of a drive", async () => {
     const drive = await makeDiskImageTree();
     const inside = join(drive, "Photos");

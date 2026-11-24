@@ -97,8 +97,10 @@ async function start(): Promise<void> {
 /** Carries out what a screen asked for. */
 async function perform(action: Action, window: BrowserWindow): Promise<void> {
   switch (action.type) {
-    case "choose":
-      return chooseDrive(action.role, window);
+    case "choosePrimary":
+      return flow.choosePrimary(String(action.id));
+    case "lookAgain":
+      return flow.drivesChanged();
     case "pair":
       return flow.pair();
     case "beginRepair":
@@ -140,19 +142,6 @@ async function perform(action: Action, window: BrowserWindow): Promise<void> {
   }
 }
 
-/** Asks for the top level of the drive for `role`, starting in /Volumes. */
-async function chooseDrive(role: "primary" | "replica", window: BrowserWindow): Promise<void> {
-  if (role !== "primary" && role !== "replica") return;
-  const chosen = await dialog.showOpenDialog(window, {
-    title: role === "primary" ? "Choose the Primary" : "Choose the Replica",
-    message: `Choose the top level of the ${role === "primary" ? "Primary" : "Replica"} drive.`,
-    defaultPath: VOLUMES,
-    properties: ["openDirectory"],
-  });
-  const path = chosen.filePaths[0];
-  if (!chosen.canceled && path !== undefined) flow.choose(role, path);
-}
-
 /** Asks for the folder on the Primary to limit the run to, starting at the top of the Primary. */
 async function chooseOnlyFolder(window: BrowserWindow): Promise<void> {
   const top = await flow.primaryTop();
@@ -166,7 +155,10 @@ async function chooseOnlyFolder(window: BrowserWindow): Promise<void> {
   if (!chosen.canceled && path !== undefined) await flow.limitTo(path);
 }
 
-/** Tells the flow whenever a drive connects or disconnects, so a stale comparison is discarded. */
+/**
+ * Tells the flow whenever a drive connects or disconnects, so Pairing lists the drives connected now
+ * and a stale comparison is discarded.
+ */
 function watchDrives(): void {
   let pending: NodeJS.Timeout | undefined;
   const watcher = watch(VOLUMES, () => {

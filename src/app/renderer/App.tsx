@@ -96,16 +96,53 @@ interface ScreenProps<S> {
 }
 
 function PairingScreen({ state, send, busy }: ScreenProps<PairingState>) {
-  const { replacing } = state;
-  const ready = state.primary !== undefined && state.replica !== undefined && (replacing === undefined || replacing.confirmed);
+  const { replacing, summary, waiting } = state;
+  const ready = summary !== undefined && (replacing === undefined || replacing.confirmed);
   return (
     <>
       <h1>{replacing === undefined ? "Pair the drives" : "Re-pair the drives"}</h1>
-      <p>Choose the top level of each drive, for example /Volumes/Photos. sync-drive recognises them by volume ID, so renaming a drive later does not matter.</p>
-      <dl className="drives">
-        <DriveChoice role="Primary" note="The everyday drive. sync-drive only ever reads it." path={state.primary} onChoose={() => send({ type: "choose", role: "primary" })} busy={busy} />
-        <DriveChoice role="Replica" note="The drive that Updates make an exact copy of the Primary." path={state.replica} onChoose={() => send({ type: "choose", role: "replica" })} busy={busy} />
-      </dl>
+      <p>
+        Connect the Primary and the Replica, and nothing else, then pick which one is the Primary. sync-drive lists external drives
+        and mounted disk images, and recognises them by volume ID, so renaming a drive later does not matter.
+      </p>
+      {state.drives.length > 0 && (
+        <ul className="candidates">
+          {state.drives.map((drive) => (
+            <li key={drive.mountPoint}>
+              <label>
+                {waiting === undefined && (
+                  <input
+                    type="radio"
+                    name="primary"
+                    checked={summary?.primary.id === drive.id}
+                    disabled={busy}
+                    onChange={() => send({ type: "choosePrimary", id: drive.id })}
+                  />
+                )}
+                <span className="name">"{drive.name}"</span>
+                <span className="size">{formatSize(drive.size)}</span>
+                <span className="note">volume ID {drive.id}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+      {waiting !== undefined ? <p className="notice">{waiting}</p> : summary === undefined && <p className="notice">Pick the drive that is the Primary.</p>}
+      {summary !== undefined && (
+        <>
+          <h2>The Pairing to save</h2>
+          <dl className="drives">
+            <dt>Primary</dt>
+            <dd>
+              "{summary.primary.name}" <span className="note">volume ID {summary.primary.id}. The everyday drive: sync-drive only ever reads it.</span>
+            </dd>
+            <dt>Replica</dt>
+            <dd>
+              "{summary.replica.name}" <span className="note">volume ID {summary.replica.id}. Updates make it an exact copy of the Primary.</span>
+            </dd>
+          </dl>
+        </>
+      )}
       {replacing !== undefined && (
         <label className="confirm">
           <input type="checkbox" checked={replacing.confirmed} disabled={busy} onChange={(event) => send({ type: "confirmReplace", confirmed: event.target.checked })} />
@@ -117,21 +154,9 @@ function PairingScreen({ state, send, busy }: ScreenProps<PairingState>) {
       <Problem text={state.error} />
       <Buttons>
         {replacing?.pairing !== undefined && <button onClick={() => send({ type: "cancelRepair" })} disabled={busy}>Cancel</button>}
-        <button className="primary" onClick={() => send({ type: "pair" })} disabled={busy || !ready}>Pair</button>
+        <button onClick={() => send({ type: "lookAgain" })} disabled={busy}>Look again</button>
+        <button className="primary" onClick={() => send({ type: "pair" })} disabled={busy || !ready}>Save Pairing</button>
       </Buttons>
-    </>
-  );
-}
-
-function DriveChoice(props: { role: string; note: string; path: string | undefined; onChoose(): void; busy: boolean }) {
-  return (
-    <>
-      <dt>{props.role}</dt>
-      <dd>
-        <span className="note">{props.note}</span>
-        <span className="path">{props.path ?? "Not chosen yet"}</span>
-        <button onClick={props.onChoose} disabled={props.busy}>Choose…</button>
-      </dd>
     </>
   );
 }
