@@ -23,7 +23,7 @@ The hidden `.sync-drive-incoming` folder at the top level of the Replica, where 
 _Avoid_: temp folder, staging area
 
 **Last-updated marker**:
-The hidden `.sync-drive-last-updated` file at the top level of the Replica that records when the last Update of the whole drive finished, and each folder updated on its own since (ADR 0019). Start shows it before comparing. It is not part of the Replica's contents for comparison.
+The hidden `.sync-drive-last-updated` file at the top level of the Replica that records when the last Update of the whole drive finished, and each folder updated on its own since, each marked partial when that Update left undone something the owner wanted done (ADR 0019). Start shows it before comparing. It is not part of the Replica's contents for comparison.
 _Avoid_: timestamp, sync marker
 
 **Update log**:

@@ -49,6 +49,14 @@ export async function findPairedDrives(pairing: Pairing, volumes: VolumeIdentity
 }
 
 /**
+ * The paired Replica among the connected drives, by volume ID alone, or `undefined` if it is not
+ * connected. Rejects, as `findPairedDrives` does, if more than one drive has its volume ID.
+ */
+export async function findPairedReplica(pairing: Pairing, volumes: VolumeIdentity): Promise<Volume | undefined> {
+  return onlyMatch("Replica", pairing.replica, await volumes.connected());
+}
+
+/**
  * The connected drive with the paired volume's ID, if any. Rejects if there is more than one
  * (e.g. a block-level clone), since either could be the wrong drive.
  */

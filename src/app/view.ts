@@ -7,7 +7,7 @@ import type { PairedDrives, Pairing } from "../engine/pairing.ts";
 import type { CompareProgress, FilesDone, UpdateProgress } from "../engine/progress.ts";
 import type { Anomalies, ContentMismatch, FileEntry, Move, MoveGroup, MovesSection, Section, Totals, Unreadable } from "../engine/report.ts";
 import { SAFETY_STOP_PERCENT } from "../engine/safety-stop-limits.ts";
-import { fileCount, formatDay, formatSize, howLongAgo } from "../format.ts";
+import { fileCount, formatDay, formatSize, howLongAgo, itemCount } from "../format.ts";
 
 /** Which screen the app is on. */
 export type Step = FlowState["step"];
@@ -70,13 +70,21 @@ export interface StartState {
  * folder updated on its own since (ADR 0019). Or, when that cannot be known, why.
  */
 export type ReplicaLastUpdated =
-  | { known: true; wholeDrive?: string; folders: FolderUpdated[] }
+  | { known: true; wholeDrive?: Updated; folders: FolderUpdated[] }
   | { known: false; reason: string };
 
-/** When an Update limited to `folder` last finished (an ISO 8601 date). The engine's `FolderUpdated`, restated so the screens need nothing from Node. */
-export interface FolderUpdated {
-  folder: string;
+/**
+ * When an Update finished (an ISO 8601 date), and how many items it left undone if it was partial.
+ * The engine's `Updated`, restated so the screens need nothing from Node.
+ */
+export interface Updated {
   updated: string;
+  leftUndone?: number;
+}
+
+/** When an Update limited to `folder` last finished. The engine's `FolderUpdated`, restated so the screens need nothing from Node. */
+export interface FolderUpdated extends Updated {
+  folder: string;
 }
 
 /**
@@ -329,6 +337,11 @@ export interface ResultState {
   updateLog?: string;
   /** Why this Update could not be logged on the Mac, if it could not. */
   updateLogProblem?: string;
+  /**
+   * Why the last-updated marker on the Replica does not record this Update, though it finished,
+   * worded to follow "because" (ADR 0019). Start then goes on showing the earlier date.
+   */
+  notRecorded?: string;
   /** Why the Update stopped before it finished, if it did. `copied`, `failed`, `moved` and `notMoved` still say what it did first. */
   error?: string;
   /** Why the Primary could not be remounted normally after the Update, if it could not. It is still read-only. */
@@ -444,14 +457,27 @@ export function canOverrideSafetyStop(state: RefusedState): state is RefusedStat
  */
 export function lastUpdatedLines(lastUpdated: ReplicaLastUpdated, now: Date): string[] {
   if (!lastUpdated.known) return [lastUpdated.reason];
-  const when = (iso: string) => `${howLongAgo(new Date(iso), now)}, on ${formatDay(new Date(iso))}`;
+  const when = ({ updated }: Updated) => `${howLongAgo(new Date(updated), now)}, on ${formatDay(new Date(updated))}.`;
+  const partly = ({ leftUndone }: Updated) => (leftUndone === undefined ? "" : "partly ");
+  const undone = ({ leftUndone }: Updated) =>
+    leftUndone === undefined ? "" : ` ${itemCount(leftUndone)} ${leftUndone === 1 ? "was" : "were"} left undone.`;
   const { wholeDrive, folders } = lastUpdated;
+  const updates = [...(wholeDrive === undefined ? [] : [wholeDrive]), ...folders];
   return [
-    wholeDrive === undefined ? "sync-drive has not updated the whole Replica yet." : `Replica last updated ${when(wholeDrive)}.`,
-    ...folders.map(({ folder, updated }) =>
-      `${wholeDrive === undefined ? "Only" : "Since then, only"} the folder "${folder}" was updated: ${when(updated)}.`,
+    wholeDrive === undefined ? "sync-drive has not updated the whole Replica yet." : `Replica last ${partly(wholeDrive)}updated ${when(wholeDrive)}${undone(wholeDrive)}`,
+    ...folders.map((entry) =>
+      `${wholeDrive === undefined ? "Only" : "Since then, only"} the folder "${entry.folder}" was ${partly(entry)}updated: ${when(entry)}${undone(entry)}`,
     ),
+    ...(updates.some((entry) => entry.leftUndone !== undefined) ? ["Each Update's log on this Mac lists what it left undone, and why."] : []),
   ];
+}
+
+/**
+ * What the Result and the Update log say when an Update finished but the last-updated marker does
+ * not record it, `because` saying why (ADR 0019).
+ */
+export function notRecordedWarning(because: string): string {
+  return `This Update finished, but its date was not saved on the Replica, because ${because}. Start will go on showing the date of the Update before it.`;
 }
 
 /**

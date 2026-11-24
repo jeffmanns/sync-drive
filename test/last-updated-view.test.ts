@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { holdingAreaReminder, lastUpdatedLines } from "../src/app/view.ts";
+import { holdingAreaReminder, lastUpdatedLines, notRecordedWarning } from "../src/app/view.ts";
 import { howLongAgo } from "../src/format.ts";
 
 /** A local date and time, as the owner's Mac sees it. */
@@ -30,7 +30,7 @@ describe("When the Replica was last updated, on Start", () => {
   const NOW = at(2026, 11, 24);
 
   it("says how long ago the whole drive was last updated, and on which day", () => {
-    assert.deepEqual(lastUpdatedLines({ known: true, wholeDrive: at(2026, 8, 20).toISOString(), folders: [] }, NOW), [
+    assert.deepEqual(lastUpdatedLines({ known: true, wholeDrive: { updated: at(2026, 8, 20).toISOString() }, folders: [] }, NOW), [
       "Replica last updated 3 months ago, on 20 August 2026.",
     ]);
   });
@@ -38,13 +38,31 @@ describe("When the Replica was last updated, on Start", () => {
   it("lists each folder updated on its own since, without calling the Replica up to date", () => {
     const record = {
       known: true as const,
-      wholeDrive: at(2026, 8, 20).toISOString(),
+      wholeDrive: { updated: at(2026, 8, 20).toISOString() },
       folders: [{ folder: "Photos/2026", updated: at(2026, 11, 22).toISOString() }],
     };
 
     assert.deepEqual(lastUpdatedLines(record, NOW), [
       "Replica last updated 3 months ago, on 20 August 2026.",
       'Since then, only the folder "Photos/2026" was updated: 2 days ago, on 22 November 2026.',
+    ]);
+  });
+
+  it("says when an Update was partial, and how many items it left undone", () => {
+    const record = {
+      known: true as const,
+      wholeDrive: { updated: at(2026, 11, 20).toISOString(), leftUndone: 3 },
+      folders: [
+        { folder: "Music", updated: at(2026, 11, 22).toISOString() },
+        { folder: "Photos", updated: at(2026, 11, 24).toISOString(), leftUndone: 1 },
+      ],
+    };
+
+    assert.deepEqual(lastUpdatedLines(record, NOW), [
+      "Replica last partly updated 4 days ago, on 20 November 2026. 3 items were left undone.",
+      'Since then, only the folder "Music" was updated: 2 days ago, on 22 November 2026.',
+      'Since then, only the folder "Photos" was partly updated: today, on 24 November 2026. 1 item was left undone.',
+      "Each Update's log on this Mac lists what it left undone, and why.",
     ]);
   });
 
@@ -79,5 +97,15 @@ describe("The Holding area reminder, on the Result", () => {
 
   it("says when it is empty", () => {
     assert.deepEqual(holdingAreaReminder({ count: 0, totalSize: 0 }), ["The Holding area on the Replica is empty."]);
+  });
+});
+
+describe("An Update not recorded on the Replica, on the Result and in the log", () => {
+  it("says the Update finished, why its date was not saved, and what Start shows instead", () => {
+    assert.equal(
+      notRecordedWarning('the folder "Photos" is no longer on the Primary since the comparison'),
+      'This Update finished, but its date was not saved on the Replica, because the folder "Photos" is no longer on the Primary ' +
+        "since the comparison. Start will go on showing the date of the Update before it.",
+    );
   });
 });

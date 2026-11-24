@@ -4,6 +4,7 @@ import {
   checkFreeSpace,
   compare,
   findPairedDrives,
+  findPairedReplica,
   makeSection,
   nothingDone,
   pair,
@@ -170,10 +171,9 @@ export class Flow {
   /** When the Replica of `pairing` was last updated, or why that cannot be known. */
   async #lastUpdatedOf(pairing: Pairing): Promise<ReplicaLastUpdated> {
     try {
-      const replicas = (await this.#deps.volumes.connected()).filter((volume) => volume.id === pairing.replica.id);
-      // Two drives with its volume ID: either could be the wrong one, as when comparing.
-      if (replicas.length !== 1) return { known: false, reason: "Connect the Replica to see when it was last updated." };
-      return { known: true, folders: [], ...(await readLastUpdated(replicas[0]!.mountPoint)) };
+      const replica = await findPairedReplica(pairing, this.#deps.volumes);
+      if (replica === undefined) return { known: false, reason: "Connect the Replica to see when it was last updated." };
+      return { known: true, folders: [], ...(await readLastUpdated(replica.mountPoint)) };
     } catch (error) {
       return { known: false, reason: (error as Error).message };
     }
@@ -494,8 +494,9 @@ export class Flow {
     } else {
       return;
     }
+    // Forgotten first, so Start never shows the date from before an Update that has just changed it.
+    this.#lastUpdated = undefined;
     this.#set(this.#start(pairing));
-    // Read again: an Update has just changed it, and Start shows it before the next comparison.
     await this.#readLastUpdated(pairing);
   }
 
@@ -628,6 +629,7 @@ export class Flow {
           moves: review.movesApproved,
           deletions: review.deletionsApproved,
           overwrite,
+          keep: mismatchesChosen(review, "keep").map((file) => file.path),
           overrideSafetyStop: review.safetyStopOverridden,
         }, {
         primary: primary.mountPoint,
@@ -651,7 +653,25 @@ export class Flow {
     const leftOnReplica = { count: review.deleted.count - handled.count, totalSize: review.deleted.totalSize - handled.totalSize };
     const renamedOrNot = totalsOf(totalsOfMoves(done.renamed), totalsOfMoves(done.notRenamed));
     const movesLeftAtOldPaths = { count: review.moves.count - renamedOrNot.count, totalSize: review.moves.totalSize - renamedOrNot.totalSize };
-    const overwritten = done.copied.filter((file) => chosenToOverwrite.has(file.path));
+    // What the Result shows, but for the Holding area and the log, which follow from it.
+    const result = {
+      step: "result",
+      pairing: review.pairing,
+      ...(review.only === undefined ? {} : { only: review.only }),
+      unreadable: review.unreadable,
+      copied: done.copied,
+      overwritten: done.copied.filter((file) => chosenToOverwrite.has(file.path)),
+      failed: done.failed,
+      renamed: done.renamed,
+      notRenamed: done.notRenamed,
+      movesLeftAtOldPaths,
+      moved: done.moved,
+      notMoved: done.notMoved,
+      leftOnReplica,
+      ...(done.notRecorded === undefined ? {} : { notRecorded: done.notRecorded }),
+      ...(error === undefined ? {} : { error }),
+      ...(primaryStillReadOnly === undefined ? {} : { primaryStillReadOnly }),
+    } satisfies ResultState;
     let updateLog: Pick<ResultState, "updateLog" | "updateLogProblem">;
     try {
       const mismatchesLeft: MismatchLeft[] = [
@@ -659,25 +679,12 @@ export class Flow {
         ...mismatchesChosen(review, undefined).map(({ path, size }) => ({ path, size, why: "no choice was made" as const })),
       ].sort((a, b) => (a.path < b.path ? -1 : 1));
       const path = await writeUpdateLog(this.#deps.updateLogFolder, {
+        ...result,
         ended: new Date(),
-        pairing: review.pairing,
-        ...(review.only === undefined ? {} : { only: review.only }),
         deep: review.deep,
-        copied: done.copied.filter((file) => !chosenToOverwrite.has(file.path)),
-        overwritten,
-        failed: done.failed,
         mismatchesLeft,
-        renamed: done.renamed,
-        notRenamed: done.notRenamed,
-        movesLeftAtOldPaths,
         // As read at compare time, and checked again just before the Update (ADR 0006).
         deletedFromHoldingArea: done.emptiedHoldingArea ? review.holdingArea : NO_FILES,
-        moved: done.moved,
-        notMoved: done.notMoved,
-        leftOnReplica,
-        unreadable: review.unreadable,
-        ...(error === undefined ? {} : { error }),
-        ...(primaryStillReadOnly === undefined ? {} : { primaryStillReadOnly }),
       });
       updateLog = { updateLog: path };
     } catch (problem) {
@@ -688,25 +695,7 @@ export class Flow {
       (held) => ({ holdingArea: held }),
       (problem: Error) => ({ holdingAreaProblem: problem.message }),
     );
-    this.#set({
-      step: "result",
-      pairing: review.pairing,
-      ...(review.only === undefined ? {} : { only: review.only }),
-      unreadable: review.unreadable,
-      copied: done.copied,
-      overwritten,
-      failed: done.failed,
-      renamed: done.renamed,
-      notRenamed: done.notRenamed,
-      movesLeftAtOldPaths,
-      moved: done.moved,
-      notMoved: done.notMoved,
-      leftOnReplica,
-      ...holdingArea,
-      ...updateLog,
-      ...(error === undefined ? {} : { error }),
-      ...(primaryStillReadOnly === undefined ? {} : { primaryStillReadOnly }),
-    });
+    this.#set({ ...result, ...holdingArea, ...updateLog });
   }
 
   /**

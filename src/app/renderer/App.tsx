@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { fileCount, formatSize } from "../../format.ts";
-import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, holdingAreaReminder, lastUpdatedLines, onlyFolderDeletionsWarning, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines, writesAnything } from "../view.ts";
+import { describeFiles as describe, fileCount, formatSize, itemCount } from "../../format.ts";
+import { canOverrideSafetyStop, comparingBar, freeSpaceExplanation, holdingAreaReminder, lastUpdatedLines, notRecordedWarning, onlyFolderDeletionsWarning, onlyFolderNote, reviewSteps, safetyStopExplanation, totalsOf, totalsOfFiles, totalsOfMoves, updatingBar, updatingLines, writesAnything } from "../view.ts";
 import type {
   Action,
   AnomaliesState,
@@ -630,13 +630,14 @@ function ResultScreen({ state, send, busy }: ScreenProps<ResultState>) {
   const copied = totalsOfFiles(state.copied);
   const moved = totalsOfFiles(state.moved);
   const renamed = totalsOfMoves(state.renamed);
-  const problems = state.error !== undefined || state.primaryStillReadOnly !== undefined || state.failed.length > 0 || state.notRenamed.length > 0 || state.notMoved.length > 0 || state.unreadable.length > 0;
+  const problems = state.error !== undefined || state.primaryStillReadOnly !== undefined || state.failed.length > 0 || state.notRenamed.length > 0 || state.notMoved.length > 0 || state.unreadable.length > 0 || state.notRecorded !== undefined;
   return (
     <>
       <h1>{problems ? "Update finished with problems" : "Update done"}</h1>
       <OnlyFolderNote only={state.only} />
       <Problem text={state.error === undefined ? undefined : `The Update stopped: ${state.error}`} />
       <Problem text={state.primaryStillReadOnly === undefined ? undefined : `The Primary may still be read-only: ${state.primaryStillReadOnly}`} />
+      <Problem text={state.notRecorded === undefined ? undefined : notRecordedWarning(state.notRecorded)} />
       <UnreadableList unreadable={state.unreadable} />
       <section>
         <h2>Copied: {copied.count === 0 ? "none" : describe(copied)}</h2>
@@ -731,11 +732,6 @@ function UnreadableList({ unreadable }: { unreadable: Unreadable[] }) {
   );
 }
 
-/** "1 item", "3 items". */
-function itemCount(count: number): string {
-  return `${count.toLocaleString("en-US")} ${count === 1 ? "item" : "items"}`;
-}
-
 function Waiting({ title, detail }: { title: string; detail: string }) {
   return (
     <div className="waiting">
@@ -783,7 +779,3 @@ function Problem({ text }: { text: string | undefined }) {
   return text === undefined ? null : <p className="problem">{text}</p>;
 }
 
-/** "3 files (1.5 MB)". */
-function describe(totals: Totals): string {
-  return `${fileCount(totals.count)} (${formatSize(totals.totalSize)})`;
-}

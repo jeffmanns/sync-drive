@@ -5,6 +5,16 @@ export function fileCount(count: number): string {
   return count === 1 ? "1 file" : `${count.toLocaleString("en-US")} files`;
 }
 
+/** "1 item", "3 items". */
+export function itemCount(count: number): string {
+  return `${count.toLocaleString("en-US")} ${count === 1 ? "item" : "items"}`;
+}
+
+/** "3 files (1.5 MB)". */
+export function describeFiles(totals: { count: number; totalSize: number }): string {
+  return `${fileCount(totals.count)} (${formatSize(totals.totalSize)})`;
+}
+
 const UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
 /** Formats a byte count in decimal units, as Finder does (1 KB = 1000 bytes). */
@@ -28,6 +38,12 @@ const MONTHS = [
 /** The day of `date` on this Mac, as the owner writes it: "24 November 2026". */
 export function formatDay(date: Date): string {
   return `${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+}
+
+/** The time of day of `date` on this Mac, to the second, with `separator` between: "10:30:05". */
+export function formatTime(date: Date, separator = ":"): string {
+  const two = (n: number) => String(n).padStart(2, "0");
+  return [date.getHours(), date.getMinutes(), date.getSeconds()].map(two).join(separator);
 }
 
 /**

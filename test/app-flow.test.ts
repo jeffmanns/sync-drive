@@ -6,7 +6,7 @@ import { isDeepStrictEqual, promisify } from "node:util";
 import { after, afterEach, describe, it } from "node:test";
 import { Flow } from "../src/app/flow.ts";
 import type { FlowState } from "../src/app/view.ts";
-import { freeSpaceExplanation, onlyFolderDeletionsWarning, onlyFolderNote, safetyStopExplanation } from "../src/app/view.ts";
+import { freeSpaceExplanation, notRecordedWarning, onlyFolderDeletionsWarning, onlyFolderNote, safetyStopExplanation } from "../src/app/view.ts";
 import { compare, type FileCopier } from "../src/engine/index.ts";
 import { holdingAreaReadme } from "../src/engine/holding-area.ts";
 import { formatDay } from "../src/format.ts";
@@ -1429,6 +1429,24 @@ describe("app flow: limiting a run to one folder", () => {
     assert.deepEqual(lastUpdated.folders.map((entry: { folder: string }) => entry.folder), ["Photos/2019"]);
   });
 
+  it("says on the Result and in the log when the folder was gone from the Primary, so the Update was not recorded", async () => {
+    const { flow, primary, replica, updateLogs } = await pairedMac({ "Photos/kept.jpg": "k" }, { "Photos/kept.jpg": "k", "Photos/gone.jpg": "g" });
+    await flow.limitTo(join(primary, "Photos"));
+    await flow.compare();
+    flow.next();
+    flow.approveDeletions(true);
+    flow.next();
+    await ownerChangesPrimary(primary, () => rm(join(primary, "Photos"), { recursive: true }));
+
+    await flow.apply();
+
+    const because = 'the folder "Photos" is no longer on the Primary since the comparison';
+    assert.equal(stateOf(flow).notRecorded, because);
+    const [log] = await updateLogs();
+    assert.ok(log!.split("\n").includes(notRecordedWarning(because)), "the log says so too");
+    assert.equal(await readdir(replica).then((names) => names.includes(".sync-drive-last-updated")), false);
+  });
+
   it("goes back to the whole drive when asked, or when the top of the Primary is chosen", async () => {
     const { flow, primary } = await pairedMac({ "Photos/2019/a.jpg": "a", "top.txt": "t" });
 
@@ -1700,6 +1718,8 @@ describe("app flow: Deep verify and Anomalies", () => {
       "  gone.txt (4 B)",
       "",
     ]);
+    await flow.restart();
+    assert.equal(stateOf(flow).lastUpdated.wholeDrive.leftUndone, 2, "b.txt with no choice made, and the move not renamed");
   });
 
   it("honours each choice on Apply, with no Approval given: overwrites the chosen Replica copies and keeps the others", async () => {
@@ -1723,6 +1743,8 @@ describe("app flow: Deep verify and Anomalies", () => {
     assert.deepEqual(await readdir(join(replica, "Photos")), ["x.jpg"], "the moves were not approved");
     const after = await compare(primary, replica, { deep: true });
     assert.deepEqual(after.anomalies.contentMismatch.files, [{ path: "a.txt", size: 4 }]);
+    await flow.restart();
+    assert.equal(stateOf(flow).lastUpdated.wholeDrive.leftUndone, undefined, "a content mismatch kept as chosen is not left undone");
   });
 
   it("discards the choices with the comparison", async () => {
@@ -1786,13 +1808,33 @@ describe("app flow: when the Replica was last updated", () => {
     assert.equal(stateOf(flow).step, "start");
     const { known, wholeDrive, folders } = stateOf(flow).lastUpdated;
     assert.equal(known, true);
-    assert.ok(Date.parse(wholeDrive) >= before && Date.parse(wholeDrive) <= Date.now(), "the date of this Update");
+    assert.ok(Date.parse(wholeDrive.updated) >= before && Date.parse(wholeDrive.updated) <= Date.now(), "the date of this Update");
+    assert.equal(wholeDrive.leftUndone, undefined, "nothing was left undone");
     assert.deepEqual(folders, []);
     assert.deepEqual(stateOf(await open()).lastUpdated, stateOf(flow).lastUpdated);
   });
 
+  it("never shows the date from before the Update on Start after Done", async () => {
+    const { flow } = await pairedMac({ "a.txt": "a" }, { ".sync-drive-last-updated": '{"wholeDrive":{"updated":"2026-08-20T10:00:00.000Z"},"folders":[]}' });
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+    await flow.apply();
+    const shown: unknown[] = [];
+    flow.onChange((state) => {
+      if (state.step === "start") shown.push(state.lastUpdated);
+    });
+
+    await flow.restart();
+
+    assert.ok(shown.length > 0);
+    for (const lastUpdated of shown) {
+      assert.notEqual((lastUpdated as { wholeDrive?: { updated: string } } | undefined)?.wholeDrive?.updated, "2026-08-20T10:00:00.000Z");
+    }
+  });
+
   it("says the Replica must be connected to know, and reads it once it is", async () => {
-    const { flow, volumes, replica, open } = await pairedMac({}, { ".sync-drive-last-updated": '{"wholeDrive":"2026-08-20T10:00:00.000Z","folders":[]}' });
+    const { flow, volumes, replica, open } = await pairedMac({}, { ".sync-drive-last-updated": '{"wholeDrive":{"updated":"2026-08-20T10:00:00.000Z"},"folders":[]}' });
     volumes.disconnect(replica);
     const reopened = await open();
 
@@ -1801,7 +1843,7 @@ describe("app flow: when the Replica was last updated", () => {
     volumes.connect(replica, "REPLICA-ID");
     await reopened.drivesChanged();
 
-    assert.deepEqual(stateOf(reopened).lastUpdated, { known: true, wholeDrive: "2026-08-20T10:00:00.000Z", folders: [] });
+    assert.deepEqual(stateOf(reopened).lastUpdated, { known: true, wholeDrive: { updated: "2026-08-20T10:00:00.000Z" }, folders: [] });
     assert.equal(stateOf(flow).step, "start");
   });
 

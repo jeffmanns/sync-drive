@@ -1285,7 +1285,8 @@ describe("Update: limited to one folder", () => {
       assert.deepEqual(result.notMoved, [
         { path: "Photos/2019/Day 1/gone.jpg", size: 1, reason: `the folder "Photos/2019" ${what === "is gone from the Primary" ? "is no longer on the Primary" : "is no longer a folder on the Primary"} since the comparison` },
       ]);
-      assert.deepEqual(withoutMarker(await snapshotTree(replica)), replicaBefore);
+      assert.deepEqual(await snapshotTree(replica), replicaBefore, "not even the last-updated marker");
+      assert.equal(result.notRecorded, result.notMoved[0]?.reason);
     });
   }
 });
@@ -1301,7 +1302,7 @@ describe("Update: the last-updated marker", () => {
 
     await update(await compare(primary, replica), APPROVED, { primary, replica, copier: new MacFileCopier(), now: NOW });
 
-    assert.deepEqual(await readLastUpdated(replica), { wholeDrive: NOW.toISOString(), folders: [] });
+    assert.deepEqual(await readLastUpdated(replica), { wholeDrive: { updated: NOW.toISOString() }, folders: [] });
   });
 
   it("records an Update limited to one folder apart, keeping when the whole drive was last updated", async () => {
@@ -1312,7 +1313,7 @@ describe("Update: the last-updated marker", () => {
 
     await update(await compare(primary, replica, { only: "Photos" }), APPROVED, { primary, replica, copier: new MacFileCopier(), only: "Photos", now: LATER });
 
-    assert.deepEqual(await readLastUpdated(replica), { wholeDrive: NOW.toISOString(), folders: [{ folder: "Photos", updated: LATER.toISOString() }] });
+    assert.deepEqual(await readLastUpdated(replica), { wholeDrive: { updated: NOW.toISOString() }, folders: [{ folder: "Photos", updated: LATER.toISOString() }] });
   });
 
   it("keeps one entry per folder, and forgets them all at the next Update of the whole drive", async () => {
@@ -1334,7 +1335,59 @@ describe("Update: the last-updated marker", () => {
 
     await update(await compare(primary, replica), APPROVED, { primary, replica, copier: new MacFileCopier(), now: LATER });
 
-    assert.deepEqual(await readLastUpdated(replica), { wholeDrive: LATER.toISOString(), folders: [] });
+    assert.deepEqual(await readLastUpdated(replica), { wholeDrive: { updated: LATER.toISOString() }, folders: [] });
+  });
+
+  it("records an Update as partial, with how many items it left undone that the owner wanted done", async () => {
+    const primary = await makeTree({ "a.txt": "AAAA", "b.txt": "BBBB", "c.txt": "CCCC", "new.txt": "new", "broken.txt": "x" });
+    const replica = await makeTree({ "a.txt": "zzzz", "b.txt": "yyyy", "c.txt": "xxxx", "only-here.txt": "o" });
+    const compared = await compare(primary, replica, { deep: true });
+    const report = { ...compared, unreadable: [{ path: "Locked", folder: true, reason: "permission denied" }] };
+    const failing: FileCopier = {
+      copy: (source, destination) =>
+        source.endsWith("broken.txt") ? Promise.reject(new Error("the drive was disconnected")) : new MacFileCopier().copy(source, destination),
+    };
+
+    // a.txt overwritten, b.txt kept as chosen, c.txt with no choice; the deletion declined.
+    const result = await update(report, { ...APPROVED, overwrite: ["a.txt"], keep: ["b.txt"] }, { primary, replica, copier: failing, now: NOW });
+
+    assert.deepEqual(result.failed.map((file) => file.path), ["broken.txt"]);
+    // broken.txt not copied, c.txt with no choice made, the unreadable folder.
+    assert.deepEqual(await readLastUpdated(replica), { wholeDrive: { updated: NOW.toISOString(), leftUndone: 3 }, folders: [] });
+  });
+
+  it("records a folder-limited Update as partial too", async () => {
+    const primary = await makeTree({ "Photos/a.jpg": "a" });
+    const replica = await makeTree();
+    const failing: FileCopier = { copy: () => Promise.reject(new Error("the drive was disconnected")) };
+
+    await update(await compare(primary, replica, { only: "Photos" }), APPROVED, { primary, replica, copier: failing, only: "Photos", now: NOW });
+
+    assert.deepEqual(await readLastUpdated(replica), { folders: [{ folder: "Photos", updated: NOW.toISOString(), leftUndone: 1 }] });
+  });
+
+  it("does not record an Update limited to a folder that is gone from the Primary since the comparison, saying why", async () => {
+    const primary = await makeTree({ "Photos/kept.jpg": "k" });
+    const replica = await makeTree({ "Photos/kept.jpg": "k", "Photos/gone.jpg": "g" });
+    const report = await compare(primary, replica, { only: "Photos" });
+    await rm(join(primary, "Photos"), { recursive: true });
+
+    const result = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier(), only: "Photos", now: NOW });
+
+    assert.equal(await readLastUpdated(replica), undefined);
+    assert.equal(result.notRecorded, 'the folder "Photos" is no longer on the Primary since the comparison');
+  });
+
+  it("finishes the Update when only its record cannot be written, saying why it was not recorded", async () => {
+    const primary = await makeTree({ "notes.txt": "hello" });
+    // A folder where the marker goes, which renaming the marker into place cannot replace.
+    const replica = await makeTree({ ".sync-drive-last-updated/in the way.txt": "x" });
+
+    const result = await update(await compare(primary, replica), APPROVED, { primary, replica, copier: new MacFileCopier(), now: NOW });
+
+    assert.deepEqual(result.copied, [{ path: "notes.txt", size: 5 }]);
+    assert.match(result.notRecorded ?? "", /^sync-drive could not write it there \(.+\)$/);
+    assert.deepEqual((await readdir(replica)).sort(), [".sync-drive-last-updated", "notes.txt"], "the Incoming folder is still removed");
   });
 
   it("records nothing when the Update stops before it finishes", async () => {
@@ -1359,6 +1412,6 @@ describe("Update: the last-updated marker", () => {
 
     await update(await compare(primary, replica), APPROVED, { primary, replica, copier: new MacFileCopier(), now: NOW });
 
-    assert.deepEqual(await readLastUpdated(replica), { wholeDrive: NOW.toISOString(), folders: [] });
+    assert.deepEqual(await readLastUpdated(replica), { wholeDrive: { updated: NOW.toISOString() }, folders: [] });
   });
 });

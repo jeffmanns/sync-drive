@@ -44,6 +44,6 @@ npm start     # build and open the app
 
 Before moving a deleted file, the app checks again that a comparison would still call it deleted. A file that is back on the Primary stays on the Replica (ADR 0014).
 
-A finished Update then records its date in a hidden `.sync-drive-last-updated` file on the Replica. An Update limited to one folder is recorded apart, so it never makes the whole Replica look up to date (ADR 0019).
+A finished Update then records its date in a hidden `.sync-drive-last-updated` file on the Replica. An Update limited to one folder is recorded apart, so it never makes the whole Replica look up to date. One that left undone something you wanted done, such as a file it could not copy, is recorded as partly updated, with how many items it left. If the date cannot be saved, or the folder was gone from the Primary, the Result says so and Start keeps the earlier date (ADR 0019).
 
 **Result.** Lists what was copied, renamed and moved, and every file that was not, with the reason. It says what the Holding area now holds, from this Update or an earlier one, when it was last added to, and how to restore a file from it. Each Update is also logged on the Mac, in `~/Library/Application Support/sync-drive/Update logs/`. **Done** goes back to Start.
