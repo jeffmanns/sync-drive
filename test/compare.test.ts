@@ -251,7 +251,7 @@ describe("Quick compare", () => {
 
   it("leaves the Replica's last-updated marker out of the comparison", async () => {
     const primary = await makeTree({ "notes.txt": "hello" });
-    const replica = await makeTree({ "notes.txt": "hello", ".sync-drive-last-updated": '{"wholeDrive":{"updated":"2026-01-01T12:00:00.000Z"},"folders":[]}' });
+    const replica = await makeTree({ "notes.txt": "hello", ".sync-drive-last-updated": '{"version":1,"wholeDrive":{"updated":"2026-01-01T12:00:00.000Z"},"folders":[]}' });
 
     const report = await compare(primary, replica);
 

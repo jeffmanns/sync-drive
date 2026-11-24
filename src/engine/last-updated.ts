@@ -10,6 +10,13 @@ import { matchKey } from "./scan.ts";
 export const LAST_UPDATED_MARKER = ".sync-drive-last-updated";
 
 /**
+ * The format version of the last-updated marker this sync-drive writes. Fields may be added without
+ * raising it, as readers ignore unknown ones; renaming, removing or reshaping a field raises it, and
+ * this sync-drive must then still read every earlier version (ADR 0019).
+ */
+const MARKER_VERSION = 1;
+
+/**
  * When the Replica was last updated, as its last-updated marker records it. An Update limited to one
  * folder does not bring the rest of the Replica up to date, so it is recorded apart from the whole
  * drive (ADR 0019).
@@ -44,7 +51,8 @@ export interface FolderUpdated extends Updated {
 
 /**
  * What the last-updated marker on `replica` records, or `undefined` when there is none, as on a
- * Replica sync-drive has never updated. Reads only. Rejects if the marker is damaged.
+ * Replica sync-drive has never updated. Reads only. Rejects if the marker is damaged, or was written by
+ * a newer sync-drive in a format this one does not know.
  */
 export async function readLastUpdated(replica: string): Promise<LastUpdated | undefined> {
   let text: string;
@@ -60,7 +68,14 @@ export async function readLastUpdated(replica: string): Promise<LastUpdated | un
   } catch {
     data = undefined;
   }
-  if (!isLastUpdated(data)) {
+  const version = isObject(data) ? data.version : undefined;
+  if (typeof version === "number" && Number.isInteger(version) && version > MARKER_VERSION) {
+    throw new Error(
+      "The record of when the Replica was last updated was written by a newer version of sync-drive. " +
+        "Update sync-drive to see it; an Update with this version replaces it.",
+    );
+  }
+  if (version !== MARKER_VERSION || !isLastUpdated(data)) {
     throw new Error("The record of when the Replica was last updated is damaged. The next Update replaces it.");
   }
   return {
@@ -72,8 +87,8 @@ export async function readLastUpdated(replica: string): Promise<LastUpdated | un
 /**
  * Records on `replica` that an Update finished at `now`, leaving `leftUndone` items undone: of the
  * whole drive, or limited to the folder `only`. Written under a temporary name in `incoming` (on the
- * Replica) and renamed into place, so a half-written marker is never left behind. A damaged marker is
- * replaced; it then knows only this Update.
+ * Replica) and renamed into place, so a half-written marker is never left behind. A damaged marker, or
+ * one from a newer sync-drive, is replaced; it then knows only this Update.
  */
 export async function recordUpdate(replica: string, incoming: string, now: Date, leftUndone: number, only?: string): Promise<void> {
   const previous = await readLastUpdated(replica).catch(() => undefined);
@@ -89,7 +104,7 @@ export async function recordUpdate(replica: string, incoming: string, now: Date,
     };
   }
   const temporary = join(incoming, randomUUID());
-  await writeFile(temporary, JSON.stringify(record, null, 2) + "\n");
+  await writeFile(temporary, JSON.stringify({ version: MARKER_VERSION, ...record }, null, 2) + "\n");
   await rename(temporary, join(replica, LAST_UPDATED_MARKER));
 }
 

@@ -1406,6 +1406,36 @@ describe("Update: the last-updated marker", () => {
     await assert.rejects(readLastUpdated(replica), /record of when the Replica was last updated is damaged/);
   });
 
+  it("writes the marker with its format version first", async () => {
+    const primary = await makeTree({ "notes.txt": "hello" });
+    const replica = await makeTree();
+
+    await update(await compare(primary, replica), APPROVED, { primary, replica, copier: new MacFileCopier(), now: NOW });
+
+    const marker = JSON.parse(await readFile(join(replica, ".sync-drive-last-updated"), "utf8"));
+    assert.equal(marker.version, 1);
+    assert.equal(Object.keys(marker)[0], "version");
+  });
+
+  it("rejects a marker from a newer sync-drive, saying so rather than calling it damaged", async () => {
+    const replica = await makeTree({ ".sync-drive-last-updated": '{"version":2,"wholeDrive":{"updated":"2026-01-01T12:00:00.000Z"},"folders":[]}' });
+
+    await assert.rejects(readLastUpdated(replica), (error: Error) => {
+      assert.match(error.message, /written by a newer version of sync-drive/);
+      assert.doesNotMatch(error.message, /damaged/);
+      return true;
+    });
+  });
+
+  it("rejects a marker without a format version, or with one that is not a positive whole number, as damaged", async () => {
+    for (const version of [undefined, 0, -1, 1.5, "1", null]) {
+      const marker = { ...(version === undefined ? {} : { version }), wholeDrive: { updated: "2026-01-01T12:00:00.000Z" }, folders: [] };
+      const replica = await makeTree({ ".sync-drive-last-updated": JSON.stringify(marker) });
+
+      await assert.rejects(readLastUpdated(replica), /record of when the Replica was last updated is damaged/, `version ${String(version)}`);
+    }
+  });
+
   it("replaces a damaged marker at the next Update", async () => {
     const primary = await makeTree({ "notes.txt": "hello" });
     const replica = await makeTree({ ".sync-drive-last-updated": "not what sync-drive wrote" });

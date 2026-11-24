@@ -1815,7 +1815,7 @@ describe("app flow: when the Replica was last updated", () => {
   });
 
   it("never shows the date from before the Update on Start after Done", async () => {
-    const { flow } = await pairedMac({ "a.txt": "a" }, { ".sync-drive-last-updated": '{"wholeDrive":{"updated":"2026-08-20T10:00:00.000Z"},"folders":[]}' });
+    const { flow } = await pairedMac({ "a.txt": "a" }, { ".sync-drive-last-updated": '{"version":1,"wholeDrive":{"updated":"2026-08-20T10:00:00.000Z"},"folders":[]}' });
     await flow.compare();
     flow.approveCopies(true);
     toSummary(flow);
@@ -1834,7 +1834,7 @@ describe("app flow: when the Replica was last updated", () => {
   });
 
   it("says the Replica must be connected to know, and reads it once it is", async () => {
-    const { flow, volumes, replica, open } = await pairedMac({}, { ".sync-drive-last-updated": '{"wholeDrive":{"updated":"2026-08-20T10:00:00.000Z"},"folders":[]}' });
+    const { flow, volumes, replica, open } = await pairedMac({}, { ".sync-drive-last-updated": '{"version":1,"wholeDrive":{"updated":"2026-08-20T10:00:00.000Z"},"folders":[]}' });
     volumes.disconnect(replica);
     const reopened = await open();
 
@@ -1852,6 +1852,16 @@ describe("app flow: when the Replica was last updated", () => {
 
     assert.equal(stateOf(flow).lastUpdated.known, false);
     assert.match(stateOf(flow).lastUpdated.reason, /damaged/);
+    await flow.compare();
+    assert.equal(stateOf(flow).step, "copies");
+  });
+
+  it("says when the marker was written by a newer sync-drive, not that it is damaged", async () => {
+    const { flow } = await pairedMac({ "a.txt": "a" }, { ".sync-drive-last-updated": '{"version":2,"wholeDrive":{"updated":"2026-08-20T10:00:00.000Z"},"folders":[]}' });
+
+    assert.equal(stateOf(flow).lastUpdated.known, false);
+    assert.match(stateOf(flow).lastUpdated.reason, /written by a newer version of sync-drive/);
+    assert.doesNotMatch(stateOf(flow).lastUpdated.reason, /damaged/);
     await flow.compare();
     assert.equal(stateOf(flow).step, "copies");
   });
