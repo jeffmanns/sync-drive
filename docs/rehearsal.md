@@ -47,7 +47,7 @@ Allow about half an hour. Commands are typed in Terminal, in the sync-drive fold
 5. Click **Apply**. The Updating screen says the Primary is being remounted read-only, and it may briefly disappear from the Finder. The Terminal shows `Volume Read-Only: Yes` while the files are copied, then `No` again once it is done. (With a small folder the Update can be over in a few seconds. Watch the Terminal, not the screen.) Press Control-C in that Terminal window to stop it.
 6. **Update done** lists what was copied, says the Holding area on the Replica is empty, and names the Update log. It is in the rehearsal folder, not among the real logs. Click **Done**.
 
-Start now says *Replica last updated today, on …*.
+Start now says *Replica last updated today, on …*, a moment after it appears. It reads that from a hidden `.sync-drive-last-updated` file the Update left at the top level of `Rehearsal Replica`; each Replica has its own. Had the Update left undone something you approved, such as a file it could not copy, Start would say *Replica last partly updated …* and how many items were left undone, and the Update log would list them with the reasons.
 
 The Primary is writable again. macOS writes its own `.fseventsd` log to it whenever it is mounted normally, as on any connect. sync-drive does not write it, and every comparison skips it.
 
@@ -74,7 +74,7 @@ Then in the app:
 3. **Moves** lists each moved file, old path → new path, grouped by folder. Approving renames them on the Replica: nothing is copied. Tick it, **Next**.
 4. **Deletions** lists the deleted files. Approving moves them into the Holding area. Tick it.
 5. Click **Back** twice, to Copies, then **Next** twice: every tick is still there. (**Start over** would discard them.)
-6. **Next** to the **Summary**. It says what Apply will copy, rename and move into the Holding area, and *Write nothing to the Primary.* Click **Apply**.
+6. **Next** to the **Summary**. It says what Apply will copy, rename and move into the Holding area, and *Write nothing to the Primary.* Start the Terminal check from section 3 again if you want to see the Primary go read-only for this Update too, then click **Apply**.
 7. The Result lists what was copied, renamed, and moved into the Holding area. **The Holding area** section says how many files it now holds, when it was last added to, and how to restore one. Click **Done**.
 
 On `Rehearsal Replica`, in the Finder, open the `sync-drive Holding Area` folder: the deleted files are there in their original folders, with a `READ ME.txt` that says how to restore them. The moved folder is at its new place, not copied again.
@@ -99,8 +99,8 @@ The Holding area now holds only the file you just deleted.
 1. On `Rehearsal Primary`, choose a folder with a few files in it. Move one of its files out of it, to the top level of the drive. Delete another of its files.
 2. On Start, click **Limit to one folder…** and choose that folder. Start says *Only the folder "…"*.
 3. **Compare**. Each review step, and the Summary and Result, say the run is limited to that folder, and that files moved into or out of it show as new or deleted rather than as moves.
-4. **Deletions** lists both files, the one you moved out and the one you deleted, and warns about files moved out of the folder: the copy there may be their only backup. The file at the top level is not listed anywhere: it is outside the folder.
-5. Approve and apply. On Start, *Since then, only the folder "…" was updated* now follows *Replica last updated*.
+4. **Deletions** lists both files, the one you moved out and the one you deleted, and warns about files moved out of the folder: the copy there may be their only backup. The file at the top level is not listed anywhere: it is outside the folder. It also gives the Holding area warning from section 7: the Holding area still holds the file you deleted there, and approving these deletions deletes it for good.
+5. Approve and apply. The Summary lists the permanent deletion from the Holding area too. On Start, *Since then, only the folder "…" was updated* now follows *Replica last updated*.
 6. Click **Compare the whole drive**, then **Compare**: the file you moved to the top level now shows as new. Apply it, so that the whole Replica is up to date again.
 
 ## 9. If the app is force-quit during an Update

@@ -38,16 +38,16 @@ export interface RehearsalDrive {
 }
 
 /** What `rehearsal.json`, in the rehearsal folder, records. Its presence marks a folder the kit made. */
-interface Record_ {
-  source: string;
+interface RehearsalRecord {
+  copyFrom: string;
   created: string;
   primary?: RehearsalDrive;
   replica?: RehearsalDrive;
 }
 
-export const DEFAULT_NAMES: RehearsalNames = { primary: "Rehearsal Primary", replica: "Rehearsal Replica" };
+const DEFAULT_NAMES: RehearsalNames = { primary: "Rehearsal Primary", replica: "Rehearsal Replica" };
 
-export const DEFAULT_FOLDER =
+const REHEARSAL_FOLDER =
   process.env.SYNC_DRIVE_REHEARSAL_FOLDER ?? join(homedir(), "Library", "Application Support", "sync-drive-rehearsal");
 
 const RECORD = "rehearsal.json";
@@ -55,40 +55,40 @@ const PRIMARY_IMAGE = "Primary.sparseimage";
 const REPLICA_IMAGE = "Replica.sparseimage";
 
 /**
- * Makes and mounts the two rehearsal drives, and copies the contents of `source` onto the Primary.
+ * Makes and mounts the two rehearsal drives, and copies the contents of `copyFrom` onto the Primary.
  * The images are sparse: they take only the space their files use, however large the drive looks.
  * The Replica is left empty, so the first Update copies everything. Refuses if `folder` already
  * holds a rehearsal.
  */
 export async function createRehearsal({
-  folder = DEFAULT_FOLDER,
-  source,
+  folder = REHEARSAL_FOLDER,
+  copyFrom,
   names = DEFAULT_NAMES,
 }: {
   folder?: string;
-  source: string;
+  copyFrom: string;
   names?: RehearsalNames;
 }): Promise<{ primary: RehearsalDrive; replica: RehearsalDrive }> {
-  const sourceStats = await stat(source).catch(() => undefined);
-  if (sourceStats?.isDirectory() !== true) throw new Error(`${source} is not a folder.`);
+  const folderStats = await stat(copyFrom).catch(() => undefined);
+  if (folderStats?.isDirectory() !== true) throw new Error(`${copyFrom} is not a folder.`);
   await mkdir(folder, { recursive: true });
   if (await readRecord(folder)) {
     throw new Error(`A rehearsal already exists in ${folder}. Remove it first: npm run rehearsal:remove`);
   }
   // Written first, so that `removeRehearsal` can clean up even if a later step fails.
-  const record: Record_ = { source: await realpath(source), created: new Date().toISOString() };
+  const record: RehearsalRecord = { copyFrom: await realpath(copyFrom), created: new Date().toISOString() };
   await writeRecord(folder, record);
 
-  const sourceBytes = await sizeOf(source);
+  const bytesToCopy = await sizeOf(copyFrom);
   const megabytes = (bytes: number) => `${Math.ceil(bytes / 2 ** 20)}m`;
   // Room for the Primary's files to grow a little, and on the Replica for the copies and the Holding area.
-  const primary = await makeDrive(join(folder, PRIMARY_IMAGE), names.primary, megabytes(sourceBytes * 1.5 + 2 ** 30));
-  const replica = await makeDrive(join(folder, REPLICA_IMAGE), names.replica, megabytes(sourceBytes * 3 + 2 ** 30));
+  const primary = await makeDrive(join(folder, PRIMARY_IMAGE), names.primary, megabytes(bytesToCopy * 1.5 + 2 ** 30));
+  const replica = await makeDrive(join(folder, REPLICA_IMAGE), names.replica, megabytes(bytesToCopy * 3 + 2 ** 30));
   await writeRecord(folder, { ...record, primary, replica });
 
-  // ditto keeps dates, extended attributes (Finder tags), permissions and shortcuts, and only reads `source`.
-  await run("ditto", [source, primary.mountPoint], { maxBuffer: 64 * 1024 * 1024 }).catch((error: { stderr?: string }) => {
-    throw new Error(`Could not copy ${source} onto the rehearsal Primary:\n${error.stderr ?? String(error)}`);
+  // ditto keeps dates, extended attributes (Finder tags), permissions and shortcuts, and only reads `copyFrom`.
+  await run("ditto", [copyFrom, primary.mountPoint], { maxBuffer: 64 * 1024 * 1024 }).catch((error: { stderr?: string }) => {
+    throw new Error(`Could not copy ${copyFrom} onto the rehearsal Primary:\n${error.stderr ?? String(error)}`);
   });
   return { primary, replica };
 }
@@ -99,7 +99,7 @@ export async function createRehearsal({
  * to delete a folder the kit did not make, and deletes nothing if a drive cannot be ejected.
  * Returns the drives the rehearsal had recorded, or `undefined` if there was no rehearsal.
  */
-export async function removeRehearsal({ folder = DEFAULT_FOLDER }: { folder?: string } = {}): Promise<RehearsalDrive[] | undefined> {
+export async function removeRehearsal({ folder = REHEARSAL_FOLDER }: { folder?: string } = {}): Promise<RehearsalDrive[] | undefined> {
   const exists = await stat(folder).then(
     () => true,
     () => false,
@@ -173,12 +173,12 @@ async function sizeOf(folder: string): Promise<number> {
   return Number.isFinite(kilobytes) ? kilobytes * 1024 : 0;
 }
 
-async function readRecord(folder: string): Promise<Record_ | undefined> {
+async function readRecord(folder: string): Promise<RehearsalRecord | undefined> {
   const text = await readFile(join(folder, RECORD), "utf8").catch(() => undefined);
-  return text === undefined ? undefined : (JSON.parse(text) as Record_);
+  return text === undefined ? undefined : (JSON.parse(text) as RehearsalRecord);
 }
 
-async function writeRecord(folder: string, record: Record_): Promise<void> {
+async function writeRecord(folder: string, record: RehearsalRecord): Promise<void> {
   await writeFile(join(folder, RECORD), JSON.stringify(record, null, 2) + "\n");
 }
 
@@ -189,6 +189,7 @@ async function openApp(folder: string): Promise<void> {
   const { ELECTRON_RUN_AS_NODE: _, ...env } = process.env;
   const app = spawn(join(project, "node_modules", ".bin", "electron"), [project], {
     stdio: "inherit",
+    // The app keeps its Exclusions and Update logs beside this Pairing file (src/app/main.ts), so they land in the rehearsal folder too.
     env: { ...env, SYNC_DRIVE_PAIRING_FILE: join(folder, "pairing.json") },
   });
   await new Promise((resolve) => app.on("exit", resolve));
@@ -199,9 +200,9 @@ function describeDrive(role: string, drive: RehearsalDrive): string {
 }
 
 async function main([command, ...args]: string[]): Promise<void> {
-  const folder = DEFAULT_FOLDER;
+  const folder = REHEARSAL_FOLDER;
   if (command === "create" && args.length === 1) {
-    const { primary, replica } = await createRehearsal({ folder, source: args[0]! });
+    const { primary, replica } = await createRehearsal({ folder, copyFrom: args[0]! });
     console.log(`Rehearsal drives made in ${folder}, and ${args[0]} copied onto the Primary:`);
     console.log(describeDrive("Primary", primary));
     console.log(describeDrive("Replica", replica));

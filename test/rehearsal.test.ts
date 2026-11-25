@@ -27,7 +27,7 @@ describe("the rehearsal kit", () => {
     const sourceBefore = await snapshotTree(source);
     const folder = await rehearsalFolder();
 
-    const { primary, replica } = await createRehearsal({ folder, source, names: NAMES });
+    const { primary, replica } = await createRehearsal({ folder, copyFrom: source, names: NAMES });
 
     const offered = await new MacVolumes().candidates();
     const offeredPrimary = offered.find((drive) => drive.mountPoint === primary.mountPoint);
@@ -46,7 +46,7 @@ describe("the rehearsal kit", () => {
 
   it("removes the drives and the rehearsal folder, and does nothing when run again", async () => {
     const folder = await rehearsalFolder();
-    const { primary, replica } = await createRehearsal({ folder, source: await makeTree({ "a.txt": "a" }), names: NAMES });
+    const { primary, replica } = await createRehearsal({ folder, copyFrom: await makeTree({ "a.txt": "a" }), names: NAMES });
 
     const removed = await removeRehearsal({ folder });
 
@@ -59,9 +59,9 @@ describe("the rehearsal kit", () => {
 
   it("refuses to create a second rehearsal in the same folder", async () => {
     const folder = await rehearsalFolder();
-    await createRehearsal({ folder, source: await makeTree({ "a.txt": "a" }), names: NAMES });
+    await createRehearsal({ folder, copyFrom: await makeTree({ "a.txt": "a" }), names: NAMES });
 
-    await assert.rejects(createRehearsal({ folder, source: await makeTree(), names: NAMES }), /already exists/);
+    await assert.rejects(createRehearsal({ folder, copyFrom: await makeTree(), names: NAMES }), /already exists/);
   });
 
   it("leaves alone a folder the kit did not make", async () => {
