@@ -57,6 +57,7 @@ describe("the desktop app", () => {
       await window.getByText("sync-drive has not updated the whole Replica yet.").waitFor();
       phase("Start screen");
       await window.getByLabel("Exclude:").fill("*.tmp");
+      await window.getByRole("button", { name: "Limit to one folder…" }).click({ trial: true, timeout: 5_000 });
       await window.getByRole("button", { name: "Add" }).click();
       await window.getByRole("button", { name: "Remove *.tmp" }).waitFor();
       await window.getByLabel(/^Deep verify/).click();

@@ -27,8 +27,10 @@ p.warning { padding: 8px 12px; border-radius: 6px; background: color-mix(in srgb
 .candidates .note { grid-column: 2 / -1; }
 .path { font-family: ui-monospace, Menlo, monospace; }
 .confirm { display: flex; gap: 8px; align-items: baseline; margin: 16px 0; font-weight: 600; }
-.buttons {
-  position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: flex-end; gap: 8px;
+.buttons { display: flex; gap: 8px; }
+/* Only a screen's own buttons sit in the bar along the bottom: a section's buttons (such as the Folder limit's) stay where they are. */
+main > .buttons {
+  position: fixed; left: 0; right: 0; bottom: 0; justify-content: flex-end;
   padding: 12px 32px; border-top: 1px solid var(--line); background: Canvas;
 }
 button { font: inherit; padding: 4px 14px; }
