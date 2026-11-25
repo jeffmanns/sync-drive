@@ -351,6 +351,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       // from the drive itself where it can be, so damage on its way there is caught too (ADR 0021). A
       // shortcut is never followed: what it holds is the path it points to (ADR 0015).
       let inMemory = false;
+      const primaryContents = () => (before.isSymbolicLink() ? readlink(source) : hasher.checksum(source));
       const copyContents = async () => {
         if (before.isSymbolicLink()) return readlink(temporary);
         try {
@@ -361,7 +362,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
           return hasher.checksum(temporary);
         }
       };
-      const [primarySum, copySum] = await Promise.all([before.isSymbolicLink() ? readlink(source) : hasher.checksum(source), copyContents()]);
+      const [primarySum, copySum] = await Promise.all([primaryContents(), copyContents()]);
       // Looked at after hashing, so an edit during the copy or the read-back is caught as such.
       const [after, copy] = await Promise.all([lstat(source, { bigint: true }), lstat(temporary, { bigint: true })]);
       if (!sameVersion(before, after)) throw new Error("it changed on the Primary while it was being copied");

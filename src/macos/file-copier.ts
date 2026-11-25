@@ -15,7 +15,7 @@ export class MacFileCopier implements FileCopier {
     try {
       await run(HELPER, [source, destination]);
     } catch (error) {
-      throw await helperFailure(error, (error as { stderr?: string }).stderr);
+      throw await helperFailure(error);
     }
   }
 }

@@ -40,10 +40,9 @@ export class Sha256Hasher implements Hasher {
  * each part. Every Hasher hashes through this, so a checksum means the same thing whichever way the
  * file was read (ADR 0010).
  */
-export async function sha256(contents: AsyncIterable<Buffer | string>, onRead?: (bytes: number) => void): Promise<string> {
+export async function sha256(contents: AsyncIterable<Buffer>, onRead?: (bytes: number) => void): Promise<string> {
   const hash = createHash("sha256");
-  for await (const chunk of contents) {
-    const part = chunk as Buffer;
+  for await (const part of contents) {
     hash.update(part);
     onRead?.(part.length);
   }

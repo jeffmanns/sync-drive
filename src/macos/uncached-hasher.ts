@@ -5,7 +5,7 @@ import { HELPER, helperFailure } from "./helper.ts";
 
 const run = promisify(execFile);
 
-/** The helper's exit status for a file stored compressed, which it cannot read from the drive itself. */
+/** The helper's exit status for a file stored compressed, which it cannot read from the drive itself. Matches `STORED_COMPRESSED` in native/copy-with-metadata.c. */
 const STORED_COMPRESSED = 3;
 
 /**
@@ -34,7 +34,7 @@ export class MacUncachedHasher implements Hasher {
       reader.kill();
       await exited.catch(() => undefined);
       if ((error as { code?: unknown }).code === STORED_COMPRESSED) throw new NotReadableFromDriveError(stderr.trim());
-      throw await helperFailure(error, stderr);
+      throw await helperFailure(Object.assign(error as object, { stderr }));
     });
     return sum;
   }
@@ -47,6 +47,6 @@ export async function pagesInMemory(path: string): Promise<{ resident: number; t
     const [resident, total] = stdout.trim().split(" ").map(Number);
     return { resident: resident!, total: total! };
   } catch (error) {
-    throw await helperFailure(error, (error as { stderr?: string }).stderr);
+    throw await helperFailure(error);
   }
 }

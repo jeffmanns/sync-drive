@@ -52,7 +52,7 @@ describe("Reading a copy back from the drive on macOS", () => {
     assert.equal(await metadataOf(path), before);
   });
 
-  it("gives the bytes on the drive, not a stale copy", async () => {
+  it("gives a file's latest contents, writing to the drive any not yet there before dropping them from memory", async () => {
     const drive = await makeDiskImageTree({}, { size: "16m" });
     const path = join(drive, "copy.bin");
     await writeFile(path, "first version");

@@ -50,7 +50,10 @@
 
 /** Size of each part read back: a multiple of the page size, and large enough to keep a drive streaming. */
 #define PART_BYTES (1024 * 1024)
-/** The exit status for a file that is stored compressed, so cannot be read from the drive itself. */
+/**
+ * The exit status for a file that is stored compressed, so cannot be read from the drive itself.
+ * `STORED_COMPRESSED` in src/macos/uncached-hasher.ts must match.
+ */
 #define STORED_COMPRESSED 3
 /** How many times a part is read again when another app keeps bringing its pages into memory. */
 #define TRIES 5
@@ -101,7 +104,9 @@ static long in_memory(char *at, size_t length) {
   size_t pages = (length + page - 1) / page;
   char *vector = malloc(pages);
   if (vector == NULL || mincore(at, length, vector) != 0) {
+    int error = errno;
     free(vector);
+    errno = error;
     return -1;
   }
   long count = 0;
@@ -164,11 +169,17 @@ static int read_from_drive(const char *path) {
   if (fcntl(fd, F_NOCACHE, 1) != 0) return failed("reading the copy back from the drive");
   char *buffer;
   // Page-aligned, so XNU reads straight from the drive into it (cluster_read_direct).
-  if (posix_memalign((void **)&buffer, (size_t)getpagesize(), PART_BYTES) != 0) return failed("reading the copy back from the drive");
+  int aligned = posix_memalign((void **)&buffer, (size_t)getpagesize(), PART_BYTES);
+  if (aligned != 0) {
+    errno = aligned;  // posix_memalign returns its error rather than setting errno.
+    return failed("reading the copy back from the drive");
+  }
   for (off_t offset = 0; offset < size; offset += PART_BYTES) {
     size_t length = (size_t)(size - offset < PART_BYTES ? size - offset : PART_BYTES);
     int from_drive = 0;
     for (int try = 0; try < TRIES && !from_drive; try++) {
+      // Give whatever else is reading the file a moment to finish: 0, 20, 40, 60 then 80 ms.
+      if (try > 0) usleep(20000 * (useconds_t)try);
       // Drops this part's pages from memory, first writing any not yet on the drive.
       if (msync(map + offset, length, MS_SYNC | MS_INVALIDATE) != 0) return failed("dropping the copy's pages from memory");
       long before = in_memory(map + offset, length);
