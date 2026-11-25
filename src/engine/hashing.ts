@@ -16,6 +16,15 @@ export interface Hasher {
   checksum(path: string, onRead?: (bytes: number) => void): Promise<string>;
 }
 
+/**
+ * What a Hasher rejects with when it reads files only from the drive itself and cannot read this one
+ * that way: macOS always reads a file stored compressed through memory (ADR 0021). The file may be
+ * fine; it can only be checked as read through memory.
+ */
+export class NotReadableFromDriveError extends Error {
+  override name = "NotReadableFromDriveError";
+}
+
 /** Read size for hashing: large reads keep a spinning or USB drive streaming. */
 const CHUNK_BYTES = 1024 * 1024;
 

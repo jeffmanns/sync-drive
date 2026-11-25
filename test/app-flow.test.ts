@@ -11,6 +11,7 @@ import { compare, type FileCopier } from "../src/engine/index.ts";
 import { holdingAreaReadme } from "../src/engine/holding-area.ts";
 import { formatDay } from "../src/format.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
+import { MacUncachedHasher } from "../src/macos/uncached-hasher.ts";
 import { FakeItemCounter } from "./helpers/fake-item-counter.ts";
 import { FakeRemounter } from "./helpers/fake-remounter.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
@@ -49,7 +50,7 @@ async function testMac(copier: FileCopier = new MacFileCopier()) {
   const exclusionsFile = join(dirname(pairingFile), "exclusions.json");
   const updateLogFolder = join(dirname(pairingFile), "Update logs");
   const open = async () => {
-    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, remounter, itemCounter });
+    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, copyHasher: new MacUncachedHasher(), remounter, itemCounter });
     await flow.open();
     return flow;
   };
@@ -1984,5 +1985,29 @@ describe("app flow: when the Replica was last updated", () => {
     assert.doesNotMatch(stateOf(flow).lastUpdated.reason, /damaged/);
     await flow.compare();
     assert.equal(stateOf(flow).step, "copies");
+  });
+});
+
+describe("app flow: checking each copy", () => {
+  it("reads each copy back from the Replica, and logs the copies stored compressed, which could only be checked as read through memory", async () => {
+    const text = "compressible text ".repeat(10_000);
+    const { flow, primary, replica, updateLogs } = await pairedMac({ "notes.txt": "fine", "plain.txt": text });
+    await ownerChangesPrimary(primary, async () => {
+      await promisify(execFile)("ditto", ["--hfsCompression", join(primary, "plain.txt"), join(primary, "compressed.txt")]);
+      await rm(join(primary, "plain.txt"));
+    });
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+
+    await flow.apply();
+
+    assert.deepEqual(stateOf(flow).failed, []);
+    assert.equal(await readFile(join(replica, "compressed.txt"), "utf8"), text);
+    const [log] = await updateLogs();
+    const lines = log!.split("\n");
+    const at = lines.indexOf("Checked as read through memory, not read back from the Replica, as stored compressed: 1 file (180.0 KB)");
+    assert.notEqual(at, -1, log);
+    assert.equal(lines[at + 1], "  compressed.txt (180.0 KB)");
   });
 });

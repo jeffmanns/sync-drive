@@ -7,6 +7,7 @@ import { exclusionsFileBeside } from "../engine/index.ts";
 import { MacFileCopier } from "../macos/file-copier.ts";
 import { MacItemCounter } from "../macos/item-counter.ts";
 import { MacRemounter } from "../macos/remounter.ts";
+import { MacUncachedHasher } from "../macos/uncached-hasher.ts";
 import { MacVolumes } from "../macos/volume-identity.ts";
 import { Flow } from "./flow.ts";
 import { updateLogFolderBeside } from "./update-log.ts";
@@ -35,6 +36,7 @@ const flow = new Flow({
   exclusionsFile: EXCLUSIONS_FILE,
   updateLogFolder: updateLogFolderBeside(PAIRING_FILE),
   copier: new MacFileCopier(),
+  copyHasher: new MacUncachedHasher(),
   remounter: new MacRemounter(),
   itemCounter: new MacItemCounter(),
 });

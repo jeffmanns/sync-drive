@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
+import { NotReadableFromDriveError } from "../src/engine/index.ts";
 import { MacUncachedHasher, pagesInMemory } from "../src/macos/uncached-hasher.ts";
 import { makeDiskImageTree, makeTree, metadataOf, removeTrees } from "./helpers/trees.ts";
 
 after(removeTrees);
+
+const run = promisify(execFile);
 
 const hasher = new MacUncachedHasher();
 
@@ -64,5 +69,14 @@ describe("Reading a copy back from the drive on macOS", () => {
 
     await assert.rejects(hasher.checksum(join(dir, "missing.txt")), /No such file/);
     await assert.rejects(hasher.checksum(join(dir, "shortcut")), /not a regular file/);
+  });
+
+  it("refuses a file stored compressed, which macOS always reads through memory", async () => {
+    const dir = await makeTree({ "plain.txt": "compressible text ".repeat(10_000) });
+    const path = join(dir, "compressed.txt");
+    await run("ditto", ["--hfsCompression", join(dir, "plain.txt"), path]);
+    assert.match((await run("ls", ["-lO", path])).stdout, /compressed/, "the test needs a compressed file");
+
+    await assert.rejects(hasher.checksum(path), (error: unknown) => error instanceof NotReadableFromDriveError && /compressed/.test(error.message));
   });
 });

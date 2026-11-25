@@ -28,6 +28,10 @@
  * read again, and after a few tries the file fails. Never follows a shortcut. Never writes to the
  * file: dropping a page that has not reached the drive yet writes it there first.
  *
+ * A file stored compressed (UF_COMPRESSED) cannot be read this way: macOS always decompresses it
+ * through memory, whatever F_NOCACHE says, and msync does not drop those pages. It fails with exit
+ * status 3, which Update takes as "check it as read through memory instead".
+ *
  * copy-with-metadata --pages-in-memory <file>
  *
  * Prints how many of the regular file's pages are in memory, and how many it has, as
@@ -46,6 +50,8 @@
 
 /** Size of each part read back: a multiple of the page size, and large enough to keep a drive streaming. */
 #define PART_BYTES (1024 * 1024)
+/** The exit status for a file that is stored compressed, so cannot be read from the drive itself. */
+#define STORED_COMPRESSED 3
 /** How many times a part is read again when another app keeps bringing its pages into memory. */
 #define TRIES 5
 
@@ -65,7 +71,7 @@ static int failed(const char *step) {
  * Opens the regular file at `path` for reading, never following a shortcut, and maps it (unless it
  * is empty) so its pages can be looked up. The mapping is never touched, so it brings nothing into memory.
  */
-static int open_mapped(const char *path, int *fd, char **map, off_t *size) {
+static int open_mapped(const char *path, int *fd, char **map, off_t *size, int *compressed) {
   *fd = open(path, O_RDONLY | O_NOFOLLOW);
   if (*fd < 0) {
     if (errno == ELOOP) {
@@ -81,6 +87,7 @@ static int open_mapped(const char *path, int *fd, char **map, off_t *size) {
     return 1;
   }
   *size = file_stat.st_size;
+  *compressed = (file_stat.st_flags & UF_COMPRESSED) != 0;
   *map = NULL;
   if (*size == 0) return 0;
   *map = mmap(NULL, (size_t)*size, PROT_READ, MAP_SHARED, *fd, 0);
@@ -107,7 +114,8 @@ static int pages_in_memory(const char *path) {
   int fd;
   char *map;
   off_t size;
-  if (open_mapped(path, &fd, &map, &size) != 0) return 1;
+  int compressed;
+  if (open_mapped(path, &fd, &map, &size, &compressed) != 0) return 1;
   size_t page = (size_t)getpagesize();
   long count = size == 0 ? 0 : in_memory(map, (size_t)size);
   if (count < 0) return failed("looking up the copy's pages");
@@ -146,7 +154,12 @@ static int read_from_drive(const char *path) {
   int fd;
   char *map;
   off_t size;
-  if (open_mapped(path, &fd, &map, &size) != 0) return 1;
+  int compressed;
+  if (open_mapped(path, &fd, &map, &size, &compressed) != 0) return 1;
+  if (compressed) {
+    fprintf(stderr, "reading the copy back from the drive: it is stored compressed, which macOS always reads through memory\n");
+    return STORED_COMPRESSED;
+  }
   // Every read on this file goes to the drive when the pages it wants are not in memory, and leaves none there.
   if (fcntl(fd, F_NOCACHE, 1) != 0) return failed("reading the copy back from the drive");
   char *buffer;

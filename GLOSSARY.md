@@ -27,7 +27,7 @@ The hidden `.sync-drive-last-updated` file at the top level of the Replica that 
 _Avoid_: timestamp, sync marker
 
 **Update log**:
-The plain-text record of one Update, kept on the Mac in the `Update logs` folder beside the Pairing: what it copied, overwrote, renamed and moved into the Holding area, and what it did not, with the reasons (ADR 0019).
+The plain-text record of one Update, kept on the Mac in the `Update logs` folder beside the Pairing: what it copied, overwrote, renamed and moved into the Holding area, and what it did not, with the reasons (ADR 0019). It also lists the copies stored compressed, which could only be checked as read through memory (ADR 0021).
 _Avoid_: history, report (a Report is a comparison's result)
 
 **Pairing**:

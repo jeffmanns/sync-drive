@@ -23,6 +23,8 @@ export type UpdateLogEntry = Omit<ResultState, "step" | "holdingArea" | "holding
   /** Whether the comparison was a Deep verify. */
   deep: boolean;
   mismatchesLeft: MismatchLeft[];
+  /** The copied files whose copy was stored compressed, so was checked as read through memory, not read back from the Replica (ADR 0021). */
+  checkedInMemory: FileEntry[];
   /** What the Holding area held before the Update and was deleted for good, as the deletions were approved. */
   deletedFromHoldingArea: Totals;
 };
@@ -77,6 +79,11 @@ export function updateLogText(entry: UpdateLogEntry): string {
   const sized = (file: FileEntry) => `${file.path} (${formatSize(file.size)})`;
   const move = (m: Move) => `${m.from} → ${m.to}`;
   section("Copied", describeFiles(totalsOfFiles(copied)), copied.map(sized), true);
+  section(
+    "Checked as read through memory, not read back from the Replica, as stored compressed",
+    describeFiles(totalsOfFiles(entry.checkedInMemory)),
+    entry.checkedInMemory.map(sized),
+  );
   section("Content mismatches overwritten with the Primary's copy", describeFiles(totalsOfFiles(entry.overwritten)), entry.overwritten.map(sized));
   section("Not copied", fileCount(entry.failed.length), entry.failed.map((file) => `${file.path}: ${file.reason}`));
   section("Content mismatches left as they are", describeFiles(totalsOfFiles(entry.mismatchesLeft)), entry.mismatchesLeft.map((file) => `${sized(file)}: ${file.why}`));
