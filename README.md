@@ -17,6 +17,16 @@ npm test      # typecheck, build, and run all tests on Electron's runtime (opens
 npm start     # build and open the app
 ```
 
+## Rehearsing on fake drives
+
+Before the first run on real drives, rehearse the whole workflow on two disk images that macOS mounts like external drives. The rehearsal keeps its own Pairing, Exclusions and Update logs, apart from the real ones. See `docs/rehearsal.md` for the walkthrough.
+
+```sh
+npm run rehearsal:create <folder>   # make the fake drives, and copy <folder> onto the fake Primary (it is only read)
+npm run rehearsal:app               # open the app for the rehearsal
+npm run rehearsal:remove            # eject the fake drives and delete everything the rehearsal made
+```
+
 ## The steps
 
 **Pairing** (the first time only). Connect the Primary and the Replica, and no other drive. The app lists the external and removable drives and disk images mounted in `/Volumes`, with each one's name, Volume ID and size, but never the Mac's own disk or its system volumes (ADR 0020). It waits, saying what to do, until exactly two are connected. Pick which one is the Primary: the other becomes the Replica, which must be a drive that can be written to. The app shows the Pairing to save, and saves it only when you click **Save Pairing**. The app stores the **Pairing** in `~/Library/Application Support/sync-drive/pairing.json`. It recognises each drive by its **Volume ID** rather than its name, so renaming a drive does not matter. To pair other drives later, for example after replacing one, use **Re-pair…** on Start. Replacing a saved Pairing needs an extra confirmation.
