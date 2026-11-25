@@ -21,12 +21,22 @@ const CHUNK_BYTES = 1024 * 1024;
 
 /** SHA-256 using Node's built-in crypto, which runs in native code. Checksums are lowercase hex. */
 export class Sha256Hasher implements Hasher {
-  async checksum(path: string, onRead?: (bytes: number) => void): Promise<string> {
-    const hash = createHash("sha256");
-    for await (const chunk of createReadStream(path, { highWaterMark: CHUNK_BYTES })) {
-      hash.update(chunk as Buffer);
-      onRead?.((chunk as Buffer).length);
-    }
-    return hash.digest("hex");
+  checksum(path: string, onRead?: (bytes: number) => void): Promise<string> {
+    return sha256(createReadStream(path, { highWaterMark: CHUNK_BYTES }), onRead);
   }
+}
+
+/**
+ * The SHA-256 of everything `contents` yields, as lowercase hex, calling `onRead` with the size of
+ * each part. Every Hasher hashes through this, so a checksum means the same thing whichever way the
+ * file was read (ADR 0010).
+ */
+export async function sha256(contents: AsyncIterable<Buffer | string>, onRead?: (bytes: number) => void): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of contents) {
+    const part = chunk as Buffer;
+    hash.update(part);
+    onRead?.(part.length);
+  }
+  return hash.digest("hex");
 }
