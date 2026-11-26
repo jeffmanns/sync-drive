@@ -15,7 +15,7 @@ export async function helperFailure(error: unknown): Promise<Error> {
   const failure = error as NodeJS.ErrnoException & { stderr?: string };
   const stderr = failure.stderr;
   if (failure.code === "ENOENT" && !(await exists(HELPER))) {
-    return new Error(`The copy helper ${HELPER} is missing. Build it with \`npm run build\`.`, { cause: error });
+    return new Error(`The native helper ${HELPER} is missing. Build it with \`npm run build\`.`, { cause: error });
   }
   return new Error(stderr?.trim() || failure.message, { cause: error });
 }

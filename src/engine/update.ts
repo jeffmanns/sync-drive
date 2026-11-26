@@ -72,12 +72,12 @@ export interface UpdateSetup {
   replica: string;
   copier: FileCopier;
   /** Reads each Primary file to check its copy against before the copy is renamed into place. Defaults to SHA-256. */
-  hasher?: Hasher;
+  primaryHasher?: Hasher;
   /**
-   * Reads each copy back to check it against its Primary file, with the same algorithm as `hasher`.
+   * Reads each copy back to check it against its Primary file, with the same algorithm as `primaryHasher`.
    * The app's reads the copy from the drive itself, not from memory (ADR 0021). A copy it rejects with
-   * `NotReadableFromDriveError` is read with `hasher` instead and listed in `checkedInMemory`.
-   * Defaults to `hasher`.
+   * `NotReadableFromDriveError` is read with `primaryHasher` instead and listed in `checkedInMemory`.
+   * Defaults to `primaryHasher`.
    */
   copyHasher?: Hasher;
   /** When the Update runs, for the Holding area's `READ ME.txt`. Defaults to now. */
@@ -330,8 +330,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       holdingAreaReadmeWritten = true;
     }
   };
-  const hasher = setup.hasher ?? new Sha256Hasher();
-  const copyHasher = setup.copyHasher ?? hasher;
+  const primaryHasher = setup.primaryHasher ?? new Sha256Hasher();
+  const copyHasher = setup.copyHasher ?? primaryHasher;
   const incoming = join(setup.replica, INCOMING_FOLDER);
   // Anything already here is a temporary copy left by an interrupted Update.
   await rm(incoming, { recursive: true, force: true });
@@ -351,18 +351,18 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       // from the drive itself where it can be, so damage on its way there is caught too (ADR 0021). A
       // shortcut is never followed: what it holds is the path it points to (ADR 0015).
       let inMemory = false;
-      const primaryContents = () => (before.isSymbolicLink() ? readlink(source) : hasher.checksum(source));
-      const copyContents = async () => {
-        if (before.isSymbolicLink()) return readlink(temporary);
+      const checkCopy = async () => {
         try {
           return await copyHasher.checksum(temporary);
         } catch (error) {
           if (!(error instanceof NotReadableFromDriveError)) throw error;
           inMemory = true;
-          return hasher.checksum(temporary);
+          return primaryHasher.checksum(temporary);
         }
       };
-      const [primarySum, copySum] = await Promise.all([primaryContents(), copyContents()]);
+      const [primarySum, copySum] = await Promise.all(
+        before.isSymbolicLink() ? [readlink(source), readlink(temporary)] : [primaryHasher.checksum(source), checkCopy()],
+      );
       // Looked at after hashing, so an edit during the copy or the read-back is caught as such.
       const [after, copy] = await Promise.all([lstat(source, { bigint: true }), lstat(temporary, { bigint: true })]);
       if (!sameVersion(before, after)) throw new Error("it changed on the Primary while it was being copied");

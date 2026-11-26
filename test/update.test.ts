@@ -187,14 +187,14 @@ describe("Update", () => {
     assert.deepEqual((await readdir(replica)).sort(), [".sync-drive-last-updated", "Photos", "notes.txt"], "no copy is left behind");
   });
 
-  it("reads each copy back with the copy's hasher, and each Primary file with the other", async () => {
+  it("reads each copy back with the copy's hasher, and each Primary file with the Primary's", async () => {
     const primary = await makeTree({ "Photos/beach.jpg": "the real photo", "notes.txt": "fine" });
     const replica = await makeTree();
     const sha256 = new Sha256Hasher();
     const read: { primary: string[]; copy: string[] } = { primary: [], copy: [] };
     const reading = (side: "primary" | "copy"): Hasher => ({ checksum: (path, onRead) => (read[side].push(path), sha256.checksum(path, onRead)) });
 
-    const result = await compareAndUpdate(primary, replica, APPROVED, new MacFileCopier(), { hasher: reading("primary"), copyHasher: reading("copy") });
+    const result = await compareAndUpdate(primary, replica, APPROVED, new MacFileCopier(), { primaryHasher: reading("primary"), copyHasher: reading("copy") });
 
     assert.equal(result.copied.length, 2);
     assert.deepEqual(read.primary.sort(), [join(primary, "Photos/beach.jpg"), join(primary, "notes.txt")]);

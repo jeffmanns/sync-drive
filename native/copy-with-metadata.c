@@ -65,36 +65,43 @@ static int fail(const char *step, const char *destination, int created) {
   return 1;
 }
 
-static int failed(const char *step) {
+/** Reports why `step` failed, from errno, without touching any file. For the read-only modes. */
+static int report_failure(const char *step) {
   fprintf(stderr, "%s: %s\n", step, strerror(errno));
   return 1;
 }
+
+/** A regular file opened for reading and mapped so its pages can be looked up. */
+struct mapped_file {
+  int fd;
+  /** NULL for an empty file, which has nothing to map. */
+  char *map;
+  off_t size;
+  /** Stored compressed (UF_COMPRESSED), which macOS always reads through memory. */
+  int compressed;
+};
 
 /**
  * Opens the regular file at `path` for reading, never following a shortcut, and maps it (unless it
  * is empty) so its pages can be looked up. The mapping is never touched, so it brings nothing into memory.
  */
-static int open_mapped(const char *path, int *fd, char **map, off_t *size, int *compressed) {
-  *fd = open(path, O_RDONLY | O_NOFOLLOW);
-  if (*fd < 0) {
-    if (errno == ELOOP) {
-      fprintf(stderr, "reading the copy: not a regular file\n");
-      return 1;
-    }
-    return failed("reading the copy");
-  }
+static int open_mapped(const char *path, struct mapped_file *file) {
   struct stat file_stat;
-  if (fstat(*fd, &file_stat) != 0) return failed("reading the copy");
-  if (!S_ISREG(file_stat.st_mode)) {
+  file->fd = open(path, O_RDONLY | O_NOFOLLOW);
+  // O_NOFOLLOW makes a shortcut fail to open with ELOOP.
+  int shortcut = file->fd < 0 && errno == ELOOP;
+  if (file->fd < 0 && !shortcut) return report_failure("reading the copy");
+  if (!shortcut && fstat(file->fd, &file_stat) != 0) return report_failure("reading the copy");
+  if (shortcut || !S_ISREG(file_stat.st_mode)) {
     fprintf(stderr, "reading the copy: not a regular file\n");
     return 1;
   }
-  *size = file_stat.st_size;
-  *compressed = (file_stat.st_flags & UF_COMPRESSED) != 0;
-  *map = NULL;
-  if (*size == 0) return 0;
-  *map = mmap(NULL, (size_t)*size, PROT_READ, MAP_SHARED, *fd, 0);
-  if (*map == MAP_FAILED) return failed("reading the copy");
+  file->size = file_stat.st_size;
+  file->compressed = (file_stat.st_flags & UF_COMPRESSED) != 0;
+  file->map = NULL;
+  if (file->size == 0) return 0;
+  file->map = mmap(NULL, (size_t)file->size, PROT_READ, MAP_SHARED, file->fd, 0);
+  if (file->map == MAP_FAILED) return report_failure("reading the copy");
   return 0;
 }
 
@@ -116,15 +123,12 @@ static long in_memory(char *at, size_t length) {
 }
 
 static int pages_in_memory(const char *path) {
-  int fd;
-  char *map;
-  off_t size;
-  int compressed;
-  if (open_mapped(path, &fd, &map, &size, &compressed) != 0) return 1;
+  struct mapped_file file;
+  if (open_mapped(path, &file) != 0) return 1;
   size_t page = (size_t)getpagesize();
-  long count = size == 0 ? 0 : in_memory(map, (size_t)size);
-  if (count < 0) return failed("looking up the copy's pages");
-  printf("%ld %lld\n", count, (long long)(((size_t)size + page - 1) / page));
+  long count = file.size == 0 ? 0 : in_memory(file.map, (size_t)file.size);
+  if (count < 0) return report_failure("looking up the copy's pages");
+  printf("%ld %lld\n", count, (long long)(((size_t)file.size + page - 1) / page));
   return 0;
 }
 
@@ -134,7 +138,7 @@ static int read_part(int fd, char *buffer, size_t length, off_t offset) {
   while (done < length) {
     ssize_t got = pread(fd, buffer + done, length - done, offset + (off_t)done);
     if (got < 0 && errno == EINTR) continue;
-    if (got < 0) return failed("reading the copy back from the drive");
+    if (got < 0) return report_failure("reading the copy back from the drive");
     if (got == 0) {
       fprintf(stderr, "reading the copy back from the drive: it got shorter while it was read\n");
       return 1;
@@ -149,45 +153,42 @@ static int write_out(const char *buffer, size_t length) {
   while (done < length) {
     ssize_t put = write(STDOUT_FILENO, buffer + done, length - done);
     if (put < 0 && errno == EINTR) continue;
-    if (put < 0) return failed("passing on the copy's contents");
+    if (put < 0) return report_failure("passing on the copy's contents");
     done += (size_t)put;
   }
   return 0;
 }
 
 static int read_from_drive(const char *path) {
-  int fd;
-  char *map;
-  off_t size;
-  int compressed;
-  if (open_mapped(path, &fd, &map, &size, &compressed) != 0) return 1;
-  if (compressed) {
+  struct mapped_file file;
+  if (open_mapped(path, &file) != 0) return 1;
+  if (file.compressed) {
     fprintf(stderr, "reading the copy back from the drive: it is stored compressed, which macOS always reads through memory\n");
     return STORED_COMPRESSED;
   }
   // Every read on this file goes to the drive when the pages it wants are not in memory, and leaves none there.
-  if (fcntl(fd, F_NOCACHE, 1) != 0) return failed("reading the copy back from the drive");
+  if (fcntl(file.fd, F_NOCACHE, 1) != 0) return report_failure("reading the copy back from the drive");
   char *buffer;
   // Page-aligned, so XNU reads straight from the drive into it (cluster_read_direct).
   int aligned = posix_memalign((void **)&buffer, (size_t)getpagesize(), PART_BYTES);
   if (aligned != 0) {
     errno = aligned;  // posix_memalign returns its error rather than setting errno.
-    return failed("reading the copy back from the drive");
+    return report_failure("reading the copy back from the drive");
   }
-  for (off_t offset = 0; offset < size; offset += PART_BYTES) {
-    size_t length = (size_t)(size - offset < PART_BYTES ? size - offset : PART_BYTES);
+  for (off_t offset = 0; offset < file.size; offset += PART_BYTES) {
+    size_t length = (size_t)(file.size - offset < PART_BYTES ? file.size - offset : PART_BYTES);
     int from_drive = 0;
     for (int try = 0; try < TRIES && !from_drive; try++) {
       // Give whatever else is reading the file a moment to finish: 0, 20, 40, 60 then 80 ms.
       if (try > 0) usleep(20000 * (useconds_t)try);
       // Drops this part's pages from memory, first writing any not yet on the drive.
-      if (msync(map + offset, length, MS_SYNC | MS_INVALIDATE) != 0) return failed("dropping the copy's pages from memory");
-      long before = in_memory(map + offset, length);
-      if (before < 0) return failed("looking up the copy's pages");
+      if (msync(file.map + offset, length, MS_SYNC | MS_INVALIDATE) != 0) return report_failure("dropping the copy's pages from memory");
+      long before = in_memory(file.map + offset, length);
+      if (before < 0) return report_failure("looking up the copy's pages");
       if (before > 0) continue;
-      if (read_part(fd, buffer, length, offset) != 0) return 1;
-      long after = in_memory(map + offset, length);
-      if (after < 0) return failed("looking up the copy's pages");
+      if (read_part(file.fd, buffer, length, offset) != 0) return 1;
+      long after = in_memory(file.map + offset, length);
+      if (after < 0) return report_failure("looking up the copy's pages");
       from_drive = after == 0;
     }
     if (!from_drive) {

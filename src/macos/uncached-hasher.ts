@@ -1,12 +1,20 @@
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { NotReadableFromDriveError, sha256, type Hasher } from "../engine/index.ts";
 import { HELPER, helperFailure } from "./helper.ts";
 
-const run = promisify(execFile);
-
 /** The helper's exit status for a file stored compressed, which it cannot read from the drive itself. Matches `STORED_COMPRESSED` in native/copy-with-metadata.c. */
 const STORED_COMPRESSED = 3;
+
+/** The helper stopped without reading the whole file: by exit status (`code`) or by `signal`. */
+class ReadBackStopped extends Error {
+  readonly code: number | null;
+  readonly stderr: string;
+  constructor(code: number | null, signal: NodeJS.Signals | null, stderr: string) {
+    super(`the read-back stopped (${signal ?? `exit status ${code}`})`);
+    this.code = code;
+    this.stderr = stderr;
+  }
+}
 
 /**
  * SHA-256 of a file read from the drive itself, never from the copies of its pages macOS keeps in
@@ -24,29 +32,16 @@ export class MacUncachedHasher implements Hasher {
     reader.stderr.setEncoding("utf8").on("data", (text: string) => (stderr += text));
     const exited = new Promise<void>((resolve, reject) => {
       reader.on("error", reject);
-      reader.on("close", (code, signal) => {
-        if (code === 0) resolve();
-        else reject(Object.assign(new Error(`the read-back stopped (${signal ?? `exit status ${code}`})`), { code }));
-      });
+      reader.on("close", (code, signal) => (code === 0 ? resolve() : reject(new ReadBackStopped(code, signal, stderr))));
     });
     // A partial stream is never a checksum: only a helper that read the whole file and exited cleanly counts.
     const [sum] = await Promise.all([sha256(reader.stdout, onRead), exited]).catch(async (error: unknown) => {
       reader.kill();
       await exited.catch(() => undefined);
-      if ((error as { code?: unknown }).code === STORED_COMPRESSED) throw new NotReadableFromDriveError(stderr.trim());
-      throw await helperFailure(Object.assign(error as object, { stderr }));
+      if (error instanceof ReadBackStopped && error.code === STORED_COMPRESSED) throw new NotReadableFromDriveError(error.stderr.trim());
+      // Whichever failed first, the helper's own reason (on stderr) is the one worth showing.
+      throw await helperFailure(error instanceof ReadBackStopped ? error : Object.assign(error as object, { stderr }));
     });
     return sum;
-  }
-}
-
-/** How many of the regular file at `path`'s pages are in memory, and how many it has. Reads nothing. */
-export async function pagesInMemory(path: string): Promise<{ resident: number; total: number }> {
-  try {
-    const { stdout } = await run(HELPER, ["--pages-in-memory", path]);
-    const [resident, total] = stdout.trim().split(" ").map(Number);
-    return { resident: resident!, total: total! };
-  } catch (error) {
-    throw await helperFailure(error);
   }
 }

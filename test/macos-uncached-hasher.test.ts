@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { after, describe, it } from "node:test";
 import { NotReadableFromDriveError } from "../src/engine/index.ts";
-import { MacUncachedHasher, pagesInMemory } from "../src/macos/uncached-hasher.ts";
+import { MacUncachedHasher } from "../src/macos/uncached-hasher.ts";
+import { pagesInMemory } from "./helpers/pages-in-memory.ts";
 import { makeDiskImageTree, makeTree, metadataOf, removeTrees } from "./helpers/trees.ts";
 
 after(removeTrees);
