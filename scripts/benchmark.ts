@@ -10,15 +10,17 @@
  *
  *   SYNC_DRIVE_PAIRING_FILE=~/Library/Application\ Support/sync-drive-rehearsal/pairing.json node scripts/benchmark.ts
  *
- * Leaves out the Exclusions saved beside the Pairing, as the app does. `--only <folder>` limits both
- * runs to that folder (relative to the top of the drives, using `/`), as on Start (ADR 0017), for a short
+ * Leaves out the Exclusions saved beside the Pairing, as the app does. `--only <folder>` gives both
+ * runs a Folder limit: that folder (relative to the top of the drives, using `/`), as on Start (ADR 0017), for a short
  * run on a large drive. `--quick` skips the Deep verify.
  *
  * Runs a Quick compare, then a Deep verify, each exactly as the app runs it, and prints for each its
  * elapsed time and that of each phase: reading both drives (items listed per second), with Deep verify
  * verifying contents (ADR 0018), and confirming moves by checksum (ADR 0011), each with files and MB read
- * per second. Bytes read count both drives' copies. A Quick compare reads no contents, so its MB/s and
- * files/s are of the Replica's files it judged by size and date. A comparison only reads: this writes
+ * per second. Bytes read count both drives' copies, so MB/s is the two drives' together. A Quick compare
+ * reads no contents, so its MB/s and files/s are of the Replica's files in the comparison (the Report's
+ * totals), over the time spent reading both drives' folders. Time outside the phases (checking the
+ * drives, matching files) is shown as the rest. A comparison only reads: this writes
  * nothing to either drive, and nothing beside the Pairing.
  *
  * macOS keeps recently read files in memory, so a run soon after another reads partly from memory and
@@ -61,7 +63,7 @@ export interface Timing {
   seconds: number;
   /** The phases in the order they ran. A comparison with nothing to read in a phase may not run it. */
   phases: PhaseTiming[];
-  /** The Replica's files in the comparison, as the Report gives them: what a Quick compare judged. */
+  /** The Replica's files in the comparison, as the Report gives them. */
   replica: Totals;
 }
 
@@ -142,11 +144,12 @@ export function describeTiming(timing: Timing): string[] {
     seconds > 0 ? `${(bytes / 1e6 / seconds).toFixed(1)} MB/s` : "- MB/s";
   const time = (seconds: number) => `${seconds.toFixed(2)} s`;
   const lines = [`${timing.deep ? "Deep verify" : "Quick compare"}: ${time(timing.seconds)}`];
-  if (!timing.deep) {
+  const scanning = timing.phases.find((phase) => phase.phase === "scanning");
+  if (!timing.deep && scanning !== undefined) {
     const { count, totalSize } = timing.replica;
     lines.push(
-      `  Replica's files judged by size and date: ${count.toLocaleString("en-US")} (${formatSize(totalSize)}): ` +
-        `${perSecond(count, timing.seconds, "files")}, ${megabytesPerSecond(totalSize, timing.seconds)}`,
+      `  Files compared, by the Replica's ${fileCount(count)} (${formatSize(totalSize)}), none read: ` +
+        `${perSecond(count, scanning.seconds, "files")}, ${megabytesPerSecond(totalSize, scanning.seconds)}`,
     );
   }
   for (const phase of timing.phases) {
@@ -163,6 +166,8 @@ export function describeTiming(timing: Timing): string[] {
       );
     }
   }
+  const rest = timing.seconds - timing.phases.reduce((total, phase) => total + phase.seconds, 0);
+  lines.push(`${"  The rest:".padEnd(24)}${time(rest)} (checking the drives, matching files)`);
   return lines;
 }
 
@@ -173,7 +178,7 @@ async function main(args: string[]): Promise<void> {
   const exclusions = await readExclusions(exclusionsFileBeside(PAIRING_FILE));
   const { primary, replica } = await findPairedDrives(pairing, new MacVolumes());
   console.log(`Primary "${primary.name}" at ${primary.mountPoint}, Replica "${replica.name}" at ${replica.mountPoint}`);
-  console.log(`${values.only === undefined ? "Whole drives" : `Folder "${values.only}"`}, ${exclusions.length} Exclusions\n`);
+  console.log(`${values.only === undefined ? "Whole drives" : `Folder limit "${values.only}"`}, ${exclusions.length} Exclusions\n`);
   const runs = values.quick ? [false] : [false, true];
   for (const deep of runs) {
     const timing = await benchmark(primary.mountPoint, replica.mountPoint, {
