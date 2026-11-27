@@ -4,8 +4,22 @@ import { chmod, lstat, lutimes, mkdir, readdir, readFile, readlink, rename, rm, 
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { after, describe, it } from "node:test";
-import { compare, readHoldingArea, readLastUpdated, update, UpdateStoppedError, type Approvals, type FileCopier, type UpdateProgress } from "../src/engine/index.ts";
+import {
+  compare,
+  NotReadableFromDriveError,
+  readHoldingArea,
+  readLastUpdated,
+  Sha256Hasher,
+  update,
+  UpdateStoppedError,
+  type Approvals,
+  type FileCopier,
+  type Hasher,
+  type UpdateProgress,
+  type UpdateSetup,
+} from "../src/engine/index.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
+import { MacUncachedHasher } from "../src/macos/uncached-hasher.ts";
 import {
   extendedAttributes,
   makeDiskImageTree,
@@ -31,17 +45,19 @@ function withoutMarker(snapshot: string[]): string[] {
 
 /**
  * Compares, runs an Update with `approvals`, and checks the Primary came through untouched:
- * byte for byte and metadata for metadata.
+ * byte for byte and metadata for metadata. Each copy is read back from the drive, as in the app,
+ * unless `setup` says otherwise.
  */
 async function compareAndUpdate(
   primary: string,
   replica: string,
   approvals: Approvals = APPROVED,
   copier: FileCopier = new MacFileCopier(),
+  setup: Partial<UpdateSetup> = {},
 ) {
   const primaryBefore = await snapshotTree(primary);
   const report = await compare(primary, replica);
-  const result = await update(report, approvals, { primary, replica, copier });
+  const result = await update(report, approvals, { primary, replica, copier, copyHasher: new MacUncachedHasher(), ...setup });
   assert.deepEqual(await snapshotTree(primary), primaryBefore, "the Primary must never be written to");
   return result;
 }
@@ -171,6 +187,60 @@ describe("Update", () => {
     assert.deepEqual((await readdir(replica)).sort(), [".sync-drive-last-updated", "Photos", "notes.txt"], "no copy is left behind");
   });
 
+  it("reads each copy back with the copy's hasher, and each Primary file with the Primary's", async () => {
+    const primary = await makeTree({ "Photos/beach.jpg": "the real photo", "notes.txt": "fine" });
+    const replica = await makeTree();
+    const sha256 = new Sha256Hasher();
+    const read: { primary: string[]; copy: string[] } = { primary: [], copy: [] };
+    const reading = (side: "primary" | "copy"): Hasher => ({ checksum: (path, onRead) => (read[side].push(path), sha256.checksum(path, onRead)) });
+
+    const result = await compareAndUpdate(primary, replica, APPROVED, new MacFileCopier(), { primaryHasher: reading("primary"), copyHasher: reading("copy") });
+
+    assert.equal(result.copied.length, 2);
+    assert.deepEqual(read.primary.sort(), [join(primary, "Photos/beach.jpg"), join(primary, "notes.txt")]);
+    assert.equal(read.copy.length, 2);
+    assert.ok(read.copy.every((path) => path.startsWith(join(replica, ".sync-drive-incoming/"))), "only the copies are read with the copy's hasher");
+  });
+
+  it("checks a copy stored compressed from memory, as it cannot be read from the drive, and lists it", async () => {
+    const text = "compressible text ".repeat(10_000);
+    const primary = await makeTree({ "plain.txt": text, "notes.txt": "fine" });
+    await run("ditto", ["--hfsCompression", join(primary, "plain.txt"), join(primary, "compressed.txt")]);
+    await rm(join(primary, "plain.txt"));
+    assert.match((await run("ls", ["-lO", join(primary, "compressed.txt")])).stdout, /compressed/, "the test needs a compressed file");
+    const replica = await makeTree();
+
+    const result = await compareAndUpdate(primary, replica);
+
+    assert.deepEqual(result.copied, [
+      { path: "compressed.txt", size: text.length },
+      { path: "notes.txt", size: 4 },
+    ]);
+    assert.deepEqual(result.checkedInMemory, [{ path: "compressed.txt", size: text.length }]);
+    assert.equal(await readFile(join(replica, "compressed.txt"), "utf8"), text);
+  });
+
+  it("still discards a corrupted copy that could only be checked from memory", async () => {
+    const mtime = new Date("2026-03-01T09:00:00Z");
+    const primary = await makeTree({ "beach.jpg": { content: "the real photo", mtime } });
+    const replica = await makeTree();
+    const corrupting: FileCopier = {
+      async copy(source, destination) {
+        await new MacFileCopier().copy(source, destination);
+        await writeFile(destination, "the real phota");
+        await utimes(destination, mtime, mtime);
+      },
+    };
+    const notFromDrive: Hasher = { checksum: () => Promise.reject(new NotReadableFromDriveError("it is stored compressed")) };
+
+    const result = await compareAndUpdate(primary, replica, APPROVED, corrupting, { copyHasher: notFromDrive });
+
+    assert.deepEqual(result.copied, []);
+    assert.deepEqual(result.checkedInMemory, []);
+    assert.deepEqual(result.failed, [{ path: "beach.jpg", size: 14, reason: "the copy's checksum does not match the Primary's" }]);
+    assert.deepEqual((await readdir(replica)).sort(), [".sync-drive-last-updated"], "nothing is left under the real name");
+  });
+
   it("writes nothing to the Replica without the main approval", async () => {
     const primary = await makeTree({ "new.txt": "new", "notes.txt": "edited" });
     const replica = await makeTree({
@@ -181,7 +251,7 @@ describe("Update", () => {
 
     const result = await compareAndUpdate(primary, replica, { update: false, moves: false, deletions: false });
 
-    assert.deepEqual(result, { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [], emptiedHoldingArea: false });
+    assert.deepEqual(result, { copied: [], checkedInMemory: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [], emptiedHoldingArea: false });
     assert.deepEqual(await snapshotTree(replica), replicaBefore);
   });
 
@@ -330,7 +400,7 @@ describe("Update progress", () => {
     const stopped = await update(report, APPROVED_WITH_DELETIONS, { primary, replica, copier: new MacFileCopier(), onProgress: throwing }).catch((e: unknown) => e);
     assert.ok(stopped instanceof UpdateStoppedError);
     assert.match(stopped.message, /Safety stop/);
-    assert.deepEqual(stopped.result, { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [], emptiedHoldingArea: false });
+    assert.deepEqual(stopped.result, { copied: [], checkedInMemory: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [], emptiedHoldingArea: false });
   });
 });
 

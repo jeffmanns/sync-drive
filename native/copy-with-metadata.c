@@ -15,15 +15,48 @@
  *
  * Reads the source only. On any failure the destination is removed and the exit status is 1,
  * with the reason on stderr.
+ *
+ * copy-with-metadata --read-from-drive <file>
+ *
+ * Writes the regular file's contents to stdout, read from the drive itself rather than from the
+ * copies of its pages macOS keeps in memory (#33, docs/adr/0021-copies-are-read-back-from-the-drive.md).
+ * Update hashes this to check a copy it has just written. F_NOCACHE alone is not enough: XNU still
+ * serves pages that are already in memory. So each part, in turn, has its pages dropped from memory
+ * with msync(MS_INVALIDATE), is confirmed absent with mincore(2), is read with F_NOCACHE (which puts
+ * nothing in memory), and is confirmed absent again. A page found in memory before or after the read
+ * means another app read the file meanwhile, and this read may have come from memory: the part is
+ * read again, and after a few tries the file fails. Never follows a shortcut. Never writes to the
+ * file: dropping a page that has not reached the drive yet writes it there first.
+ *
+ * A file stored compressed (UF_COMPRESSED) cannot be read this way: macOS always decompresses it
+ * through memory, whatever F_NOCACHE says, and msync does not drop those pages. It fails with exit
+ * status 3, which Update takes as "check it as read through memory instead".
+ *
+ * copy-with-metadata --pages-in-memory <file>
+ *
+ * Prints how many of the regular file's pages are in memory, and how many it has, as
+ * "<in memory> <total>". For tests and checks; it reads and changes nothing.
  */
 #include <copyfile.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/attr.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+/** Size of each part read back: a multiple of the page size, and large enough to keep a drive streaming. */
+#define PART_BYTES (1024 * 1024)
+/**
+ * The exit status for a file that is stored compressed, so cannot be read from the drive itself.
+ * `STORED_COMPRESSED` in src/macos/uncached-hasher.ts must match.
+ */
+#define STORED_COMPRESSED 3
+/** How many times a part is read again when another app keeps bringing its pages into memory. */
+#define TRIES 5
 
 static int fail(const char *step, const char *destination, int created) {
   int error = errno;
@@ -32,9 +65,148 @@ static int fail(const char *step, const char *destination, int created) {
   return 1;
 }
 
+/** Reports why `step` failed, from errno, without touching any file. For the read-only modes. */
+static int report_failure(const char *step) {
+  fprintf(stderr, "%s: %s\n", step, strerror(errno));
+  return 1;
+}
+
+/** A regular file opened for reading and mapped so its pages can be looked up. */
+struct mapped_file {
+  int fd;
+  /** NULL for an empty file, which has nothing to map. */
+  char *map;
+  off_t size;
+  /** Stored compressed (UF_COMPRESSED), which macOS always reads through memory. */
+  int compressed;
+};
+
+/**
+ * Opens the regular file at `path` for reading, never following a shortcut, and maps it (unless it
+ * is empty) so its pages can be looked up. The mapping is never touched, so it brings nothing into memory.
+ */
+static int open_mapped(const char *path, struct mapped_file *file) {
+  struct stat file_stat;
+  file->fd = open(path, O_RDONLY | O_NOFOLLOW);
+  // O_NOFOLLOW makes a shortcut fail to open with ELOOP.
+  int shortcut = file->fd < 0 && errno == ELOOP;
+  if (file->fd < 0 && !shortcut) return report_failure("reading the copy");
+  if (!shortcut && fstat(file->fd, &file_stat) != 0) return report_failure("reading the copy");
+  if (shortcut || !S_ISREG(file_stat.st_mode)) {
+    fprintf(stderr, "reading the copy: not a regular file\n");
+    return 1;
+  }
+  file->size = file_stat.st_size;
+  file->compressed = (file_stat.st_flags & UF_COMPRESSED) != 0;
+  file->map = NULL;
+  if (file->size == 0) return 0;
+  file->map = mmap(NULL, (size_t)file->size, PROT_READ, MAP_SHARED, file->fd, 0);
+  if (file->map == MAP_FAILED) return report_failure("reading the copy");
+  return 0;
+}
+
+/** How many pages of `length` bytes at `at`, a page-aligned address in a mapping, are in memory, or -1. */
+static long in_memory(char *at, size_t length) {
+  size_t page = (size_t)getpagesize();
+  size_t pages = (length + page - 1) / page;
+  char *vector = malloc(pages);
+  if (vector == NULL || mincore(at, length, vector) != 0) {
+    int error = errno;
+    free(vector);
+    errno = error;
+    return -1;
+  }
+  long count = 0;
+  for (size_t i = 0; i < pages; i++) count += (vector[i] & MINCORE_INCORE) ? 1 : 0;
+  free(vector);
+  return count;
+}
+
+static int pages_in_memory(const char *path) {
+  struct mapped_file file;
+  if (open_mapped(path, &file) != 0) return 1;
+  size_t page = (size_t)getpagesize();
+  long count = file.size == 0 ? 0 : in_memory(file.map, (size_t)file.size);
+  if (count < 0) return report_failure("looking up the copy's pages");
+  printf("%ld %lld\n", count, (long long)(((size_t)file.size + page - 1) / page));
+  return 0;
+}
+
+/** Reads `length` bytes at `offset` into `buffer`. Returns 0, or 1 if the file ended first or could not be read. */
+static int read_part(int fd, char *buffer, size_t length, off_t offset) {
+  size_t done = 0;
+  while (done < length) {
+    ssize_t got = pread(fd, buffer + done, length - done, offset + (off_t)done);
+    if (got < 0 && errno == EINTR) continue;
+    if (got < 0) return report_failure("reading the copy back from the drive");
+    if (got == 0) {
+      fprintf(stderr, "reading the copy back from the drive: it got shorter while it was read\n");
+      return 1;
+    }
+    done += (size_t)got;
+  }
+  return 0;
+}
+
+static int write_out(const char *buffer, size_t length) {
+  size_t done = 0;
+  while (done < length) {
+    ssize_t put = write(STDOUT_FILENO, buffer + done, length - done);
+    if (put < 0 && errno == EINTR) continue;
+    if (put < 0) return report_failure("passing on the copy's contents");
+    done += (size_t)put;
+  }
+  return 0;
+}
+
+static int read_from_drive(const char *path) {
+  struct mapped_file file;
+  if (open_mapped(path, &file) != 0) return 1;
+  if (file.compressed) {
+    fprintf(stderr, "reading the copy back from the drive: it is stored compressed, which macOS always reads through memory\n");
+    return STORED_COMPRESSED;
+  }
+  // Every read on this file goes to the drive when the pages it wants are not in memory, and leaves none there.
+  if (fcntl(file.fd, F_NOCACHE, 1) != 0) return report_failure("reading the copy back from the drive");
+  char *buffer;
+  // Page-aligned, so XNU reads straight from the drive into it (cluster_read_direct).
+  int aligned = posix_memalign((void **)&buffer, (size_t)getpagesize(), PART_BYTES);
+  if (aligned != 0) {
+    errno = aligned;  // posix_memalign returns its error rather than setting errno.
+    return report_failure("reading the copy back from the drive");
+  }
+  for (off_t offset = 0; offset < file.size; offset += PART_BYTES) {
+    size_t length = (size_t)(file.size - offset < PART_BYTES ? file.size - offset : PART_BYTES);
+    int from_drive = 0;
+    for (int try = 0; try < TRIES && !from_drive; try++) {
+      // Give whatever else is reading the file a moment to finish: 0, 20, 40, 60 then 80 ms.
+      if (try > 0) usleep(20000 * (useconds_t)try);
+      // Drops this part's pages from memory, first writing any not yet on the drive.
+      if (msync(file.map + offset, length, MS_SYNC | MS_INVALIDATE) != 0) return report_failure("dropping the copy's pages from memory");
+      long before = in_memory(file.map + offset, length);
+      if (before < 0) return report_failure("looking up the copy's pages");
+      if (before > 0) continue;
+      if (read_part(file.fd, buffer, length, offset) != 0) return 1;
+      long after = in_memory(file.map + offset, length);
+      if (after < 0) return report_failure("looking up the copy's pages");
+      from_drive = after == 0;
+    }
+    if (!from_drive) {
+      fprintf(stderr, "reading the copy back from the drive: another app kept reading it, so it could only be read from memory\n");
+      return 1;
+    }
+    if (write_out(buffer, length) != 0) return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
-  if (argc != 3) {
-    fprintf(stderr, "usage: copy-with-metadata <source> <destination>\n");
+  if (argc == 3 && strcmp(argv[1], "--read-from-drive") == 0) return read_from_drive(argv[2]);
+  if (argc == 3 && strcmp(argv[1], "--pages-in-memory") == 0) return pages_in_memory(argv[2]);
+  if (argc != 3 || argv[1][0] == '-') {
+    fprintf(stderr, "usage: copy-with-metadata <source> <destination>\n"
+                    "       copy-with-metadata --read-from-drive <file>\n"
+                    "       copy-with-metadata --pages-in-memory <file>\n");
     return 2;
   }
   const char *source = argv[1];

@@ -18,6 +18,7 @@ import {
   writeExclusions,
   writePairing,
   type FileCopier,
+  type Hasher,
   type ItemCounter,
   type PairedDrives,
   type Pairing,
@@ -65,6 +66,8 @@ export interface FlowDeps {
   updateLogFolder: string;
   /** Copies files to the Replica with all their metadata. */
   copier: FileCopier;
+  /** Reads each copy back from the Replica itself, not from memory, to check it before it is renamed into place (ADR 0021). */
+  copyHasher: Hasher;
   /** Remounts the Primary read-only for each Update, and normally afterwards. */
   remounter: Remounter;
   /** Reads each drive's item count from macOS, for the Comparing progress bar. */
@@ -677,6 +680,7 @@ export class Flow {
         primary: primary.mountPoint,
         replica: review.drives.replica.mountPoint,
         copier: this.#copier,
+        copyHasher: this.#deps.copyHasher,
         exclusions: review.exclusions,
         ...(review.only === undefined ? {} : { only: review.only }),
         // The Update reports only while it runs, which is all while the Primary is read-only (ADR 0013).
@@ -725,6 +729,7 @@ export class Flow {
         ended: new Date(),
         deep: review.deep,
         mismatchesLeft,
+        checkedInMemory: done.checkedInMemory,
         // As read at compare time, and checked again just before the Update (ADR 0006).
         deletedFromHoldingArea: done.emptiedHoldingArea ? review.holdingArea : NO_FILES,
       });

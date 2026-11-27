@@ -4,7 +4,7 @@ import { access, lstat, mkdir, readlink, realpath, rename, rm, rmdir, writeFile 
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { FileEntry, Move, Report } from "./report.ts";
 import { exclusionMatcher } from "./exclusions.ts";
-import { Sha256Hasher, type Hasher } from "./hashing.ts";
+import { NotReadableFromDriveError, Sha256Hasher, type Hasher } from "./hashing.ts";
 import { reporter, type UpdateProgress } from "./progress.ts";
 import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-area.ts";
 import { INCOMING_FOLDER } from "./incoming.ts";
@@ -71,8 +71,15 @@ export interface UpdateSetup {
   /** The top level of the Replica. */
   replica: string;
   copier: FileCopier;
-  /** Checks every copy against its Primary file before it is renamed into place. Defaults to SHA-256. */
-  hasher?: Hasher;
+  /** Reads each Primary file to check its copy against before the copy is renamed into place. Defaults to SHA-256. */
+  primaryHasher?: Hasher;
+  /**
+   * Reads each copy back to check it against its Primary file, with the same algorithm as `primaryHasher`.
+   * The app's reads the copy from the drive itself, not from memory (ADR 0021). A copy it rejects with
+   * `NotReadableFromDriveError` is read with `primaryHasher` instead and listed in `checkedInMemory`.
+   * Defaults to `primaryHasher`.
+   */
+  copyHasher?: Hasher;
   /** When the Update runs, for the Holding area's `READ ME.txt`. Defaults to now. */
   now?: Date;
   /**
@@ -110,6 +117,11 @@ export interface FailedMove extends Move {
  */
 export interface UpdateResult {
   copied: FileEntry[];
+  /**
+   * The copied files whose copy could not be read back from the drive itself (stored compressed), so
+   * was checked as read through memory, as before #33 (ADR 0021). Each is also in `copied`.
+   */
+  checkedInMemory: FileEntry[];
   failed: FailedFile[];
   /** Moved files renamed to their new paths on the Replica. */
   renamed: Move[];
@@ -168,7 +180,7 @@ export async function update(report: Report, approvals: Approvals, setup: Update
 
 /** The result of an Update that has done nothing yet. */
 export function nothingDone(): UpdateResult {
-  return { copied: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [], emptiedHoldingArea: false };
+  return { copied: [], checkedInMemory: [], failed: [], renamed: [], notRenamed: [], moved: [], notMoved: [], emptiedHoldingArea: false };
 }
 
 /**
@@ -318,7 +330,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       holdingAreaReadmeWritten = true;
     }
   };
-  const hasher = setup.hasher ?? new Sha256Hasher();
+  const primaryHasher = setup.primaryHasher ?? new Sha256Hasher();
+  const copyHasher = setup.copyHasher ?? primaryHasher;
   const incoming = join(setup.replica, INCOMING_FOLDER);
   // Anything already here is a temporary copy left by an interrupted Update.
   await rm(incoming, { recursive: true, force: true });
@@ -334,10 +347,22 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       // Checked before copying too, so no time is spent on a copy that could not be put in place.
       await assertNoShortcutAlong(setup.replica, file.path);
       await setup.copier.copy(source, temporary);
-      // Read both back in full, so "copied" means confirmed identical, not just written. A shortcut is
-      // never followed: what it holds is the path it points to.
-      const contents = (path: string) => (before.isSymbolicLink() ? readlink(path) : hasher.checksum(path));
-      const [primarySum, copySum] = await Promise.all([contents(source), contents(temporary)]);
+      // Read both back in full, so "copied" means confirmed identical, not just written. The copy is read
+      // from the drive itself where it can be, so damage on its way there is caught too (ADR 0021). A
+      // shortcut is never followed: what it holds is the path it points to (ADR 0015).
+      let inMemory = false;
+      const checkCopy = async () => {
+        try {
+          return await copyHasher.checksum(temporary);
+        } catch (error) {
+          if (!(error instanceof NotReadableFromDriveError)) throw error;
+          inMemory = true;
+          return primaryHasher.checksum(temporary);
+        }
+      };
+      const [primarySum, copySum] = await Promise.all(
+        before.isSymbolicLink() ? [readlink(source), readlink(temporary)] : [primaryHasher.checksum(source), checkCopy()],
+      );
       // Looked at after hashing, so an edit during the copy or the read-back is caught as such.
       const [after, copy] = await Promise.all([lstat(source, { bigint: true }), lstat(temporary, { bigint: true })]);
       if (!sameVersion(before, after)) throw new Error("it changed on the Primary while it was being copied");
@@ -361,6 +386,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
         throw error;
       }
       result.copied.push(file);
+      if (inMemory) result.checkedInMemory.push(file);
       copies.copiedBytes += file.size;
     } catch (error) {
       await rm(temporary, { force: true });
