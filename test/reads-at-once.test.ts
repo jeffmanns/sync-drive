@@ -1,19 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readLimiter, readsAtOnce, type DriveKind } from "../src/engine/index.ts";
-
-/** A DriveKind that says what `kinds` gives for each mount point, and rejects for any other. */
-function driveKinds(kinds: Record<string, boolean | undefined>): DriveKind {
-  return {
-    async isSolidState(mountPoint) {
-      if (!(mountPoint in kinds)) throw new Error(`no such drive ${mountPoint}`);
-      return kinds[mountPoint];
-    },
-  };
-}
+import { FakeDriveKind } from "./helpers/fake-drive-kind.ts";
 
 describe("How many files are read at once from a drive", () => {
-  const kinds = driveKinds({ "/Volumes/SSD": true, "/Volumes/Spinning": false, "/Volumes/Unknown": undefined });
+  const kinds = new FakeDriveKind("/Volumes/SSD");
+  kinds.set("/Volumes/Unknown", undefined);
 
   it("reads several files at once from a solid-state drive", async () => {
     assert.equal(await readsAtOnce(kinds, "/Volumes/SSD"), 8);
@@ -25,7 +17,14 @@ describe("How many files are read at once from a drive", () => {
 
   it("reads one file at a time from a drive whose kind is unknown or cannot be told, or without a way to tell", async () => {
     assert.equal(await readsAtOnce(kinds, "/Volumes/Unknown"), 1);
-    assert.equal(await readsAtOnce(kinds, "/Volumes/Gone"), 1);
+    const failing: DriveKind = { isSolidState: () => Promise.reject(new Error("diskutil failed")) };
+    const throwing: DriveKind = {
+      isSolidState: () => {
+        throw new Error("diskutil is missing");
+      },
+    };
+    assert.equal(await readsAtOnce(failing, "/Volumes/SSD"), 1);
+    assert.equal(await readsAtOnce(throwing, "/Volumes/SSD"), 1);
     assert.equal(await readsAtOnce(undefined, "/Volumes/SSD"), 1);
   });
 });

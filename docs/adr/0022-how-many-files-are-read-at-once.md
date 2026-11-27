@@ -21,5 +21,5 @@ ADR 0018 had Deep verify read one file at a time, and ADR 0011 had moves confirm
 
 ## Consequences
 
-- Asking macOS takes about 0.1 s for a drive, and about 0.2 s for a disk image. It is asked while the drives are listed, so on a real drive it is hidden behind the scan.
+- Asking macOS takes about 0.1 s for a drive, and about 0.2 s for a disk image (two `diskutil` calls). A Deep verify asks while the drives are listed, and its first read waits for the answer. A Quick compare asks only when it has moves to confirm. On the 1.3 GB disk images, listing both drives took 0.07 s, so the wait showed: "Reading both drives" went from 0.07 s to 0.25 s in the benchmark. It is a fixed cost per comparison, while listing a real drive takes far longer, but that has not been measured on a real drive.
 - A comparison without a `driveKind` (the tests, unless they give one) reads one file at a time, as before #64.

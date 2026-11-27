@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { chmod, lstat, lutimes, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { checkExclusion, compare, Sha256Hasher, SOLID_STATE_READS, type CompareProgress, type DriveKind, type Hasher, type ItemCounter } from "../src/engine/index.ts";
+import { checkExclusion, compare, Sha256Hasher, SOLID_STATE_READS, type CompareProgress, type Hasher, type ItemCounter } from "../src/engine/index.ts";
+import { FakeDriveKind } from "./helpers/fake-drive-kind.ts";
 import { DEFAULT_MTIME, makeCaseSensitiveTree, makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
 after(removeTrees);
@@ -1140,11 +1141,6 @@ describe("Anomalies: Replica newer", () => {
 
 
 describe("Reading several files at once", () => {
-  /** A DriveKind that calls each drive given solid state, and every other drive spinning. */
-  function solidState(...drives: string[]): DriveKind {
-    return { isSolidState: async (mountPoint) => drives.includes(mountPoint) };
-  }
-
   /** A hasher that takes a moment over each file, and records the most files it read at once from each drive. */
   function watchingReads(primary: string, replica: string, wrapped: Hasher = new Sha256Hasher()) {
     const reading = { primary: 0, replica: 0 };
@@ -1180,7 +1176,7 @@ describe("Reading several files at once", () => {
     const replica = await makeTree(manyFiles(30, "Docs"));
     const { hasher, most } = watchingReads(primary, replica);
 
-    await compare(primary, replica, { deep: true, hasher, driveKind: solidState(primary, replica) });
+    await compare(primary, replica, { deep: true, hasher, driveKind: new FakeDriveKind(primary, replica) });
 
     assert.equal(most.primary, SOLID_STATE_READS);
     assert.equal(most.replica, SOLID_STATE_READS);
@@ -1191,7 +1187,7 @@ describe("Reading several files at once", () => {
     const replica = await makeTree(manyFiles(20, "Docs"));
     const { hasher, most } = watchingReads(primary, replica);
 
-    await compare(primary, replica, { deep: true, hasher, driveKind: solidState(primary) });
+    await compare(primary, replica, { deep: true, hasher, driveKind: new FakeDriveKind(primary) });
 
     assert.ok(most.primary > 1 && most.primary <= SOLID_STATE_READS, `${most.primary} at once on the Primary`);
     assert.equal(most.replica, 1);
@@ -1202,9 +1198,9 @@ describe("Reading several files at once", () => {
     const replica = await makeTree(manyFiles(30, "Old"));
 
     const fast = watchingReads(primary, replica);
-    const report = await compare(primary, replica, { hasher: fast.hasher, driveKind: solidState(primary, replica) });
+    const report = await compare(primary, replica, { hasher: fast.hasher, driveKind: new FakeDriveKind(primary, replica) });
     const slow = watchingReads(primary, replica);
-    await compare(primary, replica, { hasher: slow.hasher, driveKind: solidState() });
+    await compare(primary, replica, { hasher: slow.hasher, driveKind: new FakeDriveKind() });
 
     assert.equal(report.moves.count, 30);
     assert.deepEqual(fast.most, { primary: SOLID_STATE_READS, replica: SOLID_STATE_READS });
@@ -1241,7 +1237,7 @@ describe("Reading several files at once", () => {
     for (const only of [undefined, "Docs"]) {
       const options = { deep: true, hasher: damaged, ...(only === undefined ? {} : { only }) };
       const sequential = only === undefined ? oneAtATime : await compare(primary, replica, options);
-      const concurrent = await compare(primary, replica, { ...options, driveKind: solidState(primary, replica) });
+      const concurrent = await compare(primary, replica, { ...options, driveKind: new FakeDriveKind(primary, replica) });
       assert.deepEqual(concurrent, sequential, only ?? "whole drives");
     }
     assert.equal(oneAtATime.anomalies.contentMismatch.count, 8);
@@ -1257,7 +1253,7 @@ describe("Reading several files at once", () => {
     const { hasher } = watchingReads(primary, replica);
     const seen: CompareProgress[] = [];
 
-    await compare(primary, replica, { deep: true, hasher, driveKind: solidState(primary, replica), onProgress: (p) => seen.push(p) });
+    await compare(primary, replica, { deep: true, hasher, driveKind: new FakeDriveKind(primary, replica), onProgress: (p) => seen.push(p) });
 
     for (const phase of ["verifying", "checking moves"] as const) {
       const bars = seen.flatMap((p) => (p.phase === phase ? [p] : []));
@@ -1282,7 +1278,7 @@ describe("Reading several files at once", () => {
     const watched = watchingReads(primary, replica, missing);
 
     await assert.rejects(
-      compare(primary, replica, { deep: true, hasher: watched.hasher, driveKind: solidState(primary, replica) }),
+      compare(primary, replica, { deep: true, hasher: watched.hasher, driveKind: new FakeDriveKind(primary, replica) }),
       /The Replica's copy of Docs\/file-03\.txt could not be read/,
     );
     assert.equal(watched.running(), 0, "no file still being read");

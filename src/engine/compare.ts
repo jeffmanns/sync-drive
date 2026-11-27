@@ -76,8 +76,10 @@ export async function compare(
   const { only } = options;
   if (only !== undefined) checkOnlyFolder(only, isExcluded);
   const tellProgress = reporter(options.onProgress);
-  // Asked while the drives are scanned, as it never rejects; needed only once there are files to read.
-  const reading = readersFor(options.driveKind, primary, replica);
+  // Deep verify always reads files, so asked while the drives are scanned (it never rejects). A Quick
+  // compare asks only if it has moves to confirm.
+  const earlyReadLimits = options.deep === true ? readLimitsFor(options.driveKind, primary, replica) : undefined;
+  const readLimits = () => earlyReadLimits ?? readLimitsFor(options.driveKind, primary, replica);
   const [, , total] = await Promise.all([
     assertFolder("Primary", primary),
     assertFolder("Replica", replica),
@@ -93,7 +95,7 @@ export async function compare(
           ([onPrimary, onReplica]) => {
             if (onPrimary.status === "rejected") throw onPrimary.reason;
             if (onReplica.status === "rejected") throw onReplica.reason;
-            return [onPrimary.value as string, onReplica.value];
+            return [onPrimary.value, onReplica.value] as const;
           },
         );
   let scanned = 0;
@@ -132,7 +134,7 @@ export async function compare(
   const hasher = options.hasher ?? new Sha256Hasher();
   const contentMismatch: ContentMismatch[] = [];
   if (options.deep === true) {
-    const verified = await verifyContents(quickEqualPairs, { primary, replica, hasher, reading: await reading, tellProgress });
+    const verified = await verifyContents(quickEqualPairs, { primary, replica, hasher, limits: await readLimits(), tellProgress });
     // Read in full just now, so these need no access check like the changed files above.
     changed.push(...verified.changedWhileRead);
     contentMismatch.push(...verified.contentMismatch);
@@ -181,7 +183,7 @@ export async function compare(
   const sums =
     candidates.length === 0
       ? []
-      : await readPairs(candidates, { phase: "checking moves", primary, replica, hasher, reading: await reading, tellProgress }, (read) => read());
+      : await readPairs(candidates, { phase: "checking moves", primary, replica, hasher, limits: await readLimits(), tellProgress }, (read) => read());
   // Taken in the candidates' order, so the Report is the same however the reads finished.
   for (const [i, candidate] of candidates.entries()) {
     const [primarySum, replicaSum] = sums[i]!;
@@ -236,12 +238,12 @@ interface Verified {
  */
 async function verifyContents(
   quickEqualPairs: ReadonlyArray<{ primary: ScannedFile; replica: ScannedFile }>,
-  drives: Omit<PairReading, "phase">,
+  reading: Omit<PairReading, "phase">,
 ): Promise<Verified> {
-  const { primary, replica } = drives;
+  const { primary, replica } = reading;
   const verified: Verified = { changedWhileRead: [], contentMismatch: [], unreadable: [] };
   const files = quickEqualPairs.filter((pair) => pair.primary.kind === "file");
-  const outcomes = await readPairs(files, { ...drives, phase: "verifying" }, async (read, pair) => {
+  const outcomes = await readPairs(files, { ...reading, phase: "verifying" }, async (read, pair) => {
     const [primarySum, replicaSum] = await read();
     if (replicaSum.status === "rejected") {
       const error = replicaSum.reason as NodeJS.ErrnoException;
@@ -277,26 +279,26 @@ async function verifyContents(
 }
 
 /** How many files to read at once from the drives being compared, and the limiter that holds each to it. */
-interface Readers {
+interface ReadLimits {
   /** Pairs of files in flight: as many as the faster drive reads at once. */
   pairsAtOnce: number;
   primary: ReadLimiter;
   replica: ReadLimiter;
 }
 
-/** The `Readers` for the Primary at `primary` and the Replica at `replica`, as `driveKind` tells their kinds. Never rejects. */
-async function readersFor(driveKind: DriveKind | undefined, primary: string, replica: string): Promise<Readers> {
+/** The `ReadLimits` for the Primary at `primary` and the Replica at `replica`, as `driveKind` tells their kinds. Never rejects. */
+async function readLimitsFor(driveKind: DriveKind | undefined, primary: string, replica: string): Promise<ReadLimits> {
   const [onPrimary, onReplica] = await Promise.all([readsAtOnce(driveKind, primary), readsAtOnce(driveKind, replica)]);
   return { pairsAtOnce: Math.max(onPrimary, onReplica), primary: readLimiter(onPrimary), replica: readLimiter(onReplica) };
 }
 
 /** What `readPairs` needs: the drives, how to read them, and the phase whose progress it reports. */
 interface PairReading {
-  phase: "verifying" | "checking moves";
+  phase: Exclude<CompareProgress["phase"], "scanning">;
   primary: string;
   replica: string;
   hasher: Hasher;
-  reading: Readers;
+  limits: ReadLimits;
   tellProgress: (progress: CompareProgress) => void;
 }
 
@@ -305,7 +307,7 @@ type PairSums = [PromiseSettledResult<string>, PromiseSettledResult<string>];
 
 /**
  * Reads each of `pairs` (a Primary file and a Replica file) in full on both drives with `hasher`, as
- * many pairs at once as `reading` allows and no more files from either drive than it reads at once.
+ * many pairs at once as `limits` allows and no more files from either drive than it reads at once.
  * `check` is given each pair and a `read` that checksums both its files, and resolves with what was
  * found; the results come in the order of `pairs`, however the reads finished. Reports bytes read
  * out of each Primary file's size on both drives, as `phase`, from 0 to the total and never back.
@@ -314,7 +316,7 @@ type PairSums = [PromiseSettledResult<string>, PromiseSettledResult<string>];
  */
 async function readPairs<P extends { primary: ScannedFile; replica: ScannedFile }, R>(
   pairs: readonly P[],
-  { phase, primary, replica, hasher, reading, tellProgress }: PairReading,
+  { phase, primary, replica, hasher, limits, tellProgress }: PairReading,
   check: (read: () => Promise<PairSums>, pair: P) => Promise<R>,
 ): Promise<R[]> {
   const totalBytes = pairs.reduce((total, pair) => total + 2 * pair.primary.size, 0);
@@ -338,8 +340,8 @@ async function readPairs<P extends { primary: ScannedFile; replica: ScannedFile 
       return await check(
         () =>
           Promise.allSettled([
-            reading.primary(() => hasher.checksum(join(primary, pair.primary.path), onRead)),
-            reading.replica(() => hasher.checksum(join(replica, pair.replica.path), onRead)),
+            limits.primary(() => hasher.checksum(join(primary, pair.primary.path), onRead)),
+            limits.replica(() => hasher.checksum(join(replica, pair.replica.path), onRead)),
           ]) as Promise<PairSums>,
         pair,
       );
@@ -361,7 +363,7 @@ async function readPairs<P extends { primary: ScannedFile; replica: ScannedFile 
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(reading.pairsAtOnce, pairs.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(limits.pairsAtOnce, pairs.length) }, worker));
   if (failures.size > 0) throw failures.get(Math.min(...failures.keys()));
   return results;
 }
