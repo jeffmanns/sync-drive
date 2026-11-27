@@ -10,6 +10,7 @@ import { freeSpaceExplanation, notRecordedWarning, onlyFolderDeletionsWarning, o
 import { compare, type FileCopier } from "../src/engine/index.ts";
 import { holdingAreaReadme } from "../src/engine/holding-area.ts";
 import { formatDay } from "../src/format.ts";
+import { MacDriveKind } from "../src/macos/drive-kind.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
 import { MacUncachedHasher } from "../src/macos/uncached-hasher.ts";
 import { FakeItemCounter } from "./helpers/fake-item-counter.ts";
@@ -50,7 +51,7 @@ async function testMac(copier: FileCopier = new MacFileCopier()) {
   const exclusionsFile = join(dirname(pairingFile), "exclusions.json");
   const updateLogFolder = join(dirname(pairingFile), "Update logs");
   const open = async () => {
-    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, copyHasher: new MacUncachedHasher(), remounter, itemCounter });
+    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, copyHasher: new MacUncachedHasher(), remounter, itemCounter, driveKind: new MacDriveKind() });
     await flow.open();
     return flow;
   };

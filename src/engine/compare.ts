@@ -10,7 +10,8 @@ import { sameDate } from "./same-date.ts";
 import { safetyStopApplies } from "./safety-stops.ts";
 import { checkOnlyFolder, findOnlyFolder } from "./only-folder.ts";
 import { matchKey, readFailure, scan, type ScannedFile } from "./scan.ts";
-import type { ItemCounter } from "./volumes.ts";
+import { readLimiter, readsAtOnce, type ReadLimiter } from "./reads-at-once.ts";
+import type { DriveKind, ItemCounter } from "./volumes.ts";
 
 /** Options for a comparison: a Quick compare unless `deep` is given. */
 export interface CompareOptions {
@@ -38,6 +39,12 @@ export interface CompareOptions {
    * has no total. Called with the folders given to `compare`.
    */
   itemCounter?: ItemCounter;
+  /**
+   * Tells whether each drive is solid state, to choose how many files to read from it at once for
+   * Deep verify and to confirm moves (`readsAtOnce`). Without it, one at a time from each. Called
+   * with the folders given to `compare`. Never changes the Report.
+   */
+  driveKind?: DriveKind;
   /** Called as the comparison goes on, with how far it has got. What it throws is ignored. */
   onProgress?: (progress: CompareProgress) => void;
 }
@@ -69,6 +76,8 @@ export async function compare(
   const { only } = options;
   if (only !== undefined) checkOnlyFolder(only, isExcluded);
   const tellProgress = reporter(options.onProgress);
+  // Asked while the drives are scanned, as it never rejects; needed only once there are files to read.
+  const reading = readersFor(options.driveKind, primary, replica);
   const [, , total] = await Promise.all([
     assertFolder("Primary", primary),
     assertFolder("Replica", replica),
@@ -76,8 +85,17 @@ export async function compare(
     only === undefined ? itemTotal(options.itemCounter, primary, replica) : undefined,
   ]);
   // The folder as stored on each drive. Not yet on the Replica: nothing there to compare with.
-  const primaryFolder = only === undefined ? "" : await findOnlyFolder("Primary", primary, only);
-  const replicaFolder = only === undefined ? "" : await findOnlyFolder("Replica", replica, only);
+  // Found on both drives at once; when both fail, the Primary's reason is the one given.
+  const [primaryFolder, replicaFolder] =
+    only === undefined
+      ? ["", ""]
+      : await Promise.allSettled([findOnlyFolder("Primary", primary, only), findOnlyFolder("Replica", replica, only)]).then(
+          ([onPrimary, onReplica]) => {
+            if (onPrimary.status === "rejected") throw onPrimary.reason;
+            if (onReplica.status === "rejected") throw onReplica.reason;
+            return [onPrimary.value as string, onReplica.value];
+          },
+        );
   let scanned = 0;
   const scanning = () => tellProgress({ phase: "scanning", scanned, ...(total === undefined ? {} : { total }) });
   scanning();
@@ -114,7 +132,7 @@ export async function compare(
   const hasher = options.hasher ?? new Sha256Hasher();
   const contentMismatch: ContentMismatch[] = [];
   if (options.deep === true) {
-    const verified = await verifyContents(quickEqualPairs, { primary, replica, hasher, tellProgress });
+    const verified = await verifyContents(quickEqualPairs, { primary, replica, hasher, reading: await reading, tellProgress });
     // Read in full just now, so these need no access check like the changed files above.
     changed.push(...verified.changedWhileRead);
     contentMismatch.push(...verified.contentMismatch);
@@ -159,27 +177,14 @@ export async function compare(
   // Lookalikes are never one end of a move either: a rename would take the backup from where it was.
   const movable = replicaOnly.filter((file) => !copiesOfUnreadable.has(file));
   const candidates = findMoveCandidates(primaryOnly, movable).filter((candidate) => !cannotRead.has(candidate.primary));
-  // Each candidate is read in full on both drives.
-  const totalBytes = candidates.reduce((total, candidate) => total + 2 * candidate.primary.size, 0);
-  /** Bytes of the candidates already checked, whether or not they could be read in full. */
-  let checkedBefore = 0;
-  if (candidates.length > 0) tellProgress({ phase: "checking moves", checkedBytes: 0, totalBytes });
-  for (const candidate of candidates) {
-    const bytes = 2 * candidate.primary.size;
-    let read = 0;
-    const onRead = (chunk: number) => {
-      read += chunk;
-      // A file that grew since it was scanned must not take the bar past this candidate.
-      tellProgress({ phase: "checking moves", checkedBytes: checkedBefore + Math.min(read, bytes), totalBytes });
-    };
-    // One at a time, which suits any drive; reading several at once per drive type is #12's.
-    const [primarySum, replicaSum] = await Promise.allSettled([
-      hasher.checksum(join(primary, candidate.primary.path), onRead),
-      hasher.checksum(join(replica, candidate.replica.path), onRead),
-    ]);
-    checkedBefore += bytes;
-    // Not read in full (unreadable, or changed since the scan): the bar still moves past it.
-    if (read !== bytes) tellProgress({ phase: "checking moves", checkedBytes: checkedBefore, totalBytes });
+  // Each candidate is read in full on both drives, several at once where the drives allow.
+  const sums =
+    candidates.length === 0
+      ? []
+      : await readPairs(candidates, { phase: "checking moves", primary, replica, hasher, reading: await reading, tellProgress }, (read) => read());
+  // Taken in the candidates' order, so the Report is the same however the reads finished.
+  for (const [i, candidate] of candidates.entries()) {
+    const [primarySum, replicaSum] = sums[i]!;
     if (primarySum.status === "rejected") {
       // The Primary file cannot be read (damage, say): skipped like any other, and its copy kept.
       cannotRead.add(candidate.primary);
@@ -224,42 +229,20 @@ interface Verified {
 
 /**
  * Deep verify: reads each pair in `quickEqualPairs` (files a Quick compare judges equal) in full on
- * both drives, one pair at a time, and reports each regular file whose checksums differ as a content
- * mismatch. A Replica copy the drive could not read (EIO) is a content mismatch too, saying why.
- * Rejects on any other failure to read a Replica copy, as for anything else on the Replica (ADR 0015).
+ * both drives, several at once where the drives allow (`readPairs`), and reports each regular file
+ * whose checksums differ as a content mismatch. A Replica copy the drive could not read (EIO) is a
+ * content mismatch too, saying why. Rejects on any other failure to read a Replica copy, as for
+ * anything else on the Replica (ADR 0015).
  */
 async function verifyContents(
   quickEqualPairs: ReadonlyArray<{ primary: ScannedFile; replica: ScannedFile }>,
-  { primary, replica, hasher, tellProgress }: {
-    primary: string;
-    replica: string;
-    hasher: Hasher;
-    tellProgress: (progress: CompareProgress) => void;
-  },
+  drives: Omit<PairReading, "phase">,
 ): Promise<Verified> {
+  const { primary, replica } = drives;
   const verified: Verified = { changedWhileRead: [], contentMismatch: [], unreadable: [] };
   const files = quickEqualPairs.filter((pair) => pair.primary.kind === "file");
-  // Each file is read in full on both drives.
-  const totalBytes = files.reduce((total, pair) => total + 2 * pair.primary.size, 0);
-  /** Bytes of the files already verified, whether or not they could be read in full. */
-  let checkedBefore = 0;
-  tellProgress({ phase: "verifying", checkedBytes: 0, totalBytes });
-  for (const pair of files) {
-    const bytes = 2 * pair.primary.size;
-    let read = 0;
-    const onRead = (chunk: number) => {
-      read += chunk;
-      // A file that grew since it was scanned must not take the bar past it.
-      tellProgress({ phase: "verifying", checkedBytes: checkedBefore + Math.min(read, bytes), totalBytes });
-    };
-    // One file at a time, the Primary and the Replica together, which suits any drive; reading
-    // several at once per drive type is #12's.
-    const [primarySum, replicaSum] = await Promise.allSettled([
-      hasher.checksum(join(primary, pair.primary.path), onRead),
-      hasher.checksum(join(replica, pair.replica.path), onRead),
-    ]);
-    checkedBefore += bytes;
-    if (read !== bytes) tellProgress({ phase: "verifying", checkedBytes: checkedBefore, totalBytes });
+  const outcomes = await readPairs(files, { ...drives, phase: "verifying" }, async (read, pair) => {
+    const [primarySum, replicaSum] = await read();
     if (replicaSum.status === "rejected") {
       const error = replicaSum.reason as NodeJS.ErrnoException;
       // Anything but the drive failing to read it (a missing file, no permission, a lost drive) stops
@@ -268,27 +251,119 @@ async function verifyContents(
         throw new Error(`The Replica's copy of ${pair.replica.path} could not be read (${readFailure(error)})`, { cause: error });
       }
     }
+    // Looked at after reading, so an edit made meanwhile is not taken for damage.
+    const differ = primarySum.status === "fulfilled" && replicaSum.status === "fulfilled" && primarySum.value !== replicaSum.value;
+    const changedMeanwhile = differ && (!(await unchanged(primary, pair.primary)) || !(await unchanged(replica, pair.replica)));
+    return { primarySum, replicaSum, differ, changedMeanwhile };
+  });
+  // Taken in the files' order, so the Report is the same however the reads finished.
+  for (const [i, pair] of files.entries()) {
+    const { primarySum, replicaSum, differ, changedMeanwhile } = outcomes[i]!;
     if (primarySum.status === "rejected") {
       // Damage a Quick compare cannot see: skipped like anything else unreadable (ADR 0015).
       verified.unreadable.push({ file: pair.primary, reason: readFailure(primarySum.reason as NodeJS.ErrnoException) });
-      continue;
-    }
-    if (replicaSum.status === "rejected") {
+    } else if (replicaSum.status === "rejected") {
       // The Replica's copy itself is damaged: what Deep verify is for. Left to the owner's choice, like any
       // other copy whose contents do not match.
       const replicaReadFailure = readFailure(replicaSum.reason as NodeJS.ErrnoException);
       verified.contentMismatch.push({ path: pair.primary.path, size: pair.primary.size, replicaReadFailure });
-      continue;
-    }
-    if (primarySum.value === replicaSum.value) continue;
-    // Looked at after reading, so an edit made meanwhile is not taken for damage.
-    if (!(await unchanged(primary, pair.primary)) || !(await unchanged(replica, pair.replica))) {
+    } else if (changedMeanwhile) {
       verified.changedWhileRead.push(pair.primary);
-      continue;
+    } else if (differ) {
+      verified.contentMismatch.push({ path: pair.primary.path, size: pair.primary.size });
     }
-    verified.contentMismatch.push({ path: pair.primary.path, size: pair.primary.size });
   }
   return verified;
+}
+
+/** How many files to read at once from the drives being compared, and the limiter that holds each to it. */
+interface Readers {
+  /** Pairs of files in flight: as many as the faster drive reads at once. */
+  pairsAtOnce: number;
+  primary: ReadLimiter;
+  replica: ReadLimiter;
+}
+
+/** The `Readers` for the Primary at `primary` and the Replica at `replica`, as `driveKind` tells their kinds. Never rejects. */
+async function readersFor(driveKind: DriveKind | undefined, primary: string, replica: string): Promise<Readers> {
+  const [onPrimary, onReplica] = await Promise.all([readsAtOnce(driveKind, primary), readsAtOnce(driveKind, replica)]);
+  return { pairsAtOnce: Math.max(onPrimary, onReplica), primary: readLimiter(onPrimary), replica: readLimiter(onReplica) };
+}
+
+/** What `readPairs` needs: the drives, how to read them, and the phase whose progress it reports. */
+interface PairReading {
+  phase: "verifying" | "checking moves";
+  primary: string;
+  replica: string;
+  hasher: Hasher;
+  reading: Readers;
+  tellProgress: (progress: CompareProgress) => void;
+}
+
+/** Both checksums of a pair of files, each as read or why it could not be. */
+type PairSums = [PromiseSettledResult<string>, PromiseSettledResult<string>];
+
+/**
+ * Reads each of `pairs` (a Primary file and a Replica file) in full on both drives with `hasher`, as
+ * many pairs at once as `reading` allows and no more files from either drive than it reads at once.
+ * `check` is given each pair and a `read` that checksums both its files, and resolves with what was
+ * found; the results come in the order of `pairs`, however the reads finished. Reports bytes read
+ * out of each Primary file's size on both drives, as `phase`, from 0 to the total and never back.
+ * Once `check` rejects, no more pairs are started: it waits for those being read, then rejects as
+ * the first rejecting pair in order did, as reading them one at a time would have.
+ */
+async function readPairs<P extends { primary: ScannedFile; replica: ScannedFile }, R>(
+  pairs: readonly P[],
+  { phase, primary, replica, hasher, reading, tellProgress }: PairReading,
+  check: (read: () => Promise<PairSums>, pair: P) => Promise<R>,
+): Promise<R[]> {
+  const totalBytes = pairs.reduce((total, pair) => total + 2 * pair.primary.size, 0);
+  /** Bytes read of each pair, counting no more than its size on both drives, and all of it once done. */
+  let checkedBytes = 0;
+  tellProgress({ phase, checkedBytes, totalBytes });
+  const results: R[] = [];
+  const failures = new Map<number, unknown>();
+  let next = 0;
+  const checkOne = async (pair: P): Promise<R> => {
+    const bytes = 2 * pair.primary.size;
+    let read = 0;
+    const onRead = (chunk: number) => {
+      // A file that grew since it was scanned must not take the bar past this pair.
+      const counted = Math.min(read + chunk, bytes) - Math.min(read, bytes);
+      read += chunk;
+      checkedBytes += counted;
+      tellProgress({ phase, checkedBytes, totalBytes });
+    };
+    try {
+      return await check(
+        () =>
+          Promise.allSettled([
+            reading.primary(() => hasher.checksum(join(primary, pair.primary.path), onRead)),
+            reading.replica(() => hasher.checksum(join(replica, pair.replica.path), onRead)),
+          ]) as Promise<PairSums>,
+        pair,
+      );
+    } finally {
+      // Not read in full (unreadable, or changed since the scan): the bar still moves past it.
+      if (read < bytes) {
+        checkedBytes += bytes - read;
+        tellProgress({ phase, checkedBytes, totalBytes });
+      }
+    }
+  };
+  const worker = async () => {
+    while (next < pairs.length && failures.size === 0) {
+      const i = next++;
+      try {
+        results[i] = await checkOne(pairs[i]!);
+      } catch (error) {
+        failures.set(i, error);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(reading.pairsAtOnce, pairs.length) }, worker));
+  if (failures.size > 0) throw failures.get(Math.min(...failures.keys()));
+  return results;
 }
 
 /**

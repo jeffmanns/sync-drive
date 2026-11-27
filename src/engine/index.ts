@@ -13,6 +13,7 @@ export {
   type Pairing,
 } from "./pairing.ts";
 export { readPairing, writePairing } from "./pairing-file.ts";
+export { readLimiter, readsAtOnce, SOLID_STATE_READS, type ReadLimiter } from "./reads-at-once.ts";
 export {
   makeMovesSection,
   makeSection,
@@ -45,4 +46,4 @@ export {
   type UpdateSetup,
 } from "./update.ts";
 export type { CheckingMovesProgress, CompareProgress, VerifyingProgress, FilesDone, ScanningProgress, UpdateProgress } from "./progress.ts";
-export type { CandidateDrive, ItemCounter, Remounter, Volume, VolumeIdentity } from "./volumes.ts";
+export type { CandidateDrive, DriveKind, ItemCounter, Remounter, Volume, VolumeIdentity } from "./volumes.ts";

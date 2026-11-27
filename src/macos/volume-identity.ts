@@ -77,7 +77,12 @@ function toVolume(entry: Record<string, unknown>): Volume | undefined {
 
 /** Runs diskutil with `args` (which must include `-plist`) and returns its output as JSON. */
 export async function diskutilPlist(args: string[]): Promise<Record<string, unknown>> {
-  const { stdout: plist } = await run("diskutil", args, { maxBuffer: 16 * 1024 * 1024 });
+  return plistFrom("diskutil", args);
+}
+
+/** Runs `command` (diskutil or hdiutil) with `args`, which must ask for a plist, and returns its output as JSON. */
+export async function plistFrom(command: string, args: string[]): Promise<Record<string, unknown>> {
+  const { stdout: plist } = await run(command, args, { maxBuffer: 16 * 1024 * 1024 });
   const converting = run("plutil", ["-convert", "json", "-o", "-", "-"], { maxBuffer: 16 * 1024 * 1024 });
   converting.child.stdin!.end(plist);
   const { stdout: json } = await converting;

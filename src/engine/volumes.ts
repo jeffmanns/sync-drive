@@ -60,3 +60,15 @@ export interface Remounter {
   /** Remounts `volume`, which `readOnly()` made read-only, normally again, and confirms it is. */
   normally(volume: Volume): Promise<Volume>;
 }
+
+/**
+ * Tells the engine whether a drive is solid state, to choose how many files to read from it at once
+ * (`readsAtOnce`). Never used to decide what a comparison or an Update finds. Tests substitute a fake.
+ */
+export interface DriveKind {
+  /**
+   * Whether the drive whose top level is `mountPoint` is solid state, or `undefined` when it cannot
+   * be told. Should not reject; a rejection is taken as `undefined` all the same.
+   */
+  isSolidState(mountPoint: string): Promise<boolean | undefined>;
+}
