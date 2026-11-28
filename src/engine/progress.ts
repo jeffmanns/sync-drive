@@ -53,6 +53,14 @@ export interface UpdateProgress {
     copiedBytes: number;
     /** Bytes of the files that could not be copied so far. */
     notCopiedBytes: number;
+    /**
+     * How far the files still under way have got, across every copy at once (ADR 0023). Each counts
+     * half its size for its copy, by the size its copy has reached on the Replica, and half for reading
+     * the copy back to confirm it (ADR 0021). Never more than those files' sizes. When a file settles, its
+     * share leaves this and its whole size joins `copiedBytes` or `notCopiedBytes`, so the three together
+     * never go back.
+     */
+    copyingBytes: number;
     totalBytes: number;
   };
 }

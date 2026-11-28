@@ -490,8 +490,8 @@ describe("app flow: progress", () => {
     await flow.apply();
 
     assert.ok(updating.every((state) => state.primary === "read-only"), "the bar belongs to the read-only stage");
-    assert.deepEqual(updating[0]!.progress.copies, { copiedBytes: 0, notCopiedBytes: 0, totalBytes: 1_500_013 });
-    assert.deepEqual(updating.at(-1)!.progress.copies, { copiedBytes: 1_500_013, notCopiedBytes: 0, totalBytes: 1_500_013 });
+    assert.deepEqual(updating[0]!.progress.copies, { copiedBytes: 0, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 1_500_013 });
+    assert.deepEqual(updating.at(-1)!.progress.copies, { copiedBytes: 1_500_013, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 1_500_013 });
     assert.equal(stateOf(flow).step, "result");
   });
 });

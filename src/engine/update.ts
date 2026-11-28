@@ -106,6 +106,11 @@ export interface UpdateSetup {
    * has got. What it throws is ignored.
    */
   onProgress?: (progress: UpdateProgress) => void;
+  /**
+   * How often, in milliseconds, the size of each copy under way is looked at, for `onProgress` (#55).
+   * Only the size is looked at, never what the copy holds (ADR 0021). Defaults to 250.
+   */
+  copySizeEveryMs?: number;
 }
 
 /** A file the Update did not copy or move, and why. */
@@ -254,7 +259,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   // Asked now, while the deletions and moves are done; it never rejects.
   const copyLimits = readLimitsFor(files.length > 0 ? setup.driveKind : undefined, setup.primary, setup.replica);
   const tellProgress = reporter(setup.onProgress);
-  const copies = { copiedBytes: 0, notCopiedBytes: 0, totalBytes: files.reduce((total, file) => total + file.size, 0) };
+  const copies = { copiedBytes: 0, notCopiedBytes: 0, copyingBytes: 0, totalBytes: files.reduce((total, file) => total + file.size, 0) };
   /** Reports how far the Update has got, from what `result` says it has done and the bytes in `copies`. */
   const progress = () =>
     tellProgress({
@@ -357,6 +362,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   await rm(incoming, { recursive: true, force: true });
   await mkdir(incoming);
   const limits = await copyLimits;
+  const copySizeEveryMs = setup.copySizeEveryMs ?? 250;
   /**
    * Copies `file` under a temporary name, checks the copy against its Primary file, and renames it into
    * place. Resolves with what happened to it; rejects only if its temporary copy could not be removed.
@@ -366,6 +372,51 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     const temporary = join(incoming, randomUUID());
     const destination = join(setup.replica, file.path);
     const source = join(setup.primary, file.path);
+    // How far this file has got, for the Updating bar only (#55): nothing here changes what is done.
+    /** The bytes its copy has reached, and of the copy read back to confirm it. */
+    let written = 0;
+    let readBack = 0;
+    /** Its share of `copies.copyingBytes`: half for the copy, half for the read-back. Only ever grows until it settles. */
+    let share = 0;
+    const advance = () => {
+      const reached = Math.floor((Math.min(written, file.size) + Math.min(readBack, file.size)) / 2);
+      if (reached <= share) return;
+      copies.copyingBytes += reached - share;
+      share = reached;
+      progress();
+    };
+    /** Takes this file's share out of `copies.copyingBytes`, as it settles. */
+    const settle = () => {
+      copies.copyingBytes -= share;
+      share = 0;
+    };
+    /** Runs the copier, looking at the size of its copy every `copySizeEveryMs` meanwhile, never at its contents (ADR 0021). */
+    const copyWatched = async () => {
+      let watching = true;
+      const timer = setInterval(() => {
+        lstat(temporary).then(
+          (copy) => {
+            if (!watching) return;
+            written = Math.max(written, copy.size);
+            advance();
+          },
+          // Not there yet, or gone: there is nothing to show.
+          () => undefined,
+        );
+      }, copySizeEveryMs);
+      try {
+        await setup.copier.copy(source, temporary);
+      } finally {
+        watching = false;
+        clearInterval(timer);
+      }
+      written = file.size;
+      advance();
+    };
+    const onReadBack = (bytes: number) => {
+      readBack += bytes;
+      advance();
+    };
     try {
       const before = await lstat(source, { bigint: true });
       if (!before.isFile() && !before.isSymbolicLink()) throw new Error(SPECIAL_FILE);
@@ -373,18 +424,20 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       await assertNoShortcutAlong(setup.replica, file.path);
       // A copy reads the Primary and writes the Replica, so it counts against both drives' limits. Always
       // the Primary's first, so two copies can never each wait for the other (ADR 0023).
-      await limits.primary(() => limits.replica(() => setup.copier.copy(source, temporary)));
+      await limits.primary(() => limits.replica(copyWatched));
       // Read both back in full, so "copied" means confirmed identical, not just written. The copy is read
       // from the drive itself where it can be, so damage on its way there is caught too (ADR 0021). A
       // shortcut is never followed: what it holds is the path it points to (ADR 0015).
       let inMemory = false;
       const checkCopy = async () => {
         try {
-          return await copyHasher.checksum(temporary);
+          return await copyHasher.checksum(temporary, onReadBack);
         } catch (error) {
           if (!(error instanceof NotReadableFromDriveError)) throw error;
           inMemory = true;
-          return primaryHasher.checksum(temporary);
+          // Read again from the start; the bar stays where it got to until this passes it.
+          readBack = 0;
+          return primaryHasher.checksum(temporary, onReadBack);
         }
       };
       const [primarySum, copySum] = await Promise.all(
@@ -414,10 +467,12 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
         if (overwriting) await rename(join(holdingArea, file.path), destination);
         throw error;
       }
+      settle();
       copies.copiedBytes += file.size;
       progress();
       return { copied: true, inMemory };
     } catch (error) {
+      settle();
       await rm(temporary, { force: true });
       copies.notCopiedBytes += file.size;
       progress();
