@@ -52,8 +52,9 @@ async function testMac(copier: FileCopier = new MacFileCopier()) {
   const pairingFile = join(await makeTree(), "sync-drive", "pairing.json");
   const exclusionsFile = join(dirname(pairingFile), "exclusions.json");
   const updateLogFolder = join(dirname(pairingFile), "Update logs");
+  const solidStateMarksFile = join(dirname(pairingFile), "solid-state-marks.json");
   const open = async () => {
-    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, copyHasher: new MacUncachedHasher(), remounter, itemCounter, driveKind });
+    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, solidStateMarksFile, copier, copyHasher: new MacUncachedHasher(), remounter, itemCounter, driveKind });
     await flow.open();
     return flow;
   };
@@ -129,7 +130,7 @@ describe("app flow: Pairing", () => {
 
     await flow.pair();
 
-    const expected = { step: "start", pairing: { primary: photosSide, replica: backupSide }, exclusions: [], deep: false, lastUpdated: { known: true, folders: [] } };
+    const expected = { step: "start", pairing: { primary: photosSide, replica: backupSide }, exclusions: [], deep: false, lastUpdated: { known: true, folders: [] }, solidStateOffers: [] };
     assert.deepEqual(flow.state, expected);
     assert.deepEqual((await mac.open()).state, expected, "remembered when the app opens again");
   });
@@ -2060,5 +2061,121 @@ describe("app flow: checking each copy", () => {
     const at = lines.indexOf("Checked as read through memory, not read back from the Replica, as stored compressed: 1 file (180.0 KB)");
     assert.notEqual(at, -1, log);
     assert.equal(lines[at + 1], "  compressed.txt (180.0 KB)");
+  });
+});
+
+describe("app flow: marking a drive as solid state", () => {
+  /** A paired Mac whose Replica macOS cannot tell the kind of, and whose Primary it calls `primaryKind`, on Start. */
+  async function unknownReplica(primaryKind: boolean | undefined = true, primarySpec: TreeSpec = {}, replicaSpec: TreeSpec = {}, copier?: FileCopier) {
+    const mac = await pairedMac(primarySpec, replicaSpec, copier);
+    mac.driveKind.set(mac.primary, primaryKind);
+    mac.driveKind.set(mac.replica, undefined);
+    await mac.flow.drivesChanged();
+    return mac;
+  }
+
+  it("offers the mark, unticked, only for a paired drive macOS cannot tell the kind of", async () => {
+    const { flow } = await unknownReplica(true);
+
+    assert.deepEqual(stateOf(flow).solidStateOffers, [{ role: "Replica", id: "REPLICA-ID", name: stateOf(flow).pairing.replica.name, marked: false }]);
+  });
+
+  it("offers no mark for a drive macOS reports as solid state or as spinning", async () => {
+    const { flow, driveKind, primary, replica } = await pairedMac();
+    driveKind.set(primary, true);
+    driveKind.set(replica, false);
+
+    await flow.drivesChanged();
+
+    assert.deepEqual(stateOf(flow).solidStateOffers, []);
+    await flow.markSolidState("REPLICA-ID", true);
+    assert.deepEqual(stateOf(flow).solidStateOffers, [], "a spinning drive cannot be marked");
+  });
+
+  it("saves the mark by Volume ID beside the Pairing, keeps it when the app opens again, and can untick it", async () => {
+    const { flow, open, pairingFile } = await unknownReplica(true);
+
+    await flow.markSolidState("REPLICA-ID", true);
+
+    assert.equal(stateOf(flow).solidStateOffers[0].marked, true);
+    const marksFile = join(dirname(pairingFile), "solid-state-marks.json");
+    assert.deepEqual(JSON.parse(await readFile(marksFile, "utf8")), { solidState: ["REPLICA-ID"] });
+    const reopened = await open();
+    assert.equal(stateOf(reopened).solidStateOffers[0].marked, true);
+
+    await reopened.markSolidState("REPLICA-ID", false);
+
+    assert.equal(stateOf(reopened).solidStateOffers[0].marked, false);
+    assert.deepEqual(JSON.parse(await readFile(marksFile, "utf8")), { solidState: [] });
+  });
+
+  it("keeps the mark when the same drive is paired again", async () => {
+    const { flow, volumes, replica } = await unknownReplica(true);
+    await flow.markSolidState("REPLICA-ID", true);
+    volumes.disconnect(replica);
+    volumes.connect(replica, "REPLICA-ID");
+
+    await flow.beginRepair();
+    flow.confirmReplace(true);
+    flow.choosePrimary("PRIMARY-ID");
+    await flow.pair();
+
+    assert.equal(stateOf(flow).step, "start");
+    assert.equal(stateOf(flow).solidStateOffers[0].marked, true);
+  });
+
+  it("treats a damaged marks file as no marks, and still compares", async () => {
+    const mac = await testMac();
+    await mkdir(dirname(mac.pairingFile), { recursive: true });
+    await writeFile(join(dirname(mac.pairingFile), "solid-state-marks.json"), "{damaged");
+    const primary = await makePrimary({ "a.txt": "a" });
+    const replica = await makeTree();
+    mac.volumes.connect(primary, "PRIMARY-ID");
+    mac.volumes.connect(replica, "REPLICA-ID");
+    mac.driveKind.set(replica, undefined);
+    const flow = await mac.open();
+    flow.choosePrimary("PRIMARY-ID");
+    await flow.pair();
+
+    assert.deepEqual(stateOf(flow).solidStateOffers.map((offer: { marked: boolean }) => offer.marked), [false]);
+    await flow.compare();
+    assert.equal(stateOf(flow).step, "copies");
+  });
+
+  it("copies several files at once to a marked Replica, with the same Review and Result as unmarked, where it copies one at a time", async () => {
+    const spec = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`Photos/p${i}.jpg`, `photo ${i}`]));
+    const runOnce = async (marked: boolean) => {
+      const counts = { running: 0, most: 0 };
+      const copier: FileCopier = {
+        async copy(source, destination) {
+          counts.running++;
+          counts.most = Math.max(counts.most, counts.running);
+          try {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            return await new MacFileCopier().copy(source, destination);
+          } finally {
+            counts.running--;
+          }
+        },
+      };
+      const { flow, replica } = await unknownReplica(true, spec, { "old.txt": "old" }, copier);
+      if (marked) await flow.markSolidState("REPLICA-ID", true);
+      flow.deepVerify(true);
+      await flow.compare();
+      const { drives: _, pairing: __, ...review } = stateOf(flow).review;
+      flow.approveCopies(true);
+      toSummaryApprovingDeletions(flow);
+      await flow.apply();
+      const { updateLog: ___, pairing: ____, ...result } = stateOf(flow);
+      return { review, result, most: counts.most, replica: (await snapshotTree(replica)).filter((line) => line.startsWith("file ")) };
+    };
+
+    const [marked, unmarked] = [await runOnce(true), await runOnce(false)];
+
+    assert.equal(unmarked.most, 1);
+    assert.ok(marked.most > 1, `${marked.most} copies in flight`);
+    assert.deepEqual(marked.review, unmarked.review);
+    assert.deepEqual(marked.result, unmarked.result);
+    assert.equal(marked.result.copied.length, 12);
   });
 });

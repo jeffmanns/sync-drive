@@ -6,17 +6,21 @@ import {
   findPairedDrives,
   findPairedReplica,
   makeSection,
+  MarkedDriveKind,
+  markedIn,
   nothingDone,
   pairDrives,
   readHoldingArea,
   readExclusions,
   readLastUpdated,
   readPairing,
+  readSolidStateMarks,
   sameExclusion,
   update,
   UpdateStoppedError,
   writeExclusions,
   writePairing,
+  writeSolidStateMarks,
   type FileCopier,
   type Hasher,
   type ItemCounter,
@@ -51,6 +55,7 @@ import {
   type ReplicaLastUpdated,
   type ResultState,
   type Review,
+  type SolidStateOffer,
   type StartState,
   type SummaryState,
 } from "./view.ts";
@@ -73,8 +78,13 @@ export interface FlowDeps {
   remounter: Remounter;
   /** Reads each drive's item count from macOS, for the Comparing progress bar. */
   itemCounter: ItemCounter;
-  /** Tells whether each drive is solid state, to choose how many files a comparison reads from it at once. */
+  /**
+   * macOS's word on whether each drive is solid state, to choose how many files are read from it at
+   * once. The owner's Solid-state marks fill in where it cannot tell (ADR 0025).
+   */
   driveKind: DriveKind;
+  /** Where the Solid-state marks are stored, beside the Pairing. */
+  solidStateMarksFile: string;
 }
 
 /**
@@ -106,9 +116,18 @@ export class Flow {
   #listingGeneration = 0;
   /** When the paired Replica was last updated, as last read for Start. */
   #lastUpdated: ReplicaLastUpdated | undefined;
+  /** The Pairing saved now, if any. A Solid-state mark counts only for its drives. */
+  #pairing: Pairing | undefined;
+  /** The Volume IDs the owner marked as solid state, as saved. */
+  #solidStateMarks: string[] = [];
+  /** The connected paired drives whose kind macOS cannot tell, as last read for Start. */
+  #unknownKinds: Omit<SolidStateOffer, "marked">[] | undefined;
+  /** macOS's word on each drive's kind, with the owner's marks where it cannot tell: for every comparison and Update. */
+  readonly #driveKind: MarkedDriveKind;
 
   constructor(deps: FlowDeps) {
     this.#deps = deps;
+    this.#driveKind = new MarkedDriveKind(deps.driveKind, deps.volumes, (id) => markedIn(this.#pairing, this.#solidStateMarks)(id));
   }
 
   /** What the screens show now. */
@@ -128,7 +147,7 @@ export class Flow {
   }
 
   /** Start for `pairing`, with the Exclusions as saved. */
-  #start(pairing: Pairing, extra: Pick<StartState, "error" | "notice" | "exclusionProblem"> = {}): StartState {
+  #start(pairing: Pairing, extra: Pick<StartState, "error" | "notice" | "exclusionProblem" | "solidStateProblem"> = {}): StartState {
     return {
       step: "start",
       pairing,
@@ -137,6 +156,7 @@ export class Flow {
       deep: this.#deep,
       ...(this.#lastUpdated === undefined ? {} : { lastUpdated: this.#lastUpdated }),
       ...(this.#exclusionsDamaged === undefined ? {} : { exclusionProblem: this.#exclusionsDamaged }),
+      ...this.#solidStateOffers(),
       ...extra,
     };
   }
@@ -148,6 +168,7 @@ export class Flow {
     } catch (error) {
       this.#exclusionsDamaged = (error as Error).message;
     }
+    this.#solidStateMarks = await readSolidStateMarks(this.#deps.solidStateMarksFile);
     let pairing: Pairing | undefined;
     try {
       pairing = await readPairing(this.#deps.pairingFile);
@@ -159,8 +180,67 @@ export class Flow {
       });
     }
     if (pairing === undefined) return this.#showPairing();
+    this.#pairing = pairing;
     this.#set(this.#start(pairing));
-    await this.#readLastUpdated(pairing);
+    await this.#readOnStart(pairing);
+  }
+
+  /** Reads what Start shows from the paired drives: when the Replica was last updated, and which drives macOS cannot tell the kind of. Reads only. */
+  async #readOnStart(pairing: Pairing): Promise<void> {
+    await Promise.all([this.#readLastUpdated(pairing), this.#readUnknownKinds(pairing)]);
+  }
+
+  /**
+   * Asks macOS the kind of each connected drive of `pairing`, and offers the Solid-state mark for
+   * those it cannot tell, if the app is still on Start for `pairing`. Asks macOS itself, never the
+   * marks, so a drive it reports as solid state or spinning is never offered (ADR 0025).
+   */
+  async #readUnknownKinds(pairing: Pairing): Promise<void> {
+    const connected = await this.#deps.volumes.connected().catch((): Volume[] => []);
+    const paired = [
+      { role: "Primary" as const, ...pairing.primary },
+      { role: "Replica" as const, ...pairing.replica },
+    ];
+    const told = await Promise.all(
+      paired.map(async (drive) => {
+        const volume = connected.find((connectedDrive) => connectedDrive.id === drive.id);
+        if (volume === undefined) return false;
+        const solidState = await Promise.resolve()
+          .then(() => this.#deps.driveKind.isSolidState(volume.mountPoint))
+          .catch(() => undefined);
+        return solidState === undefined;
+      }),
+    );
+    const state = this.#state;
+    if (state.step !== "start" || state.pairing !== pairing) return;
+    this.#unknownKinds = paired.filter((_, i) => told[i]);
+    this.#set({ ...state, ...this.#solidStateOffers() });
+  }
+
+  /** The paired drives macOS cannot tell the kind of, for Start, each with whether it is marked as solid state. */
+  #solidStateOffers(): Pick<StartState, "solidStateOffers"> {
+    if (this.#unknownKinds === undefined) return {};
+    return { solidStateOffers: this.#unknownKinds.map((drive) => ({ ...drive, marked: this.#solidStateMarks.includes(drive.id) })) };
+  }
+
+  /**
+   * On Start: marks the paired drive with Volume ID `id` as solid state (`marked`), or unmarks it, and
+   * saves the marks. Only for a drive offered the mark: one macOS cannot tell the kind of. If the
+   * marks cannot be saved, the saved ones stay in use, and Start says why.
+   */
+  async markSolidState(id: string, marked: boolean): Promise<void> {
+    const state = this.#state;
+    if (state.step !== "start" || this.#unknownKinds?.some((drive) => drive.id === id) !== true) return;
+    const marks = [...this.#solidStateMarks.filter((saved) => saved !== id), ...(marked ? [id] : [])];
+    try {
+      await writeSolidStateMarks(this.#deps.solidStateMarksFile, marks);
+      this.#solidStateMarks = marks;
+      if (this.#state.step === "start") this.#set(this.#start(state.pairing));
+    } catch (error) {
+      if (this.#state.step === "start") {
+        this.#set(this.#start(state.pairing, { solidStateProblem: `The Solid-state mark could not be saved: ${(error as Error).message}` }));
+      }
+    }
   }
 
   /**
@@ -267,9 +347,11 @@ export class Flow {
     }
     try {
       await writePairing(this.#deps.pairingFile, now.summary);
+      this.#pairing = now.summary;
       this.#lastUpdated = undefined;
+      this.#unknownKinds = undefined;
       this.#set(this.#start(now.summary));
-      await this.#readLastUpdated(now.summary);
+      await this.#readOnStart(now.summary);
     } catch (error) {
       this.#set({ ...state, error: (error as Error).message });
     }
@@ -394,7 +476,7 @@ export class Flow {
         ...(only === undefined ? {} : { only }),
         deep,
         itemCounter: this.#deps.itemCounter,
-        driveKind: this.#deps.driveKind,
+        driveKind: this.#driveKind,
         onProgress: (progress) => {
           // Only while still on Comparing for this comparison: a discarded one must not bring it back.
           const now = this.#state;
@@ -545,7 +627,7 @@ export class Flow {
     // Forgotten first, so Start never shows the date from before an Update that has just changed it.
     this.#lastUpdated = undefined;
     this.#set(this.#start(pairing));
-    await this.#readLastUpdated(pairing);
+    await this.#readOnStart(pairing);
   }
 
   /**
@@ -558,7 +640,7 @@ export class Flow {
     let pairing: Pairing;
     let drives: PairedDrives | undefined;
     if (state.step === "pairing") return this.#listDrives();
-    if (state.step === "start") return this.#readLastUpdated(state.pairing);
+    if (state.step === "start") return this.#readOnStart(state.pairing);
     if (state.step === "comparing") pairing = state.pairing;
     else if (isReviewing(state) || state.step === "refused") ({ pairing, drives } = state.review);
     else return;
@@ -685,8 +767,8 @@ export class Flow {
         replica: review.drives.replica.mountPoint,
         copier: this.#copier,
         copyHasher: this.#deps.copyHasher,
-        // Several files copied at once on solid-state drives (ADR 0022, ADR 0023).
-        driveKind: this.#deps.driveKind,
+        // Several files copied at once on solid-state drives, or drives marked so (ADR 0022, ADR 0023, ADR 0025).
+        driveKind: this.#driveKind,
         exclusions: review.exclusions,
         ...(review.only === undefined ? {} : { only: review.only }),
         // The Update reports only while it runs, which is all while the Primary is read-only (ADR 0013).
