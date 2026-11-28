@@ -217,6 +217,12 @@ function SolidStateMark({ state, id, send, busy }: ScreenProps<StartState> & { i
   if (offer === undefined) return null;
   return (
     <div className="solid-state">
+      {/* Why it is asked comes first, so the owner knows what the checkbox is for. Not a problem, so not shown as one. */}
+      <p className="warning">
+        {offer.marked
+          ? "Marked as an SSD: several files are read from it at once. Untick if it is a spinning hard disk."
+          : "macOS couldn't tell whether this drive is an SSD or a spinning hard disk, so it is read one file at a time, which is safe on either."}
+      </p>
       <label className="confirm">
         <input
           type="checkbox"
@@ -226,11 +232,6 @@ function SolidStateMark({ state, id, send, busy }: ScreenProps<StartState> & { i
         />
         This drive is an SSD: read several files at once
       </label>
-      <p className="note">
-        {offer.marked
-          ? "macOS can't tell what kind of drive this is. Marked as an SSD, so several files are read from it at once. Untick if it is a spinning drive."
-          : "macOS can't tell what kind of drive this is, so it is read one file at a time."}
-      </p>
     </div>
   );
 }
