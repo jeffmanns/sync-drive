@@ -685,6 +685,8 @@ export class Flow {
         replica: review.drives.replica.mountPoint,
         copier: this.#copier,
         copyHasher: this.#deps.copyHasher,
+        // Several files copied at once on solid-state drives (ADR 0022, ADR 0023).
+        driveKind: this.#deps.driveKind,
         exclusions: review.exclusions,
         ...(review.only === undefined ? {} : { only: review.only }),
         // The Update reports only while it runs, which is all while the Primary is read-only (ADR 0013).
@@ -752,7 +754,7 @@ export class Flow {
   /**
    * Call before the app quits. If an Update is running, starts no further copy, and resolves once
    * the Update has stopped and the Primary is remounted normally, so that quitting partway does not
-   * leave it read-only. The copy under way is allowed to finish.
+   * leave it read-only. The copies under way are allowed to finish first.
    */
   async quit(): Promise<void> {
     this.#quitting = true;

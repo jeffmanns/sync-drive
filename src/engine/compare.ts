@@ -10,7 +10,7 @@ import { sameDate } from "./same-date.ts";
 import { safetyStopApplies } from "./safety-stops.ts";
 import { checkOnlyFolder, findOnlyFolder } from "./only-folder.ts";
 import { matchKey, readFailure, scan, type ScannedFile } from "./scan.ts";
-import { readLimiter, readsAtOnce, type ReadLimiter } from "./reads-at-once.ts";
+import { readLimitsFor, type ReadLimits } from "./reads-at-once.ts";
 import type { DriveKind, ItemCounter } from "./volumes.ts";
 
 /** Options for a comparison: a Quick compare unless `deep` is given. */
@@ -276,20 +276,6 @@ async function verifyContents(
     }
   }
   return verified;
-}
-
-/** How many files to read at once from the drives being compared, and the limiter that holds each to it. */
-interface ReadLimits {
-  /** Pairs of files in flight: as many as the faster drive reads at once. */
-  pairsAtOnce: number;
-  primary: ReadLimiter;
-  replica: ReadLimiter;
-}
-
-/** The `ReadLimits` for the Primary at `primary` and the Replica at `replica`, as `driveKind` tells their kinds. Never rejects. */
-async function readLimitsFor(driveKind: DriveKind | undefined, primary: string, replica: string): Promise<ReadLimits> {
-  const [onPrimary, onReplica] = await Promise.all([readsAtOnce(driveKind, primary), readsAtOnce(driveKind, replica)]);
-  return { pairsAtOnce: Math.max(onPrimary, onReplica), primary: readLimiter(onPrimary), replica: readLimiter(onReplica) };
 }
 
 /** What `readPairs` needs: the drives, how to read them, and the phase whose progress it reports. */
