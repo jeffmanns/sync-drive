@@ -685,7 +685,7 @@ export class Flow {
         replica: review.drives.replica.mountPoint,
         copier: this.#copier,
         copyHasher: this.#deps.copyHasher,
-        // Several files copied at once on solid-state drives (ADR 0022).
+        // Several files copied at once on solid-state drives (ADR 0022, ADR 0023).
         driveKind: this.#deps.driveKind,
         exclusions: review.exclusions,
         ...(review.only === undefined ? {} : { only: review.only }),

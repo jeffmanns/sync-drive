@@ -341,13 +341,14 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     const kept = join(holdingArea, path);
     // rename replaces whatever is at the destination, so make sure nothing is.
     if (await exists(kept)) throw new Error("the Holding area already holds a file at that path");
-    await rename(join(setup.replica, path), kept);
-    // Written once, though several overwrites go on at once. One that fails is tried again by the next.
+    // Written before the move, so a failure to write it leaves the Replica's copy where it was. Written
+    // once, though several overwrites go on at once; one that fails is tried again by the next.
     readmeWritten ??= writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date())).catch((error: unknown) => {
       readmeWritten = undefined;
       throw error;
     });
     await readmeWritten;
+    await rename(join(setup.replica, path), kept);
   };
   const primaryHasher = setup.primaryHasher ?? new Sha256Hasher();
   const copyHasher = setup.copyHasher ?? primaryHasher;
@@ -370,8 +371,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       if (!before.isFile() && !before.isSymbolicLink()) throw new Error(SPECIAL_FILE);
       // Checked before copying too, so no time is spent on a copy that could not be put in place.
       await assertNoShortcutAlong(setup.replica, file.path);
-      // A copy reads the Primary and writes the Replica, so it takes its place on both drives. Always
-      // the Primary's first, so two copies can never each hold the place the other waits for.
+      // A copy reads the Primary and writes the Replica, so it counts against both drives' limits. Always
+      // the Primary's first, so two copies can never each wait for the other (ADR 0023).
       await limits.primary(() => limits.replica(() => setup.copier.copy(source, temporary)));
       // Read both back in full, so "copied" means confirmed identical, not just written. The copy is read
       // from the drive itself where it can be, so damage on its way there is caught too (ADR 0021). A
@@ -424,25 +425,31 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     }
   };
   // Several files are copied at once, as many as the faster drive reads at once, and each drive is held
-  // to its own number (ADR 0022). What happened to each is listed in the order of `files`, however the
+  // to its own number (ADR 0022, ADR 0023). What happened to each is listed in the order of `files`, however the
   // copies finished, so the result is what copying one at a time gives.
   const outcomes: Array<CopyOutcome | undefined> = [];
-  const stops = new Map<number, unknown>();
+  /** The first file, in the order of `files`, whose copy stopped the Update, and why. */
+  let stop: { index: number; error: unknown } | undefined;
+  /** Records that the copy of `files[index]` stopped the Update, keeping the earliest such file. */
+  const stopAt = (index: number, error: unknown) => {
+    if (stop === undefined || index < stop.index) stop = { index, error };
+  };
   /** The copy of each path under way, by `matchKey`: a file waits for any earlier one at its path. */
   const atPath = new Map<string, Promise<unknown>>();
   let next = 0;
   const worker = async () => {
     // Once one stops the Update, no further copy starts; those under way settle first.
-    while (next < files.length && stops.size === 0) {
+    while (next < files.length && stop === undefined) {
       const i = next++;
       const file = files[i]!;
       const key = matchKey(file.path);
-      const copying = Promise.resolve(atPath.get(key)).then(() => copyOne(file));
+      // Not started if the Update stopped while it waited.
+      const copying = Promise.resolve(atPath.get(key)).then(() => (stop === undefined ? copyOne(file) : undefined));
       atPath.set(key, copying.catch(() => undefined));
       try {
         outcomes[i] = await copying;
       } catch (error) {
-        stops.set(i, error);
+        stopAt(i, error);
       }
     }
   };
@@ -457,7 +464,7 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     result.copied.push(file);
     if (outcome.inMemory) result.checkedInMemory.push(file);
   }
-  if (stops.size > 0) throw stops.get(Math.min(...stops.keys()));
+  if (stop !== undefined) throw stop.error;
   // Last, so only an Update that finished is recorded. One limited to a folder is recorded apart from
   // the whole drive, which it did not bring up to date; one whose folder is gone brought nothing in
   // it up to date, so is not recorded (ADR 0019).

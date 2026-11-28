@@ -1650,6 +1650,7 @@ describe("Update: several files copied at a time", () => {
       const primary = await makeTree({ "a.txt": "AAAA", "b.txt": "BBBB" });
       const replica = await makeTree({ "a.txt": "zzzz", "b.txt": "yyyy" });
       const report = await compare(primary, replica, { deep: true });
+      const primaryBefore = await snapshotTree(primary);
       const driveKind = solidState ? new FakeDriveKind(primary, replica) : undefined;
       const result = await update(report, { ...APPROVED, overwrite: ["a.txt", "b.txt", "a.txt"] }, {
         primary,
@@ -1657,6 +1658,7 @@ describe("Update: several files copied at a time", () => {
         copier: new MacFileCopier(),
         ...(driveKind === undefined ? {} : { driveKind }),
       });
+      assert.deepEqual(await snapshotTree(primary), primaryBefore, "the Primary must never be written to");
       return { result, held: await readFile(join(replica, "sync-drive Holding Area", "a.txt"), "utf8") };
     };
 
@@ -1664,5 +1666,47 @@ describe("Update: several files copied at a time", () => {
 
     assert.deepEqual(atOnce, oneAtATime);
     assert.equal(atOnce.held, "zzzz", "the Replica's own copy is the one kept");
+  });
+
+  it("leaves every Replica copy where it was when the Holding area's READ ME cannot be written, overwriting several at once", async () => {
+    const names = ["a.txt", "b.txt", "c.txt", "d.txt"];
+    const primary = await makeTree(Object.fromEntries(names.map((name) => [name, `new ${name}`])));
+    const replica = await makeTree(Object.fromEntries(names.map((name) => [name, `old ${name}`])));
+    // A folder where the READ ME goes, so it cannot be written.
+    await mkdir(join(replica, "sync-drive Holding Area", "READ ME.txt"), { recursive: true });
+    const report = await compare(primary, replica, { deep: true });
+    const primaryBefore = await snapshotTree(primary);
+
+    const result = await update(report, { ...APPROVED, overwrite: names }, {
+      primary,
+      replica,
+      copier: new MacFileCopier(),
+      driveKind: new FakeDriveKind(primary, replica),
+    });
+
+    assert.deepEqual(result.copied, []);
+    assert.deepEqual(result.failed.map((file) => file.path), names);
+    for (const name of names) assert.equal(await readFile(join(replica, name), "utf8"), `old ${name}`, `${name} is still on the Replica`);
+    assert.deepEqual(await readdir(join(replica, "sync-drive Holding Area")), ["READ ME.txt"]);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore, "the Primary must never be written to");
+  });
+
+  it("writes nothing through a shortcut folder on the Replica, copying several at once, as one at a time", async () => {
+    const runOnce = async (solidState: boolean) => {
+      const primary = await makeTree(SPEC);
+      const replica = await makeTree(REPLICA_SPEC);
+      const elsewhere = await makeTree();
+      await symlink(elsewhere, join(replica, "Folder 1"));
+      const driveKind = solidState ? new FakeDriveKind(primary, replica) : undefined;
+      const result = await compareAndUpdate(primary, replica, APPROVED, new MacFileCopier(), driveKind === undefined ? {} : { driveKind });
+      assert.deepEqual(await readdir(elsewhere), [], "nothing is written where the shortcut points");
+      return result;
+    };
+
+    const [atOnce, oneAtATime] = [await runOnce(true), await runOnce(false)];
+
+    assert.deepEqual(atOnce, oneAtATime);
+    assert.equal(atOnce.failed.length, 4, "the four files under the shortcut");
+    assert.ok(atOnce.failed.every((file) => file.reason.includes("shortcut")));
   });
 });
