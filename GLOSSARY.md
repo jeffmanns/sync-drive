@@ -30,6 +30,10 @@ _Avoid_: timestamp, sync marker
 The plain-text record of one Update, kept on the Mac in the `Update logs` folder beside the Pairing: what it copied, overwrote, renamed and moved into the Holding area, and what it did not, with the reasons (ADR 0019). It also lists the copies stored compressed, which could only be checked as read through memory (ADR 0021).
 _Avoid_: history, report (a Report is a comparison's result)
 
+**Solid-state mark**:
+The owner's tick on Start that a paired drive is an SSD, offered only for a drive whose kind macOS cannot tell. Such a drive then has several files read at once, like any SSD. It is kept by Volume ID beside the Pairing, and it never changes what a comparison finds or an Update writes (ADR 0025).
+_Avoid_: SSD flag, override, drive setting
+
 **Pairing**:
 The remembered designation of one specific volume as the Primary and another as the Replica, identified by each volume's **Volume ID** rather than its name.
 _Avoid_: setup, profile, link

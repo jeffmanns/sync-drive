@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
-import { exclusionsFileBeside } from "../engine/index.ts";
+import { exclusionsFileBeside, solidStateMarksFileBeside } from "../engine/index.ts";
 import { MacDriveKind } from "../macos/drive-kind.ts";
 import { MacFileCopier } from "../macos/file-copier.ts";
 import { MacItemCounter } from "../macos/item-counter.ts";
@@ -35,6 +35,7 @@ const flow = new Flow({
   volumes: new MacVolumes(),
   pairingFile: PAIRING_FILE,
   exclusionsFile: EXCLUSIONS_FILE,
+  solidStateMarksFile: solidStateMarksFileBeside(PAIRING_FILE),
   updateLogFolder: updateLogFolderBeside(PAIRING_FILE),
   copier: new MacFileCopier(),
   copyHasher: new MacUncachedHasher(),
@@ -125,6 +126,8 @@ async function perform(action: Action, window: BrowserWindow): Promise<void> {
       return flow.wholeDrive();
     case "deepVerify":
       return flow.deepVerify(action.on === true);
+    case "markSolidState":
+      return flow.markSolidState(String(action.id), action.marked === true);
     case "overrideSafetyStop":
       return flow.overrideSafetyStop(String(action.typed));
     case "approveCopies":

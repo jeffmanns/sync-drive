@@ -13,7 +13,15 @@ export {
   type Pairing,
 } from "./pairing.ts";
 export { readPairing, writePairing } from "./pairing-file.ts";
-export { readLimiter, readsAtOnce, SOLID_STATE_READS, type ReadLimiter } from "./reads-at-once.ts";
+export { askSolidState, readLimiter, readsAtOnce, SOLID_STATE_READS, type ReadLimiter } from "./reads-at-once.ts";
+export {
+  MarkedDriveKind,
+  markedIn,
+  readSolidStateMarks,
+  solidStateMarksFileBeside,
+  writeSolidStateMarks,
+  type KindOf,
+} from "./solid-state-marks.ts";
 export {
   makeMovesSection,
   makeSection,

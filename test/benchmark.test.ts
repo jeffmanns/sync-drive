@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { after, describe, it } from "node:test";
-import { benchmark } from "../scripts/benchmark.ts";
+import { benchmark, describeReadsAtOnce, readsAtOnceOf } from "../scripts/benchmark.ts";
+import { MarkedDriveKind, markedIn, SOLID_STATE_READS } from "../src/engine/index.ts";
+import { FakeDriveKind } from "./helpers/fake-drive-kind.ts";
+import { FakeVolumes } from "./helpers/fake-volumes.ts";
 import { makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";
 
 after(removeTrees);
@@ -53,5 +56,38 @@ describe("the benchmark", () => {
 
     assert.deepEqual(timing.replica, { count: 1, totalSize: 4 });
     assert.equal(timing.phases.find((phase) => phase.phase === "verifying")?.files, 1);
+  });
+});
+
+describe("the benchmark's files read at once", () => {
+  it("says when a drive's number comes from the owner's Solid-state mark", () => {
+    assert.equal(
+      describeReadsAtOnce({ atOnce: 8, marked: false }, { atOnce: 8, marked: true }),
+      "Files read at once, by whether each drive is solid state (ADR 0022): Primary 8, Replica 8 (marked as solid state)",
+    );
+    assert.equal(
+      describeReadsAtOnce({ atOnce: 8, marked: false }, { atOnce: 1, marked: false }),
+      "Files read at once, by whether each drive is solid state (ADR 0022): Primary 8, Replica 1",
+    );
+  });
+
+  it("reads several files at once from a drive marked as solid state, as the app does", async () => {
+    const primary = await makeTree({ "a.txt": "aaaa" });
+    const replica = await makeTree({ "a.txt": "aaaa" });
+    const volumes = new FakeVolumes({ [primary]: "PRIMARY-ID", [replica]: "REPLICA-ID" });
+    const macOS = new FakeDriveKind(primary);
+    macOS.set(replica, undefined);
+    const pairing = { primary: { id: "PRIMARY-ID", name: "P" }, replica: { id: "REPLICA-ID", name: "R" } };
+    const before = await snapshotTree(primary);
+
+    const kind = new MarkedDriveKind(macOS, volumes, markedIn(pairing, ["REPLICA-ID"]));
+
+    assert.deepEqual(await readsAtOnceOf(kind, primary, replica), [
+      { atOnce: SOLID_STATE_READS, marked: false },
+      { atOnce: SOLID_STATE_READS, marked: true },
+    ]);
+    const timing = await benchmark(primary, replica, { deep: true, driveKind: kind });
+    assert.equal(timing.phases.find((phase) => phase.phase === "verifying")?.files, 1);
+    assert.deepEqual(await snapshotTree(primary), before, "the Primary must never be written to");
   });
 });

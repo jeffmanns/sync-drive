@@ -85,7 +85,8 @@ export interface UpdateSetup {
   /**
    * Tells whether each drive is solid state, to choose how many files to copy at once (`readsAtOnce`,
    * ADR 0022). Without it, one at a time. Called with `primary` and `replica`. Never changes what the
-   * Update does, only how fast.
+   * Update does, only how fast. The app gives it macOS's word, with the owner's Solid-state marks
+   * where macOS cannot tell (`MarkedDriveKind`, ADR 0025).
    */
   driveKind?: DriveKind;
   /** When the Update runs, for the Holding area's `READ ME.txt`. Defaults to now. */

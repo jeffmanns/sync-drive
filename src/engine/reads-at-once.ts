@@ -12,11 +12,15 @@ export const SOLID_STATE_READS = 8;
  * on any drive, when `driveKind` cannot tell or there is none (ADR 0022).
  */
 export async function readsAtOnce(driveKind: DriveKind | undefined, mountPoint: string): Promise<number> {
+  return (await askSolidState(driveKind, mountPoint)) === true ? SOLID_STATE_READS : 1;
+}
+
+/** What `driveKind` says of the drive at `mountPoint`, or `undefined` when it cannot tell, there is none, or it fails. Never rejects. */
+export async function askSolidState(driveKind: DriveKind | undefined, mountPoint: string): Promise<boolean | undefined> {
   // Asked inside a promise, so a DriveKind that throws rather than rejects cannot stop a comparison either.
-  const solidState = await Promise.resolve()
+  return Promise.resolve()
     .then(() => driveKind?.isSolidState(mountPoint))
     .catch(() => undefined);
-  return solidState === true ? SOLID_STATE_READS : 1;
 }
 
 /** Runs a task under a `readLimiter`, resolving or rejecting as it does. */

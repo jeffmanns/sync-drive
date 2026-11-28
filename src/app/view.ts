@@ -70,10 +70,28 @@ export interface StartState {
   lastUpdated?: ReplicaLastUpdated;
   /** Why the last pattern was not added or removed, or why the saved Exclusions cannot be used. */
   exclusionProblem?: string;
+  /**
+   * The connected paired drives whose kind macOS cannot tell, each of which the owner can mark as
+   * solid state (ADR 0025). None for a drive macOS reports as solid state or spinning. Absent until read.
+   */
+  solidStateOffers?: SolidStateOffer[];
+  /** Why the last Solid-state mark could not be saved. */
+  solidStateProblem?: string;
   /** Why the last comparison did not happen or was discarded. */
   error?: string;
   /** Something worth knowing that is not a problem, such as the drives already matching. */
   notice?: string;
+}
+
+/** A paired drive whose kind macOS cannot tell, offered on Start to be marked as solid state (ADR 0025). */
+export interface SolidStateOffer {
+  role: "Primary" | "Replica";
+  /** The drive's Volume ID, which the mark is kept by. */
+  id: string;
+  /** The drive's name as paired, for the screens only. */
+  name: string;
+  /** Whether the owner has marked it as solid state, so several files are read from it at once. */
+  marked: boolean;
 }
 
 /**
@@ -390,6 +408,8 @@ export type Action =
   | { type: "wholeDrive" }
   /** On Start: chooses a Deep verify, or a Quick compare, for the next comparison. */
   | { type: "deepVerify"; on: boolean }
+  /** On Start: marks, or unmarks, the paired drive with this Volume ID as solid state. */
+  | { type: "markSolidState"; id: string; marked: boolean }
   /** On the refusal screen: the number of deletions as the owner typed it. */
   | { type: "overrideSafetyStop"; typed: string }
   | { type: "approveCopies"; approved: boolean }

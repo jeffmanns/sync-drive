@@ -169,10 +169,17 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
       <h1>sync-drive</h1>
       <dl className="drives">
         <dt>Primary</dt>
-        <dd>"{primary.name}" <span className="note">volume ID {primary.id}</span></dd>
+        <dd>
+          "{primary.name}" <span className="note">volume ID {primary.id}</span>
+          <SolidStateMark state={state} id={primary.id} send={send} busy={busy} />
+        </dd>
         <dt>Replica</dt>
-        <dd>"{replica.name}" <span className="note">volume ID {replica.id}</span></dd>
+        <dd>
+          "{replica.name}" <span className="note">volume ID {replica.id}</span>
+          <SolidStateMark state={state} id={replica.id} send={send} busy={busy} />
+        </dd>
       </dl>
+      <Problem text={state.solidStateProblem} />
       {state.lastUpdated !== undefined && (
         <section className="last-updated">
           {lastUpdatedLines(state.lastUpdated, new Date()).map((line) => <p key={line}>{line}</p>)}
@@ -198,6 +205,34 @@ function StartScreen({ state, send, busy }: ScreenProps<StartState>) {
         <button className="primary" onClick={() => send({ type: "compare" })} disabled={busy}>Compare</button>
       </Buttons>
     </>
+  );
+}
+
+/**
+ * Beside a paired drive whose kind macOS cannot tell, the owner's mark that it is solid state, so
+ * several files are read from it at once (ADR 0025). Nothing for a drive macOS reports as either kind.
+ */
+function SolidStateMark({ state, id, send, busy }: ScreenProps<StartState> & { id: string }) {
+  const offer = state.solidStateOffers?.find((drive) => drive.id === id);
+  if (offer === undefined) return null;
+  return (
+    <div className="solid-state">
+      {/* Why it is asked comes first, so the owner knows what the checkbox is for. Not a problem, so not shown as one. */}
+      <p className="warning">
+        {offer.marked
+          ? "Marked as an SSD: several files are read from it at once. Untick if it is a spinning hard disk."
+          : "macOS couldn't tell whether this drive is an SSD or a spinning hard disk, so it is read one file at a time, which is safe on either."}
+      </p>
+      <label className="confirm">
+        <input
+          type="checkbox"
+          checked={offer.marked}
+          disabled={busy}
+          onChange={(event) => send({ type: "markSolidState", id: offer.id, marked: event.target.checked })}
+        />
+        This drive is an SSD: read several files at once
+      </label>
+    </div>
   );
 }
 

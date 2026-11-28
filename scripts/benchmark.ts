@@ -14,7 +14,9 @@
  * runs a Folder limit: that folder (relative to the top of the drives, using `/`), as on Start (ADR 0017), for a short
  * run on a large drive. `--quick` skips the Deep verify.
  *
- * Says how many files it reads at once from each drive, chosen as the app chooses them (ADR 0022).
+ * Says how many files it reads at once from each drive, chosen as the app chooses them (ADR 0022),
+ * with the owner's Solid-state marks saved beside the Pairing filling in where macOS cannot tell
+ * (ADR 0025), and says which numbers come from a mark.
  * Runs a Quick compare, then a Deep verify, each exactly as the app runs it, and prints for each its
  * elapsed time and that of each phase: reading both drives (items listed per second), with Deep verify
  * verifying contents (ADR 0018), and confirming moves by checksum (ADR 0011), each with files and MB read
@@ -35,11 +37,16 @@ import {
   compare,
   exclusionsFileBeside,
   findPairedDrives,
+  MarkedDriveKind,
+  markedIn,
   readExclusions,
   readPairing,
   readsAtOnce,
+  readSolidStateMarks,
   Sha256Hasher,
+  solidStateMarksFileBeside,
   type CompareProgress,
+  type DriveKind,
   type Hasher,
   type Totals,
 } from "../src/engine/index.ts";
@@ -70,14 +77,37 @@ export interface Timing {
   replica: Totals;
 }
 
+/** How many files are read at once from one drive, and whether that comes from the owner's Solid-state mark. */
+export interface ReadsAtOnce {
+  atOnce: number;
+  marked: boolean;
+}
+
+/** How many files `driveKind` has read at once from the Primary at `primary` and the Replica at `replica`, as a comparison chooses (ADR 0022). */
+export async function readsAtOnceOf(driveKind: MarkedDriveKind, primary: string, replica: string): Promise<[ReadsAtOnce, ReadsAtOnce]> {
+  // macOS is asked once per drive: its answer, with any mark, is what `readsAtOnce` chooses by.
+  const of = async (mountPoint: string) => {
+    const { solidState, marked } = await driveKind.kindOf(mountPoint);
+    return { atOnce: await readsAtOnce({ isSolidState: async () => solidState }, mountPoint), marked };
+  };
+  return Promise.all([of(primary), of(replica)]);
+}
+
+/** The line that says how many files are read at once from each drive, and which numbers come from the owner's mark. */
+export function describeReadsAtOnce(primary: ReadsAtOnce, replica: ReadsAtOnce): string {
+  const drive = (role: string, { atOnce, marked }: ReadsAtOnce) => `${role} ${atOnce}${marked ? " (marked as solid state)" : ""}`;
+  return `Files read at once, by whether each drive is solid state (ADR 0022): ${drive("Primary", primary)}, ${drive("Replica", replica)}`;
+}
+
 /**
  * Compares `primary` with `replica` as the app does, Quick compare or with `deep` Deep verify, and
- * times it phase by phase. Writes nothing to either.
+ * times it phase by phase. Writes nothing to either. `driveKind` tells each drive's kind, as macOS
+ * does without it.
  */
 export async function benchmark(
   primary: string,
   replica: string,
-  options: { deep: boolean; exclusions?: readonly string[]; only?: string },
+  options: { deep: boolean; exclusions?: readonly string[]; only?: string; driveKind?: DriveKind },
 ): Promise<Timing> {
   const phases: PhaseTiming[] = [];
   let phaseStarted = 0n;
@@ -117,7 +147,7 @@ export async function benchmark(
     ...(options.only === undefined ? {} : { only: options.only }),
     hasher,
     itemCounter: new MacItemCounter(),
-    driveKind: new MacDriveKind(),
+    driveKind: options.driveKind ?? new MacDriveKind(),
     onProgress,
   });
   const ended = process.hrtime.bigint();
@@ -180,11 +210,12 @@ async function main(args: string[]): Promise<void> {
   const pairing = await readPairing(PAIRING_FILE);
   if (pairing === undefined) throw new Error(`There is no Pairing in ${PAIRING_FILE}. Pair the drives in the app first.`);
   const exclusions = await readExclusions(exclusionsFileBeside(PAIRING_FILE));
-  const { primary, replica } = await findPairedDrives(pairing, new MacVolumes());
+  const volumes = new MacVolumes();
+  const { primary, replica } = await findPairedDrives(pairing, volumes);
   console.log(`Primary "${primary.name}" at ${primary.mountPoint}, Replica "${replica.name}" at ${replica.mountPoint}`);
-  const driveKind = new MacDriveKind();
-  const [onPrimary, onReplica] = await Promise.all([readsAtOnce(driveKind, primary.mountPoint), readsAtOnce(driveKind, replica.mountPoint)]);
-  console.log(`Files read at once, by whether each drive is solid state (ADR 0022): Primary ${onPrimary}, Replica ${onReplica}`);
+  const marks = await readSolidStateMarks(solidStateMarksFileBeside(PAIRING_FILE));
+  const driveKind = new MarkedDriveKind(new MacDriveKind(), volumes, markedIn(pairing, marks));
+  console.log(describeReadsAtOnce(...(await readsAtOnceOf(driveKind, primary.mountPoint, replica.mountPoint))));
   console.log(`${values.only === undefined ? "Whole drives" : `Folder limit "${values.only}"`}, ${exclusions.length} Exclusions\n`);
   const runs = values.quick ? [false] : [false, true];
   for (const deep of runs) {
@@ -192,6 +223,7 @@ async function main(args: string[]): Promise<void> {
       deep,
       exclusions,
       ...(values.only === undefined ? {} : { only: values.only }),
+      driveKind,
     });
     for (const line of describeTiming(timing)) console.log(line);
   }

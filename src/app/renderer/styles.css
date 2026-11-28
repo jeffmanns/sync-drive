@@ -20,6 +20,8 @@ p.warning { padding: 8px 12px; border-radius: 6px; background: color-mix(in srgb
 .drives { display: grid; grid-template-columns: max-content 1fr; gap: 10px 16px; align-items: baseline; }
 .drives dt { font-weight: 600; }
 .drives dd { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.drives .solid-state { flex-basis: 100%; }
+.drives .solid-state p.warning { margin: 4px 0; }
 .drives .note { flex-basis: 100%; }
 .candidates { list-style: none; padding: 0; margin: 16px 0; }
 .candidates label { display: grid; grid-template-columns: max-content 1fr 7em; gap: 0 10px; align-items: baseline; padding: 6px 4px; border-bottom: 1px solid var(--line); }
