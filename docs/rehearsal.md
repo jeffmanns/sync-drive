@@ -31,7 +31,7 @@ Allow about half an hour. Commands are typed in Terminal, in the sync-drive fold
 2. **Pair the drives** lists the two drives, each with its size and Volume ID. Compare the Volume IDs with what `rehearsal:create` printed. If it says more drives are connected, eject the ones it names, then click **Look again**.
 3. Pick `"Rehearsal Primary"` as the Primary. **The Pairing to save** names the Primary and the Replica with their Volume IDs. Click **Save Pairing**.
 
-**Start** shows both drives and says *sync-drive has not updated the whole Replica yet.*
+**Start** shows both drives and says *sync-drive has not updated the whole Replica yet.* It shows no *This drive is an SSD* checkbox: the rehearsal drives are disk images on the Mac's own SSD, so macOS can tell their kind (ADR 0022). The checkbox appears only beside a real drive macOS cannot tell the kind of, such as an SSD in a USB enclosure (ADR 0025).
 
 ## 3. The first Update: copy everything
 

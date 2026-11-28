@@ -42,7 +42,8 @@ export interface CompareOptions {
   /**
    * Tells whether each drive is solid state, to choose how many files to read from it at once for
    * Deep verify and to confirm moves (`readsAtOnce`). Without it, one at a time from each. Called
-   * with the folders given to `compare`. Never changes the Report.
+   * with the folders given to `compare`. Never changes the Report. The app gives it macOS's word,
+   * with the owner's Solid-state marks where macOS cannot tell (`MarkedDriveKind`, ADR 0025).
    */
   driveKind?: DriveKind;
   /** Called as the comparison goes on, with how far it has got. What it throws is ignored. */

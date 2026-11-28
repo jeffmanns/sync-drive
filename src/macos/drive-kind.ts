@@ -12,7 +12,9 @@ const MOST_IMAGES_INSIDE = 4;
 /**
  * Tells from macOS whether a drive is solid state, as `diskutil info` says ("Solid State"). A disk
  * image has no kind of its own: it is read from the drive its image file is stored on, so that
- * drive's kind is its kind (ADR 0022). Reads only; changes nothing.
+ * drive's kind is its kind (ADR 0022). `undefined` when macOS does not say: many drives in USB
+ * enclosures, SSDs among them, report "Info not available". The owner can then mark the drive as
+ * solid state on Start (`MarkedDriveKind`, ADR 0025). Reads only; changes nothing.
  */
 export class MacDriveKind implements DriveKind {
   async isSolidState(mountPoint: string): Promise<boolean | undefined> {
