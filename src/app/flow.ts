@@ -26,6 +26,7 @@ import {
   type Report,
   type UpdateResult,
   type CandidateDrive,
+  type DriveKind,
   type Volume,
   type VolumeIdentity,
 } from "../engine/index.ts";
@@ -72,6 +73,8 @@ export interface FlowDeps {
   remounter: Remounter;
   /** Reads each drive's item count from macOS, for the Comparing progress bar. */
   itemCounter: ItemCounter;
+  /** Tells whether each drive is solid state, to choose how many files a comparison reads from it at once. */
+  driveKind: DriveKind;
 }
 
 /**
@@ -391,6 +394,7 @@ export class Flow {
         ...(only === undefined ? {} : { only }),
         deep,
         itemCounter: this.#deps.itemCounter,
+        driveKind: this.#deps.driveKind,
         onProgress: (progress) => {
           // Only while still on Comparing for this comparison: a discarded one must not bring it back.
           const now = this.#state;

@@ -14,6 +14,7 @@
  * runs a Folder limit: that folder (relative to the top of the drives, using `/`), as on Start (ADR 0017), for a short
  * run on a large drive. `--quick` skips the Deep verify.
  *
+ * Says how many files it reads at once from each drive, chosen as the app chooses them (ADR 0022).
  * Runs a Quick compare, then a Deep verify, each exactly as the app runs it, and prints for each its
  * elapsed time and that of each phase: reading both drives (items listed per second), with Deep verify
  * verifying contents (ADR 0018), and confirming moves by checksum (ADR 0011), each with files and MB read
@@ -36,12 +37,14 @@ import {
   findPairedDrives,
   readExclusions,
   readPairing,
+  readsAtOnce,
   Sha256Hasher,
   type CompareProgress,
   type Hasher,
   type Totals,
 } from "../src/engine/index.ts";
 import { fileCount, formatSize } from "../src/format.ts";
+import { MacDriveKind } from "../src/macos/drive-kind.ts";
 import { MacItemCounter } from "../src/macos/item-counter.ts";
 import { MacVolumes } from "../src/macos/volume-identity.ts";
 
@@ -114,6 +117,7 @@ export async function benchmark(
     ...(options.only === undefined ? {} : { only: options.only }),
     hasher,
     itemCounter: new MacItemCounter(),
+    driveKind: new MacDriveKind(),
     onProgress,
   });
   const ended = process.hrtime.bigint();
@@ -178,6 +182,9 @@ async function main(args: string[]): Promise<void> {
   const exclusions = await readExclusions(exclusionsFileBeside(PAIRING_FILE));
   const { primary, replica } = await findPairedDrives(pairing, new MacVolumes());
   console.log(`Primary "${primary.name}" at ${primary.mountPoint}, Replica "${replica.name}" at ${replica.mountPoint}`);
+  const driveKind = new MacDriveKind();
+  const [onPrimary, onReplica] = await Promise.all([readsAtOnce(driveKind, primary.mountPoint), readsAtOnce(driveKind, replica.mountPoint)]);
+  console.log(`Files read at once, by whether each drive is solid state (ADR 0022): Primary ${onPrimary}, Replica ${onReplica}`);
   console.log(`${values.only === undefined ? "Whole drives" : `Folder limit "${values.only}"`}, ${exclusions.length} Exclusions\n`);
   const runs = values.quick ? [false] : [false, true];
   for (const deep of runs) {

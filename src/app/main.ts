@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { exclusionsFileBeside } from "../engine/index.ts";
+import { MacDriveKind } from "../macos/drive-kind.ts";
 import { MacFileCopier } from "../macos/file-copier.ts";
 import { MacItemCounter } from "../macos/item-counter.ts";
 import { MacRemounter } from "../macos/remounter.ts";
@@ -39,6 +40,7 @@ const flow = new Flow({
   copyHasher: new MacUncachedHasher(),
   remounter: new MacRemounter(),
   itemCounter: new MacItemCounter(),
+  driveKind: new MacDriveKind(),
 });
 
 app.on("web-contents-created", (_event, contents) => {

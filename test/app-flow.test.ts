@@ -12,6 +12,7 @@ import { holdingAreaReadme } from "../src/engine/holding-area.ts";
 import { formatDay } from "../src/format.ts";
 import { MacFileCopier } from "../src/macos/file-copier.ts";
 import { MacUncachedHasher } from "../src/macos/uncached-hasher.ts";
+import { FakeDriveKind } from "./helpers/fake-drive-kind.ts";
 import { FakeItemCounter } from "./helpers/fake-item-counter.ts";
 import { FakeRemounter } from "./helpers/fake-remounter.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
@@ -50,7 +51,7 @@ async function testMac(copier: FileCopier = new MacFileCopier()) {
   const exclusionsFile = join(dirname(pairingFile), "exclusions.json");
   const updateLogFolder = join(dirname(pairingFile), "Update logs");
   const open = async () => {
-    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, copyHasher: new MacUncachedHasher(), remounter, itemCounter });
+    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, copyHasher: new MacUncachedHasher(), remounter, itemCounter, driveKind: new FakeDriveKind() });
     await flow.open();
     return flow;
   };
