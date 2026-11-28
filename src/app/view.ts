@@ -637,12 +637,16 @@ export function updatingLines(progress: UpdateProgress | undefined): string[] {
   return [...line("Moved into the Holding area", progress.deletions), ...line("Renamed on the Replica", progress.moves)];
 }
 
-/** The Updating bar: bytes copied out of the approved total. None when nothing is copied, or before the Update starts. */
+/**
+ * The Updating bar: bytes copied out of the approved total. It moves within each file's copy too
+ * (#55), but its label counts only the files copied and confirmed. None when nothing is copied, or
+ * before the Update starts.
+ */
 export function updatingBar(progress: UpdateProgress | undefined): ProgressBar | undefined {
   if (progress === undefined || progress.copies.totalBytes === 0) return undefined;
-  const { copiedBytes, notCopiedBytes, totalBytes } = progress.copies;
+  const { copiedBytes, notCopiedBytes, copyingBytes, totalBytes } = progress.copies;
   return {
-    fraction: (copiedBytes + notCopiedBytes) / totalBytes,
+    fraction: (copiedBytes + notCopiedBytes + copyingBytes) / totalBytes,
     label:
       `Copied ${formatSize(copiedBytes)} of ${formatSize(totalBytes)}` +
       (notCopiedBytes > 0 ? ` (${formatSize(notCopiedBytes)} could not be copied)` : ""),

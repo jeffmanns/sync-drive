@@ -311,7 +311,7 @@ describe("Update", () => {
 });
 
 describe("Update progress", () => {
-  it("reports bytes copied out of the approved total, as each copy is confirmed", async () => {
+  it("reports bytes copied out of the approved total, as each copy is confirmed, and each file's copy and read-back meanwhile", async () => {
     const primary = await makeTree({ "a.txt": "12345", "b.txt": "123" });
     const replica = await makeTree();
     const report = await compare(primary, replica);
@@ -321,9 +321,15 @@ describe("Update progress", () => {
 
     const none = { done: 0, total: 0 };
     assert.deepEqual(seen.map((p) => p.copies), [
-      { copiedBytes: 0, notCopiedBytes: 0, totalBytes: 8 },
-      { copiedBytes: 5, notCopiedBytes: 0, totalBytes: 8 },
-      { copiedBytes: 8, notCopiedBytes: 0, totalBytes: 8 },
+      { copiedBytes: 0, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 8 },
+      // a.txt: copied (half of 5 bytes, rounded down), then read back.
+      { copiedBytes: 0, notCopiedBytes: 0, copyingBytes: 2, totalBytes: 8 },
+      { copiedBytes: 0, notCopiedBytes: 0, copyingBytes: 5, totalBytes: 8 },
+      { copiedBytes: 5, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 8 },
+      // b.txt
+      { copiedBytes: 5, notCopiedBytes: 0, copyingBytes: 1, totalBytes: 8 },
+      { copiedBytes: 5, notCopiedBytes: 0, copyingBytes: 3, totalBytes: 8 },
+      { copiedBytes: 8, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 8 },
     ]);
     assert.ok(seen.every((p) => isDeepStrictEqual(p.deletions, none) && isDeepStrictEqual(p.moves, none)));
   });
@@ -339,7 +345,7 @@ describe("Update progress", () => {
 
     await update(report, APPROVED, { primary, replica, copier: failingForA, onProgress: (p) => seen.push(structuredClone(p)) });
 
-    assert.deepEqual(seen.at(-1)!.copies, { copiedBytes: 3, notCopiedBytes: 5, totalBytes: 8 });
+    assert.deepEqual(seen.at(-1)!.copies, { copiedBytes: 3, notCopiedBytes: 5, copyingBytes: 0, totalBytes: 8 });
   });
 
   it("reports the deleted files moved into the Holding area and the moves renamed, before the copies", async () => {
@@ -355,17 +361,19 @@ describe("Update progress", () => {
       onProgress: (p) => seen.push(structuredClone(p)),
     });
 
-    assert.deepEqual(seen.map((p) => [p.deletions.done, p.moves.done, p.copies.copiedBytes]), [
-      [0, 0, 0],
-      [1, 0, 0],
-      [2, 0, 0],
-      [2, 1, 0],
-      [2, 1, 1],
+    assert.deepEqual(seen.map((p) => [p.deletions.done, p.moves.done, p.copies.copiedBytes, p.copies.copyingBytes]), [
+      [0, 0, 0, 0],
+      [1, 0, 0, 0],
+      [2, 0, 0, 0],
+      [2, 1, 0, 0],
+      // fresh.txt's 1 byte: half for its copy rounds down to nothing, then it is read back.
+      [2, 1, 0, 1],
+      [2, 1, 1, 0],
     ]);
     assert.deepEqual(seen.at(-1), {
       deletions: { done: 2, total: 2 },
       moves: { done: 1, total: 1 },
-      copies: { copiedBytes: 1, notCopiedBytes: 0, totalBytes: 1 },
+      copies: { copiedBytes: 1, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 1 },
     });
   });
 
@@ -377,7 +385,101 @@ describe("Update progress", () => {
 
     await update(report, APPROVED, { primary, replica, copier: new MacFileCopier(), onProgress: (p) => seen.push(structuredClone(p)) });
 
-    assert.deepEqual(seen, [{ deletions: { done: 0, total: 0 }, moves: { done: 0, total: 0 }, copies: { copiedBytes: 0, notCopiedBytes: 0, totalBytes: 0 } }]);
+    assert.deepEqual(seen, [{ deletions: { done: 0, total: 0 }, moves: { done: 0, total: 0 }, copies: { copiedBytes: 0, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 0 } }]);
+  });
+
+  /**
+   * A copier that writes `source`'s contents to `destination` a part at a time, waiting a moment
+   * between parts, so a copy's size can be watched as it grows; then, unless `failAfter` parts are
+   * written first, replaces it with a real copy, so it keeps its metadata and passes its checks.
+   */
+  function gradualCopier(parts: number, failAfter?: number): FileCopier {
+    return {
+      async copy(source, destination) {
+        const contents = await readFile(source);
+        const partSize = Math.ceil(contents.length / parts);
+        for (let i = 0; i < parts; i++) {
+          if (i === failAfter) throw new Error("the drive was disconnected");
+          await writeFile(destination, contents.subarray(i * partSize, (i + 1) * partSize), { flag: i === 0 ? "wx" : "a" });
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        await rm(destination);
+        await new MacFileCopier().copy(source, destination);
+      },
+    };
+  }
+  /** What the Updating bar has reached in each progress report: bytes settled plus bytes under way. */
+  const reached = (seen: UpdateProgress[]) => seen.map(({ copies }) => copies.copiedBytes + copies.notCopiedBytes + copies.copyingBytes);
+  const neverBack = (bytes: number[]) => assert.ok(bytes.every((b, i) => i === 0 || b >= bytes[i - 1]!), `never goes back: ${bytes.join(", ")}`);
+  const MB = 1024 * 1024;
+
+  it("moves within a large file, as its copy grows on the Replica and as it is read back, and ends at the approved total", async () => {
+    const primary = await makeTree({ "video.mov": "v".repeat(3 * MB) });
+    const replica = await makeTree();
+    const report = await compare(primary, replica);
+    const seen: UpdateProgress[] = [];
+
+    const result = await update(report, APPROVED, {
+      primary,
+      replica,
+      copier: gradualCopier(6),
+      copySizeEveryMs: 5,
+      onProgress: (p) => seen.push(structuredClone(p)),
+    });
+
+    assert.equal(result.copied.length, 1);
+    const under = seen.map((p) => p.copies.copyingBytes);
+    // While copying, by the size its copy has reached: up to half its size.
+    assert.ok(under.some((bytes) => bytes > 0 && bytes < 1.5 * MB), `moves during the copy: ${under.join(", ")}`);
+    // While reading the copy back, in 1 MB parts: the other half.
+    assert.ok(under.some((bytes) => bytes > 1.5 * MB && bytes < 3 * MB), `moves during the read-back: ${under.join(", ")}`);
+    assert.ok(under.every((bytes) => bytes <= 3 * MB));
+    neverBack(reached(seen));
+    assert.deepEqual(seen.at(-1)!.copies, { copiedBytes: 3 * MB, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 3 * MB });
+  });
+
+  it("never goes back when a large file fails part-way through its copy, and counts it whole as not copied", async () => {
+    const primary = await makeTree({ "video.mov": "v".repeat(2 * MB) });
+    const replica = await makeTree();
+    const report = await compare(primary, replica);
+    const seen: UpdateProgress[] = [];
+
+    const result = await update(report, APPROVED, {
+      primary,
+      replica,
+      copier: gradualCopier(8, 6),
+      copySizeEveryMs: 5,
+      onProgress: (p) => seen.push(structuredClone(p)),
+    });
+
+    assert.deepEqual(result.failed.map((file) => file.reason), ["the drive was disconnected"]);
+    assert.ok(seen.some((p) => p.copies.copyingBytes > 0), "moved during the copy");
+    neverBack(reached(seen));
+    assert.deepEqual(seen.at(-1)!.copies, { copiedBytes: 0, notCopiedBytes: 2 * MB, copyingBytes: 0, totalBytes: 2 * MB });
+  });
+
+  it("adds up the files copied at once between solid-state drives, and never goes back", async () => {
+    const names = Array.from({ length: 4 }, (_, i) => `video ${i}.mov`);
+    const primary = await makeTree(Object.fromEntries(names.map((name) => [name, "v".repeat(2 * MB)])));
+    const replica = await makeTree();
+    const report = await compare(primary, replica);
+    const seen: UpdateProgress[] = [];
+
+    const result = await update(report, APPROVED, {
+      primary,
+      replica,
+      copier: gradualCopier(8),
+      copySizeEveryMs: 5,
+      driveKind: new FakeDriveKind(primary, replica),
+      onProgress: (p) => seen.push(structuredClone(p)),
+    });
+
+    assert.equal(result.copied.length, 4);
+    // Before any file settled, the bar had passed what any one file under way could show (its whole size).
+    const beforeAnySettled = seen.filter((p) => p.copies.copiedBytes === 0).map((p) => p.copies.copyingBytes);
+    assert.ok(Math.max(...beforeAnySettled) > 2 * MB, `adds up across copies: ${beforeAnySettled.join(", ")}`);
+    neverBack(reached(seen));
+    assert.deepEqual(seen.at(-1)!.copies, { copiedBytes: 8 * MB, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 8 * MB });
   });
 
   it("gives the same Result, and stops with the same UpdateStoppedError, with progress reported to a listener that throws", async () => {
@@ -1613,10 +1715,10 @@ describe("Update: several files copied at a time", () => {
       onProgress: (progress) => seen.push(structuredClone(progress)),
     });
 
-    const done = seen.map(({ copies }) => copies.copiedBytes + copies.notCopiedBytes);
+    const done = seen.map(({ copies }) => copies.copiedBytes + copies.notCopiedBytes + copies.copyingBytes);
     assert.ok(done.every((bytes, i) => i === 0 || bytes >= done[i - 1]!), `never goes back: ${done.join(", ")}`);
     // 1 + 2 + ... + 12 bytes of new files, and 13 of the changed one; "file 05" (6 bytes) is not copied.
-    assert.deepEqual(seen.at(-1)!.copies, { copiedBytes: 85, notCopiedBytes: 6, totalBytes: 91 });
+    assert.deepEqual(seen.at(-1)!.copies, { copiedBytes: 85, notCopiedBytes: 6, copyingBytes: 0, totalBytes: 91 });
   });
 
   it("overwrites several content mismatches at once, keeping each Replica copy in the Holding area with one READ ME", async () => {

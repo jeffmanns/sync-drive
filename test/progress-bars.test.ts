@@ -50,10 +50,10 @@ describe("The Comparing bar for a Deep verify", () => {
 });
 
 describe("The Updating bar", () => {
-  const progress = (copies: { copiedBytes: number; notCopiedBytes: number; totalBytes: number }) => ({
+  const progress = (copies: { copiedBytes: number; notCopiedBytes: number; copyingBytes?: number; totalBytes: number }) => ({
     deletions: { done: 0, total: 0 },
     moves: { done: 0, total: 0 },
-    copies,
+    copies: { copyingBytes: 0, ...copies },
   });
 
   it("shows bytes copied out of the approved total", () => {
@@ -70,13 +70,20 @@ describe("The Updating bar", () => {
     });
   });
 
+  it("moves within the files still being copied, though its label counts only the files copied and confirmed", () => {
+    assert.deepEqual(updatingBar(progress({ copiedBytes: 1_000_000, notCopiedBytes: 0, copyingBytes: 2_000_000, totalBytes: 8_000_000 })), {
+      fraction: 0.375,
+      label: "Copied 1.0 MB of 8.0 MB",
+    });
+  });
+
   it("is full once every copy is done", () => {
     assert.equal(updatingBar(progress({ copiedBytes: 4_000, notCopiedBytes: 0, totalBytes: 4_000 }))?.fraction, 1);
   });
 
   it("is headed by the deleted files and the moves dealt with, only for what was approved", () => {
     assert.deepEqual(
-      updatingLines({ deletions: { done: 3, total: 10 }, moves: { done: 0, total: 1 }, copies: { copiedBytes: 0, notCopiedBytes: 0, totalBytes: 0 } }),
+      updatingLines({ deletions: { done: 3, total: 10 }, moves: { done: 0, total: 1 }, copies: { copiedBytes: 0, notCopiedBytes: 0, copyingBytes: 0, totalBytes: 0 } }),
       ["Moved into the Holding area: 3 of 10 files", "Renamed on the Replica: 0 of 1 file"],
     );
     assert.deepEqual(updatingLines(progress({ copiedBytes: 0, notCopiedBytes: 0, totalBytes: 5 })), []);
