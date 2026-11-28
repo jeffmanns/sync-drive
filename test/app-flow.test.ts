@@ -47,11 +47,13 @@ async function testMac(copier: FileCopier = new MacFileCopier()) {
   const volumes = new FakeVolumes();
   const remounter = new FakeRemounter();
   const itemCounter = new FakeItemCounter();
+  // Every drive spinning, so one file is copied at a time, unless a test says otherwise.
+  const driveKind = new FakeDriveKind();
   const pairingFile = join(await makeTree(), "sync-drive", "pairing.json");
   const exclusionsFile = join(dirname(pairingFile), "exclusions.json");
   const updateLogFolder = join(dirname(pairingFile), "Update logs");
   const open = async () => {
-    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, copyHasher: new MacUncachedHasher(), remounter, itemCounter, driveKind: new FakeDriveKind() });
+    const flow = new Flow({ volumes, pairingFile, exclusionsFile, updateLogFolder, copier, copyHasher: new MacUncachedHasher(), remounter, itemCounter, driveKind });
     await flow.open();
     return flow;
   };
@@ -60,7 +62,7 @@ async function testMac(copier: FileCopier = new MacFileCopier()) {
     const names = (await readdir(updateLogFolder).catch(() => [])).sort();
     return Promise.all(names.map((name) => readFile(join(updateLogFolder, name), "utf8")));
   };
-  return { volumes, remounter, itemCounter, pairingFile, exclusionsFile, updateLogFolder, updateLogs, open };
+  return { volumes, remounter, itemCounter, driveKind, pairingFile, exclusionsFile, updateLogFolder, updateLogs, open };
 }
 
 /**
@@ -1409,6 +1411,54 @@ describe("app flow: the Primary read-only during the Update", () => {
     assert.deepEqual(stateOf(flow).copied, [{ path: "a.txt", size: 5 }], "the copy under way finishes");
     assert.deepEqual(stateOf(flow).failed, [{ path: "b.txt", size: 6, reason: "The app is quitting." }]);
     assert.deepEqual(remounter.log, [`read-only ${primary}`, `normally ${primary}`]);
+    assert.equal(remounter.isReadOnly(primary), false);
+    await applying;
+  });
+
+  it("on quitting with several copies under way, starts no new copy and remounts the Primary only once every copy has settled", async () => {
+    const real = new MacFileCopier();
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    const copies = { started: 0, running: 0 };
+    let eightStarted!: () => void;
+    const eightUnderWay = new Promise<void>((resolve) => (eightStarted = resolve));
+    const blocking: FileCopier = {
+      copy: async (source, destination) => {
+        copies.started++;
+        copies.running++;
+        if (copies.started === 8) eightStarted();
+        try {
+          await released;
+          return await real.copy(source, destination);
+        } finally {
+          copies.running--;
+        }
+      },
+    };
+    const names = Array.from({ length: 12 }, (_, i) => `file ${String(i).padStart(2, "0")}.txt`);
+    const { flow, remounter, driveKind, primary, replica } = await pairedMac(Object.fromEntries(names.map((name) => [name, name])), {}, blocking);
+    driveKind.set(primary, true);
+    driveKind.set(replica, true);
+    const stillCopying: number[] = [];
+    const normally = remounter.normally.bind(remounter);
+    remounter.normally = (volume) => (stillCopying.push(copies.running), normally(volume));
+    await flow.compare();
+    flow.approveCopies(true);
+    toSummary(flow);
+
+    const applying = flow.apply();
+    await eightUnderWay;
+    const quitting = flow.quit();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(remounter.isReadOnly(primary), true, "still read-only while copies are under way");
+    release();
+    await quitting;
+
+    assert.equal(copies.started, 8, "no new copy starts once quitting");
+    assert.deepEqual(stillCopying, [0], "no copy is still reading the Primary when it is remounted normally");
+    assert.deepEqual(stateOf(flow).copied, names.slice(0, 8).map((name) => ({ path: name, size: name.length })));
+    assert.deepEqual(stateOf(flow).failed, names.slice(8).map((name) => ({ path: name, size: name.length, reason: "The app is quitting." })));
     assert.equal(remounter.isReadOnly(primary), false);
     await applying;
   });

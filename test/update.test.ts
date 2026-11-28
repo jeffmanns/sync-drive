@@ -29,6 +29,7 @@ import {
   snapshotTree,
   type TreeSpec,
 } from "./helpers/trees.ts";
+import { FakeDriveKind } from "./helpers/fake-drive-kind.ts";
 
 after(removeTrees);
 
@@ -1513,5 +1514,155 @@ describe("Update: the last-updated marker", () => {
     await update(await compare(primary, replica), APPROVED, { primary, replica, copier: new MacFileCopier(), now: NOW });
 
     assert.deepEqual(await readLastUpdated(replica), { wholeDrive: { updated: NOW.toISOString() }, folders: [] });
+  });
+});
+
+describe("Update: several files copied at a time", () => {
+  /** Twelve new files, and one changed, with dates and contents that make each copy its own. */
+  const SPEC: TreeSpec = Object.fromEntries([
+    ...Array.from({ length: 12 }, (_, i) => [`Folder ${i % 3}/Deeper/file ${String(i).padStart(2, "0")}.txt`, "x".repeat(i + 1)] as const),
+    ["changed.txt", { content: "the new words", mtime: new Date("2026-04-01") }],
+  ]);
+  const REPLICA_SPEC: TreeSpec = { "changed.txt": { content: "old words", mtime: new Date("2025-01-01") } };
+
+  /**
+   * A copier that holds each copy for a while, later files for less time, so later copies finish
+   * first when several are in flight. Counts the copies in flight, and fails the copy of "file 05".
+   */
+  function trackingCopier() {
+    const counts = { running: 0, most: 0 };
+    let order = 0;
+    const copier: FileCopier = {
+      async copy(source, destination) {
+        counts.running++;
+        counts.most = Math.max(counts.most, counts.running);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, Math.max(1, 30 - 2 * order++)));
+          if (source.endsWith("file 05.txt")) throw new Error("the drive was disconnected");
+          await new MacFileCopier().copy(source, destination);
+        } finally {
+          counts.running--;
+        }
+      },
+    };
+    return { copier, counts };
+  }
+
+  it("copies several files at once between solid-state drives, with the same result, log and Replica as one at a time", async () => {
+    const runOnce = async (solidState: boolean) => {
+      const primary = await makeTree(SPEC);
+      const replica = await makeTree(REPLICA_SPEC);
+      const { copier, counts } = trackingCopier();
+      const driveKind = solidState ? new FakeDriveKind(primary, replica) : undefined;
+      const result = await compareAndUpdate(primary, replica, APPROVED, copier, driveKind === undefined ? {} : { driveKind });
+      // Folders are made when the Update runs, so only their names can match from one run to another.
+      const contents = withoutMarker(await snapshotTree(replica)).map((line) => (line.startsWith("dir ") ? line.replace(/ mtime=.*/, "") : line));
+      return { result, counts, replica: contents, marker: await readLastUpdated(replica) };
+    };
+
+    const [atOnce, oneAtATime] = [await runOnce(true), await runOnce(false)];
+
+    assert.equal(oneAtATime.counts.most, 1);
+    assert.ok(atOnce.counts.most > 1 && atOnce.counts.most <= 8, `${atOnce.counts.most} copies in flight`);
+    assert.deepEqual(atOnce.result, oneAtATime.result);
+    assert.equal(atOnce.result.failed.length, 1);
+    assert.equal(atOnce.result.copied.length, 12);
+    assert.deepEqual(atOnce.replica, oneAtATime.replica);
+    assert.equal(atOnce.marker?.wholeDrive?.leftUndone, 1);
+    assert.equal(oneAtATime.marker?.wholeDrive?.leftUndone, 1);
+  });
+
+  it("never copies to or reads back from a spinning Replica more than one file at a time, though the Primary is solid state", async () => {
+    const primary = await makeTree(SPEC);
+    const replica = await makeTree(REPLICA_SPEC);
+    const onReplica = { running: 0, most: 0 };
+    const onPrimary = { running: 0, most: 0 };
+    /** Counts `task` as running on the drive `counts` is for, held for a moment so overlaps show. */
+    const counted = async <T>(counts: typeof onReplica, task: () => Promise<T>): Promise<T> => {
+      counts.running++;
+      counts.most = Math.max(counts.most, counts.running);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return await task();
+      } finally {
+        counts.running--;
+      }
+    };
+    const copier: FileCopier = { copy: (source, destination) => counted(onReplica, () => new MacFileCopier().copy(source, destination)) };
+    const uncached = new MacUncachedHasher();
+    const sha256 = new Sha256Hasher();
+    const copyHasher: Hasher = { checksum: (path, onRead) => counted(onReplica, () => uncached.checksum(path, onRead)) };
+    const primaryHasher: Hasher = { checksum: (path, onRead) => counted(onPrimary, () => sha256.checksum(path, onRead)) };
+    const driveKind = new FakeDriveKind(primary);
+    driveKind.set(replica, false);
+
+    const result = await compareAndUpdate(primary, replica, APPROVED, copier, { driveKind, copyHasher, primaryHasher });
+
+    assert.equal(result.copied.length, 13);
+    assert.equal(onReplica.most, 1);
+    assert.ok(onPrimary.most <= 8);
+  });
+
+  it("moves the Updating bar forward only, to the approved total, with copies finishing out of order", async () => {
+    const primary = await makeTree(SPEC);
+    const replica = await makeTree(REPLICA_SPEC);
+    const seen: UpdateProgress[] = [];
+
+    await compareAndUpdate(primary, replica, APPROVED, trackingCopier().copier, {
+      driveKind: new FakeDriveKind(primary, replica),
+      onProgress: (progress) => seen.push(structuredClone(progress)),
+    });
+
+    const done = seen.map(({ copies }) => copies.copiedBytes + copies.notCopiedBytes);
+    assert.ok(done.every((bytes, i) => i === 0 || bytes >= done[i - 1]!), `never goes back: ${done.join(", ")}`);
+    // 1 + 2 + ... + 12 bytes of new files, and 13 of the changed one; "file 05" (6 bytes) is not copied.
+    assert.deepEqual(seen.at(-1)!.copies, { copiedBytes: 85, notCopiedBytes: 6, totalBytes: 91 });
+  });
+
+  it("overwrites several content mismatches at once, keeping each Replica copy in the Holding area with one READ ME", async () => {
+    const names = Array.from({ length: 10 }, (_, i) => `Folder/mismatch ${i}.txt`);
+    const primary = await makeTree(Object.fromEntries(names.map((name, i) => [name, `primary ${i}`])));
+    const replica = await makeTree(Object.fromEntries(names.map((name, i) => [name, `replica ${i}`])));
+    const report = await compare(primary, replica, { deep: true });
+
+    const primaryBefore = await snapshotTree(primary);
+
+    const overwritten = await update(report, { ...APPROVED, overwrite: names }, {
+      primary,
+      replica,
+      copier: new MacFileCopier(),
+      copyHasher: new MacUncachedHasher(),
+      driveKind: new FakeDriveKind(primary, replica),
+    });
+
+    assert.deepEqual(overwritten.copied, names.map((path) => ({ path, size: 9 })));
+    assert.deepEqual(overwritten.failed, []);
+    for (const [i, name] of names.entries()) {
+      assert.equal(await readFile(join(replica, name), "utf8"), `primary ${i}`);
+      assert.equal(await readFile(join(replica, "sync-drive Holding Area", name), "utf8"), `replica ${i}`);
+    }
+    assert.deepEqual((await readdir(join(replica, "sync-drive Holding Area"))).sort(), ["Folder", "READ ME.txt"]);
+    assert.deepEqual(await snapshotTree(primary), primaryBefore, "the Primary must never be written to");
+  });
+
+  it("copies a path named twice one after the other, as one at a time would", async () => {
+    const runOnce = async (solidState: boolean) => {
+      const primary = await makeTree({ "a.txt": "AAAA", "b.txt": "BBBB" });
+      const replica = await makeTree({ "a.txt": "zzzz", "b.txt": "yyyy" });
+      const report = await compare(primary, replica, { deep: true });
+      const driveKind = solidState ? new FakeDriveKind(primary, replica) : undefined;
+      const result = await update(report, { ...APPROVED, overwrite: ["a.txt", "b.txt", "a.txt"] }, {
+        primary,
+        replica,
+        copier: new MacFileCopier(),
+        ...(driveKind === undefined ? {} : { driveKind }),
+      });
+      return { result, held: await readFile(join(replica, "sync-drive Holding Area", "a.txt"), "utf8") };
+    };
+
+    const [atOnce, oneAtATime] = [await runOnce(true), await runOnce(false)];
+
+    assert.deepEqual(atOnce, oneAtATime);
+    assert.equal(atOnce.held, "zzzz", "the Replica's own copy is the one kept");
   });
 });

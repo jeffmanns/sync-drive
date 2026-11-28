@@ -10,7 +10,9 @@ import { HOLDING_AREA, HOLDING_AREA_README, holdingAreaReadme } from "./holding-
 import { INCOMING_FOLDER } from "./incoming.ts";
 import { recordUpdate } from "./last-updated.ts";
 import { sameDate } from "./same-date.ts";
+import type { DriveKind } from "./volumes.ts";
 import { checkFreeSpace, safetyStopApplies } from "./safety-stops.ts";
+import { readLimitsFor } from "./reads-at-once.ts";
 import { matchKey, readFailure } from "./scan.ts";
 import { isSyncDriveItem } from "./sync-drive-items.ts";
 
@@ -80,6 +82,12 @@ export interface UpdateSetup {
    * Defaults to `primaryHasher`.
    */
   copyHasher?: Hasher;
+  /**
+   * Tells whether each drive is solid state, to choose how many files to copy at once (`readsAtOnce`,
+   * ADR 0022). Without it, one at a time. Called with `primary` and `replica`. Never changes what the
+   * Update does, only how fast.
+   */
+  driveKind?: DriveKind;
   /** When the Update runs, for the Holding area's `READ ME.txt`. Defaults to now. */
   now?: Date;
   /**
@@ -144,6 +152,9 @@ export interface UpdateResult {
   notRecorded?: string;
 }
 
+/** What happened to one file's copy: renamed into place, checked as read from the drive or not, or failed and why. */
+type CopyOutcome = { copied: true; inMemory: boolean } | { copied: false; reason: string };
+
 /** Why a special file (a named pipe, socket or device) is not copied: it holds no data to back up. */
 const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), which Update does not copy";
 
@@ -166,6 +177,9 @@ const SPECIAL_FILE = "it is a special file (such as a named pipe or socket), whi
  * report, or when the Replica lacks the free space for the copies (ADR 0008). Every rejection is an
  * `UpdateStoppedError` saying what had been done before it stopped. Reports its progress to
  * `setup.onProgress`: deleted files and moves dealt with, then bytes copied out of the total.
+ * Copies several files at once when `setup.driveKind` says the drives are solid state (ADR 0022,
+ * ADR 0023), with the same result as copying them one at a time; resolves only once every copy
+ * under way has settled.
  */
 export async function update(report: Report, approvals: Approvals, setup: UpdateSetup): Promise<UpdateResult> {
   const result = nothingDone();
@@ -237,6 +251,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       `The Replica has ${space.free} bytes free but the copies need ${space.needed}; nothing was written`,
     );
   }
+  // Asked now, while the deletions and moves are done; it never rejects.
+  const copyLimits = readLimitsFor(files.length > 0 ? setup.driveKind : undefined, setup.primary, setup.replica);
   const tellProgress = reporter(setup.onProgress);
   const copies = { copiedBytes: 0, notCopiedBytes: 0, totalBytes: files.reduce((total, file) => total + file.size, 0) };
   /** Reports how far the Update has got, from what `result` says it has done and the bytes in `copies`. */
@@ -313,7 +329,8 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     progress();
   }
   for (const move of result.renamed) await removeEmptiedFolders(move.from, setup);
-  let holdingAreaReadmeWritten = toMove.length > 0;
+  /** The Holding area's `READ ME.txt` being written, or written. A copy written for the deletions above stands. */
+  let readmeWritten: Promise<void> | undefined = toMove.length > 0 ? Promise.resolve() : undefined;
   /**
    * Moves the Replica's copy of a content mismatch at `path` into the Holding area, at the same path,
    * rather than destroying it: the owner may have chosen wrongly, and either drive's copy may be the
@@ -325,10 +342,12 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
     // rename replaces whatever is at the destination, so make sure nothing is.
     if (await exists(kept)) throw new Error("the Holding area already holds a file at that path");
     await rename(join(setup.replica, path), kept);
-    if (!holdingAreaReadmeWritten) {
-      await writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date()));
-      holdingAreaReadmeWritten = true;
-    }
+    // Written once, though several overwrites go on at once. One that fails is tried again by the next.
+    readmeWritten ??= writeFile(join(holdingArea, HOLDING_AREA_README), holdingAreaReadme(setup.now ?? new Date())).catch((error: unknown) => {
+      readmeWritten = undefined;
+      throw error;
+    });
+    await readmeWritten;
   };
   const primaryHasher = setup.primaryHasher ?? new Sha256Hasher();
   const copyHasher = setup.copyHasher ?? primaryHasher;
@@ -336,7 +355,12 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
   // Anything already here is a temporary copy left by an interrupted Update.
   await rm(incoming, { recursive: true, force: true });
   await mkdir(incoming);
-  for (const file of files) {
+  const limits = await copyLimits;
+  /**
+   * Copies `file` under a temporary name, checks the copy against its Primary file, and renames it into
+   * place. Resolves with what happened to it; rejects only if its temporary copy could not be removed.
+   */
+  const copyOne = async (file: FileEntry): Promise<CopyOutcome> => {
     // Copied under a temporary name first, so an interrupted copy never sits under a real name.
     const temporary = join(incoming, randomUUID());
     const destination = join(setup.replica, file.path);
@@ -346,7 +370,9 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
       if (!before.isFile() && !before.isSymbolicLink()) throw new Error(SPECIAL_FILE);
       // Checked before copying too, so no time is spent on a copy that could not be put in place.
       await assertNoShortcutAlong(setup.replica, file.path);
-      await setup.copier.copy(source, temporary);
+      // A copy reads the Primary and writes the Replica, so it takes its place on both drives. Always
+      // the Primary's first, so two copies can never each hold the place the other waits for.
+      await limits.primary(() => limits.replica(() => setup.copier.copy(source, temporary)));
       // Read both back in full, so "copied" means confirmed identical, not just written. The copy is read
       // from the drive itself where it can be, so damage on its way there is caught too (ADR 0021). A
       // shortcut is never followed: what it holds is the path it points to (ADR 0015).
@@ -361,7 +387,9 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
         }
       };
       const [primarySum, copySum] = await Promise.all(
-        before.isSymbolicLink() ? [readlink(source), readlink(temporary)] : [primaryHasher.checksum(source), checkCopy()],
+        before.isSymbolicLink()
+          ? [readlink(source), readlink(temporary)]
+          : [limits.primary(() => primaryHasher.checksum(source)), limits.replica(checkCopy)],
       );
       // Looked at after hashing, so an edit during the copy or the read-back is caught as such.
       const [after, copy] = await Promise.all([lstat(source, { bigint: true }), lstat(temporary, { bigint: true })]);
@@ -385,16 +413,51 @@ async function updateInto(result: UpdateResult, report: Report, approvals: Appro
         if (overwriting) await rename(join(holdingArea, file.path), destination);
         throw error;
       }
-      result.copied.push(file);
-      if (inMemory) result.checkedInMemory.push(file);
       copies.copiedBytes += file.size;
+      progress();
+      return { copied: true, inMemory };
     } catch (error) {
       await rm(temporary, { force: true });
-      result.failed.push({ ...file, reason: (error as Error).message });
       copies.notCopiedBytes += file.size;
+      progress();
+      return { copied: false, reason: (error as Error).message };
     }
-    progress();
+  };
+  // Several files are copied at once, as many as the faster drive reads at once, and each drive is held
+  // to its own number (ADR 0022). What happened to each is listed in the order of `files`, however the
+  // copies finished, so the result is what copying one at a time gives.
+  const outcomes: Array<CopyOutcome | undefined> = [];
+  const stops = new Map<number, unknown>();
+  /** The copy of each path under way, by `matchKey`: a file waits for any earlier one at its path. */
+  const atPath = new Map<string, Promise<unknown>>();
+  let next = 0;
+  const worker = async () => {
+    // Once one stops the Update, no further copy starts; those under way settle first.
+    while (next < files.length && stops.size === 0) {
+      const i = next++;
+      const file = files[i]!;
+      const key = matchKey(file.path);
+      const copying = Promise.resolve(atPath.get(key)).then(() => copyOne(file));
+      atPath.set(key, copying.catch(() => undefined));
+      try {
+        outcomes[i] = await copying;
+      } catch (error) {
+        stops.set(i, error);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limits.pairsAtOnce, files.length) }, worker));
+  for (const [i, file] of files.entries()) {
+    const outcome = outcomes[i];
+    if (outcome === undefined) continue;
+    if (!outcome.copied) {
+      result.failed.push({ ...file, reason: outcome.reason });
+      continue;
+    }
+    result.copied.push(file);
+    if (outcome.inMemory) result.checkedInMemory.push(file);
   }
+  if (stops.size > 0) throw stops.get(Math.min(...stops.keys()));
   // Last, so only an Update that finished is recorded. One limited to a folder is recorded apart from
   // the whole drive, which it did not bring up to date; one whose folder is gone brought nothing in
   // it up to date, so is not recorded (ADR 0019).

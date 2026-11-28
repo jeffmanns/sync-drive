@@ -42,3 +42,17 @@ export function readLimiter(atOnce: number): ReadLimiter {
     }
   };
 }
+
+/** How many files to read at once from a Primary and a Replica, and the limiter that holds each to it. */
+export interface ReadLimits {
+  /** Pairs of files in flight (a Primary file with its Replica copy): as many as the faster drive reads at once. */
+  pairsAtOnce: number;
+  primary: ReadLimiter;
+  replica: ReadLimiter;
+}
+
+/** The `ReadLimits` for the Primary at `primary` and the Replica at `replica`, as `driveKind` tells their kinds. Never rejects. */
+export async function readLimitsFor(driveKind: DriveKind | undefined, primary: string, replica: string): Promise<ReadLimits> {
+  const [onPrimary, onReplica] = await Promise.all([readsAtOnce(driveKind, primary), readsAtOnce(driveKind, replica)]);
+  return { pairsAtOnce: Math.max(onPrimary, onReplica), primary: readLimiter(onPrimary), replica: readLimiter(onReplica) };
+}
