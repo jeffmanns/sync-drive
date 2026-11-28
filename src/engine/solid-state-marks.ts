@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Pairing } from "./pairing.ts";
+import { askSolidState } from "./reads-at-once.ts";
 import type { DriveKind, VolumeIdentity } from "./volumes.ts";
 
 /** Where the Solid-state marks are stored: beside the Pairing stored in `pairingFile` (ADR 0025). */
@@ -69,9 +70,7 @@ export class MarkedDriveKind implements DriveKind {
 
   /** What the drive whose top level is `mountPoint` is taken to be, and whether from the owner's mark. Never rejects. */
   async kindOf(mountPoint: string): Promise<KindOf> {
-    const told = await Promise.resolve()
-      .then(() => this.#macOS.isSolidState(mountPoint))
-      .catch(() => undefined);
+    const told = await askSolidState(this.#macOS, mountPoint);
     if (told !== undefined) return { solidState: told, marked: false };
     const marked = await this.#volumes.volumeAt(mountPoint).then(
       (volume) => this.#marked(volume.id),

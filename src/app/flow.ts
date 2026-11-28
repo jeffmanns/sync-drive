@@ -1,6 +1,7 @@
 import { isAbsolute, relative, sep } from "node:path";
 import {
   checkExclusion,
+  askSolidState,
   checkFreeSpace,
   compare,
   findPairedDrives,
@@ -201,19 +202,16 @@ export class Flow {
       { role: "Primary" as const, ...pairing.primary },
       { role: "Replica" as const, ...pairing.replica },
     ];
-    const told = await Promise.all(
+    const cannotTell = await Promise.all(
       paired.map(async (drive) => {
         const volume = connected.find((connectedDrive) => connectedDrive.id === drive.id);
         if (volume === undefined) return false;
-        const solidState = await Promise.resolve()
-          .then(() => this.#deps.driveKind.isSolidState(volume.mountPoint))
-          .catch(() => undefined);
-        return solidState === undefined;
+        return (await askSolidState(this.#deps.driveKind, volume.mountPoint)) === undefined;
       }),
     );
     const state = this.#state;
     if (state.step !== "start" || state.pairing !== pairing) return;
-    this.#unknownKinds = paired.filter((_, i) => told[i]);
+    this.#unknownKinds = paired.filter((_, i) => cannotTell[i]);
     this.#set({ ...state, ...this.#solidStateOffers() });
   }
 

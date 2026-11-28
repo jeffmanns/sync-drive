@@ -11,10 +11,10 @@ import {
   SOLID_STATE_READS,
   solidStateMarksFileBeside,
   writeSolidStateMarks,
+  Sha256Hasher,
   type Hasher,
   type Pairing,
 } from "../src/engine/index.ts";
-import { Sha256Hasher } from "../src/engine/index.ts";
 import { FakeDriveKind } from "./helpers/fake-drive-kind.ts";
 import { FakeVolumes } from "./helpers/fake-volumes.ts";
 import { makeTree, removeTrees, snapshotTree } from "./helpers/trees.ts";

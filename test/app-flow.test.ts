@@ -2142,7 +2142,7 @@ describe("app flow: marking a drive as solid state", () => {
     assert.equal(stateOf(flow).step, "copies");
   });
 
-  it("copies several files at once to a marked Replica, with the same Review and Result as unmarked, where it copies one at a time", async () => {
+  it("copies several files at once between marked drives, the Primary remounted read-only, with the same Review, Result and Replica as unmarked", async () => {
     const spec = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`Photos/p${i}.jpg`, `photo ${i}`]));
     const runOnce = async (marked: boolean) => {
       const counts = { running: 0, most: 0 };
@@ -2158,8 +2158,12 @@ describe("app flow: marking a drive as solid state", () => {
           }
         },
       };
-      const { flow, replica } = await unknownReplica(true, spec, { "old.txt": "old" }, copier);
-      if (marked) await flow.markSolidState("REPLICA-ID", true);
+      // Neither drive's kind can be told: the Primary's mark is looked up again once it is remounted read-only.
+      const { flow, replica } = await unknownReplica(undefined, spec, { "old.txt": "old" }, copier);
+      if (marked) {
+        await flow.markSolidState("PRIMARY-ID", true);
+        await flow.markSolidState("REPLICA-ID", true);
+      }
       flow.deepVerify(true);
       await flow.compare();
       const { drives: _, pairing: __, ...review } = stateOf(flow).review;
@@ -2167,7 +2171,10 @@ describe("app flow: marking a drive as solid state", () => {
       toSummaryApprovingDeletions(flow);
       await flow.apply();
       const { updateLog: ___, pairing: ____, ...result } = stateOf(flow);
-      return { review, result, most: counts.most, replica: (await snapshotTree(replica)).filter((line) => line.startsWith("file ")) };
+      // Folders and files are made when the Update runs, and the last-updated marker holds its time, so only the
+      // other files' names, sizes and contents can match from one run to another.
+      const files = (await snapshotTree(replica)).filter((line) => line.startsWith("file ") && !line.startsWith("file .sync-drive-last-updated ")).map((line) => line.replace(/ size=(\d+) .* (sha256=\S+).*$/, " $1 $2"));
+      return { review, result, most: counts.most, replica: files };
     };
 
     const [marked, unmarked] = [await runOnce(true), await runOnce(false)];
@@ -2177,5 +2184,7 @@ describe("app flow: marking a drive as solid state", () => {
     assert.deepEqual(marked.review, unmarked.review);
     assert.deepEqual(marked.result, unmarked.result);
     assert.equal(marked.result.copied.length, 12);
+    assert.deepEqual(marked.replica, unmarked.replica);
+    assert.equal(marked.replica.length, 14, "the 12 copies, and old.txt and the READ ME in the Holding area");
   });
 });

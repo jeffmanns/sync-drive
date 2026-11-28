@@ -85,10 +85,11 @@ export interface ReadsAtOnce {
 
 /** How many files `driveKind` has read at once from the Primary at `primary` and the Replica at `replica`, as a comparison chooses (ADR 0022). */
 export async function readsAtOnceOf(driveKind: MarkedDriveKind, primary: string, replica: string): Promise<[ReadsAtOnce, ReadsAtOnce]> {
-  const of = async (mountPoint: string) => ({
-    atOnce: await readsAtOnce(driveKind, mountPoint),
-    marked: (await driveKind.kindOf(mountPoint)).marked,
-  });
+  // macOS is asked once per drive: its answer, with any mark, is what `readsAtOnce` chooses by.
+  const of = async (mountPoint: string) => {
+    const { solidState, marked } = await driveKind.kindOf(mountPoint);
+    return { atOnce: await readsAtOnce({ isSolidState: async () => solidState }, mountPoint), marked };
+  };
   return Promise.all([of(primary), of(replica)]);
 }
 

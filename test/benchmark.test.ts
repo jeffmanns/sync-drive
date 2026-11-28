@@ -78,6 +78,7 @@ describe("the benchmark's files read at once", () => {
     const macOS = new FakeDriveKind(primary);
     macOS.set(replica, undefined);
     const pairing = { primary: { id: "PRIMARY-ID", name: "P" }, replica: { id: "REPLICA-ID", name: "R" } };
+    const before = await snapshotTree(primary);
 
     const kind = new MarkedDriveKind(macOS, volumes, markedIn(pairing, ["REPLICA-ID"]));
 
@@ -87,5 +88,6 @@ describe("the benchmark's files read at once", () => {
     ]);
     const timing = await benchmark(primary, replica, { deep: true, driveKind: kind });
     assert.equal(timing.phases.find((phase) => phase.phase === "verifying")?.files, 1);
+    assert.deepEqual(await snapshotTree(primary), before, "the Primary must never be written to");
   });
 });
